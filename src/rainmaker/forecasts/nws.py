@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -18,7 +18,8 @@ def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]
     issued_local = issued_at.astimezone(ZoneInfo(target.station.timezone)).date()
     for period in props["periods"]:
         start = datetime.fromisoformat(period["startTime"])
-        if period["isDaytime"] and start.date() == target.local_date:
+        start_local = start.astimezone(ZoneInfo(target.station.timezone))
+        if period["isDaytime"] and start_local.date() == target.local_date:
             if period["temperatureUnit"] != "F":
                 raise ValueError(f"expected Fahrenheit, got {period['temperatureUnit']}")
             return [
@@ -43,7 +44,7 @@ def fetch_raw(target: Target, client: httpx.Client) -> dict[str, Any]:
     forecast_url = points.json()["properties"]["forecast"]
     forecast = client.get(forecast_url)
     forecast.raise_for_status()
-    return forecast.json()  # type: ignore[no-any-return]
+    return cast(dict[str, Any], forecast.json())
 
 
 class NwsSource:

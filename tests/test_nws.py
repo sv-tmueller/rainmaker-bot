@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import httpx
@@ -27,7 +27,7 @@ def test_parse_returns_daytime_high_for_target_date():
     assert s.variable == "TMAX"
     assert s.value_f == 76.0
     assert s.lead_time_days == 1
-    assert s.issued_at is not None
+    assert s.issued_at == datetime(2026, 5, 30, 14, 23, 35, tzinfo=UTC)
 
 
 def test_parse_returns_empty_when_date_absent():
