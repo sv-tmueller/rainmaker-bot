@@ -49,3 +49,29 @@ def parse_multimodel(data: dict[str, Any], target: Target) -> list[ForecastSampl
             )
         )
     return out
+
+
+def parse_ensemble(data: dict[str, Any], target: Target, ens_model: str) -> list[ForecastSample]:
+    daily: dict[str, Any] = data["daily"]
+    idx = _target_index(daily, target)
+    if idx is None:
+        return []
+    out: list[ForecastSample] = []
+    for key, values in daily.items():
+        match = _MEMBER_RE.fullmatch(key)
+        if match is None or not values or values[idx] is None:
+            continue
+        out.append(
+            ForecastSample(
+                source="open-meteo",
+                model=f"{ens_model}_ens",
+                member=int(match.group(1)),
+                station=target.station.icao,
+                variable=target.variable,
+                target_date=target.local_date,
+                lead_time_days=idx,
+                value_f=float(values[idx]),
+                issued_at=None,
+            )
+        )
+    return out
