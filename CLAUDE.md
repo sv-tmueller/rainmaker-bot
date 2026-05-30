@@ -10,9 +10,9 @@ into a calibrated probability for each market outcome, compares that probability
 to the market price, and produces a daily report of bets ranked by edge
 (expected value). A human reviews the report and places bets manually.
 
-Status: pre-implementation. The repo is currently empty except for docs. Nothing
-is scaffolded yet. Do not assume code, a `pyproject.toml`, or a test suite
-exists until Phase 1 lands.
+Status: Phase 1 complete. `src/rainmaker` is scaffolded with config, forecast
+sources (NWS, Open-Meteo), aggregation, and CLI. `pyproject.toml`, `uv.lock`,
+and a passing test suite exist. Phase 2 (probability engine) is next.
 
 ## Working principles
 
@@ -79,28 +79,43 @@ documenting how they resolve. If they are absent or thin, stop and raise it (for
 example, consider Kalshi) rather than building on an unverified premise. See the
 spec for the full phase plan.
 
-## Toolchain (intended, once scaffolded in Phase 1)
+## Toolchain
 
-Python, with `httpx`, `pydantic`, `numpy`, `scipy`, `pandas`. CLI entry point
-`rainmaker run` (and `rainmaker backfill` for calibration). When you scaffold
-the project, record the exact install/test/lint/run commands here so future
-sessions do not have to rediscover them.
+Python 3.11+ managed with uv. Commands:
+
+- Install: `uv sync`
+- Run: `uv run rainmaker run` (Phase 1: NYC highest-temp; `--city`, `--variable`, `--date` optional)
+- Test: `uv run pytest`
+- Lint: `uv run ruff check .`  Format: `uv run ruff format .`
+- Type check: `uv run mypy src`
+
+Runtime deps: httpx, pydantic. (numpy/scipy/pandas arrive with the Phase 2 probability engine.)
+API clients are tested against saved JSON fixtures in `tests/fixtures/`, never live endpoints.
 
 ## Repo layout
 
 ```
+src/rainmaker/
+  config.py           station registry, Target, source config constants
+  cli.py              `rainmaker run` entry point
+  forecasts/
+    base.py           ForecastSample, ForecastSet, ForecastSource protocol
+    nws.py            NWS fetch + parse
+    openmeteo.py      Open-Meteo multi-model and ensemble fetch + parse
+    aggregate.py      pool sources, coverage, freshness
+tests/
+  fixtures/           saved API responses for KLGA (NWS + Open-Meteo)
+  test_*.py           unit and I/O tests (pytest-httpx for mocked HTTP)
 docs/
-  architecture/      stack and policy decisions, data model, domain math
-  operations/        run/deploy/operate: environments, secrets, runbooks
-  plans/             implementation plans, <issue-number>-<slug>.md
-  superpowers/specs/ approved designs, YYYY-MM-DD-<topic>-design.md
+  architecture/       stack and policy decisions, data model, domain math
+  operations/         run/deploy/operate: environments, secrets, runbooks
+  plans/              implementation plans, <issue-number>-<slug>.md
+  superpowers/specs/  approved designs, YYYY-MM-DD-<topic>-design.md
 ```
 
-Application code lands in Phase 1 (`src/` and `tests/`, the layout recorded here
-once it exists). The golden end-to-end test (fixture markets and fixture
-forecasts in, expected ranked report out) is the safety net for the whole
-pipeline; keep it green before any change that touches forecasting, calibration,
-or ranking.
+The golden end-to-end test (fixture markets and fixture forecasts in, expected
+ranked report out) is the safety net for the whole pipeline; keep it green
+before any change that touches forecasting, calibration, or ranking.
 
 ## How we work
 
