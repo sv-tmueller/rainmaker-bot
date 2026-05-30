@@ -1,0 +1,236 @@
+[
+  {
+    "id": "97125",
+    "title": "Will a hurricane make landfall in the US by May 31?",
+    "slug": "will-a-hurricane-make-landfall-in-the-us-by-may-31",
+    "endDate": "2026-05-31T00:00:00Z",
+    "description": "This market will resolve to \"Yes\" if a hurricane makes landfall in the conterminous United States within this market's timeframe, between December 4, 2025, and May 31, 2026, 11:59 PM ET as described in official National Hurricane Center advisories (https://www.nhc.noaa.gov/archive/2025/). If no tropical systems make landfall in the conterminous United States at hurricane status within this market's timeframe, this market will resolve to \"No\".\n\nThis market may only resolve to \"No\" after May 31, 2026, 11:59 PM ET if the conditions for a \"Yes\" resolution have not been met.\n\nFor the purpose of this market, a hurricane landfall is said to occur when a hurricane's surface center intersects with the coastline, as described at https://www.nhc.noaa.gov/aboutgloss.shtml#LANDFALL , and the NHC officially reports that the storm has maximum sustained winds of 74 mph or higher at the time of landfall.\n\nThis market will resolve based on an initial advisory released by the NHC that a hurricane has made landfall within the conterminous United States within the market timeframe regardless of any later retraction or analysis that may contradict the initial announcement.",
+    "markets": [
+      {
+        "question": "Will a hurricane make landfall in the US by May 31?",
+        "groupItemTitle": "",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"85120581243747147952616016664040939597762190414677432317390238109385042415845\", \"78766104436530331448562638375690079888149402441403866349192209088281483803083\"]"
+      }
+    ]
+  },
+  {
+    "id": "533140",
+    "title": "Highest temperature in London on May 30?",
+    "slug": "highest-temperature-in-london-on-may-30-2026",
+    "endDate": "2026-05-30T12:00:00Z",
+    "description": "This market will resolve to the temperature range that contains the highest temperature recorded at the London City Airport Station in degrees Celsius on 30 May '26.\n\nThe resolution source for this market will be information from Wunderground, specifically the highest temperature recorded for all times on this day for the London City Airport Station, available here: https://www.wunderground.com/history/daily/gb/london/EGLC.\n\nTo toggle between Fahrenheit and Celsius, click the gear icon next to the search bar and switch the Temperature setting between °F and °C.\n\nThis market can not resolve until the first data point for the following date has been published on the resolution source.\n\nThe resolution source for this market measures temperatures to whole degrees Celsius (eg, 9°C). Thus, this is the level of precision that will be used when resolving the market.\n\nRevisions to temperatures recorded within this market's timeframe will be considered until the first datapoint for the following date has been published, after which any alterations will not be considered.",
+    "markets": [
+      {
+        "question": "Will the highest temperature in London be 22°C or below on May 30?",
+        "groupItemTitle": "22°C or below",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"63648548761181553859974349427821734839309888438036059973855165507094273130997\", \"109000352802306240240877205005228779286695916419197678539902027718065903616459\"]"
+      },
+      {
+        "question": "Will the highest temperature in London be 23°C on May 30?",
+        "groupItemTitle": "23°C",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"102384087702051887336978870105998933127319781873995746372091451733739419645697\", \"93160768540192406380784570355425244409927756337977382542713834312064553180444\"]"
+      },
+      {
+        "question": "Will the highest temperature in London be 24°C on May 30?",
+        "groupItemTitle": "24°C",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"47555361129750760967540415584644354613537334790160321284366139870065670364264\", \"36109069499978374889332353936163238756872744510118046349934195167601731662872\"]"
+      },
+      {
+        "question": "Will the highest temperature in London be 25°C on May 30?",
+        "groupItemTitle": "25°C",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"108840290098237197857794222546493948235225677895307743211066182771424117099258\", \"74424777490672880033525317174065960249184009528756267101727325367379681512876\"]"
+      },
+      {
+        "question": "Will the highest temperature in London be 26°C on May 30?",
+        "groupItemTitle": "26°C",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"73774142738540725347348218366956201957863575004574196367854297966222862648801\", \"6240791804553292488048967226826761670850963283135054361476146499383320464370\"]"
+      },
+      {
+        "question": "Will the highest temperature in London be 27°C on May 30?",
+        "groupItemTitle": "27°C",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.9995\", \"0.0005\"]",
+        "bestAsk": 1,
+        "bestBid": 0.999,
+        "clobTokenIds": "[\"103954880459437125249658368271052919090998331792463289466196810125582901815031\", \"51371111132157879990485614372683719081475737339290426521872181073699237140696\"]"
+      },
+      {
+        "question": "Will the highest temperature in London be 28°C on May 30?",
+        "groupItemTitle": "28°C",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"61729714446218201964933875560564299976280979578543956403246028841355352418921\", \"107105488772385727129152883152582721648909183852043904513087365717631446655832\"]"
+      },
+      {
+        "question": "Will the highest temperature in London be 29°C on May 30?",
+        "groupItemTitle": "29°C",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"103730362495256191579140059127565711028279039162205280920066763534588753914376\", \"33866408584593587118520577502032100130254130980821653702986431273923683767926\"]"
+      },
+      {
+        "question": "Will the highest temperature in London be 30°C on May 30?",
+        "groupItemTitle": "30°C",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"2149478343277978111393293378668637701444011594184361893470514493283930212229\", \"7811520669349886448278247593629717565613514595433445229659505865944108279695\"]"
+      },
+      {
+        "question": "Will the highest temperature in London be 31°C on May 30?",
+        "groupItemTitle": "31°C",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"31110672820203156609351029216288159961262623317624588210884008146550166415953\", \"109038607672887068294700596314382118425855084825184461827362783665027250598228\"]"
+      },
+      {
+        "question": "Will the highest temperature in London be 32°C or higher on May 30?",
+        "groupItemTitle": "32°C or higher",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"111830896509219439875308620878985550190829771660931353504401635242213999077953\", \"36395979341655324399047852971081946521947909515277187552827692027832301872372\"]"
+      }
+    ]
+  },
+  {
+    "id": "533147",
+    "title": "Highest temperature in NYC on May 30?",
+    "slug": "highest-temperature-in-nyc-on-may-30-2026",
+    "endDate": "2026-05-30T12:00:00Z",
+    "description": "This market will resolve to the temperature range that contains the highest temperature recorded at the LaGuardia Airport Station in degrees Fahrenheit on 30 May '26.\n\nThe resolution source for this market will be information from Wunderground, specifically the highest temperature recorded for all times on this day for the LaGuardia Airport Station, available here: https://www.wunderground.com/history/daily/us/ny/new-york-city/KLGA.\n\nTo toggle between Fahrenheit and Celsius, click the gear icon next to the search bar and switch the Temperature setting between °F and °C.\n\nThis market can not resolve until the first data point for the following date has been published on the resolution source.\n\nThe resolution source for this market measures temperatures to whole degrees Fahrenheit (eg, 21°F). Thus, this is the level of precision that will be used when resolving the market.\n\nRevisions to temperatures recorded within this market's timeframe will be considered until the first datapoint for the following date has been published, after which any alterations will not be considered.",
+    "markets": [
+      {
+        "question": "Will the highest temperature in New York City be 59°F or below on May 30?",
+        "groupItemTitle": "59°F or below",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0025\", \"0.9975\"]",
+        "bestAsk": 0.004,
+        "bestBid": 0.001,
+        "clobTokenIds": "[\"63103732622160665189154558165913165656167238975108887912070417445520275819404\", \"4638398770225387185092504515813329487959096872986823099887782159699861770472\"]"
+      },
+      {
+        "question": "Will the highest temperature in New York City be between 60-61°F on May 30?",
+        "groupItemTitle": "60-61°F",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.001\", \"0.999\"]",
+        "bestAsk": 0.002,
+        "bestBid": null,
+        "clobTokenIds": "[\"35319605656261296489992493171938696422819424068276855789644140923704303042360\", \"98975144701950407437805983598596100844234452765683063750276585454402574509837\"]"
+      },
+      {
+        "question": "Will the highest temperature in New York City be between 62-63°F on May 30?",
+        "groupItemTitle": "62-63°F",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.001\", \"0.999\"]",
+        "bestAsk": 0.002,
+        "bestBid": null,
+        "clobTokenIds": "[\"11372816102632970181216038307357090005196884890149664099975856513649755872194\", \"26488029996875674484451282596905424646677396623808098069229235767107077037591\"]"
+      },
+      {
+        "question": "Will the highest temperature in New York City be between 64-65°F on May 30?",
+        "groupItemTitle": "64-65°F",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"38172464604610377948656628148396882040434117185556431425010545618267084003378\", \"76642479880327628836588795467776343514578750267598518007613579385342717716591\"]"
+      },
+      {
+        "question": "Will the highest temperature in New York City be between 66-67°F on May 30?",
+        "groupItemTitle": "66-67°F",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"38270403606556162241393815439868149552176768849070738930602117139148346285150\", \"56736741796643000514233049325032555949445395375186455056622735042382633591163\"]"
+      },
+      {
+        "question": "Will the highest temperature in New York City be between 68-69°F on May 30?",
+        "groupItemTitle": "68-69°F",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"73685748402005855075213022647285144578780564344696578653690236414878854858613\", \"37056213080860303233239398713731962980840002450894836919343833068557192955129\"]"
+      },
+      {
+        "question": "Will the highest temperature in New York City be between 70-71°F on May 30?",
+        "groupItemTitle": "70-71°F",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.9975\", \"0.0025\"]",
+        "bestAsk": 0.999,
+        "bestBid": 0.996,
+        "clobTokenIds": "[\"110481645994240177023362846492885669398895286263695488725150432539409027726065\", \"87208398688223991403533909229193642947664277381716455849307964132422500373150\"]"
+      },
+      {
+        "question": "Will the highest temperature in New York City be between 72-73°F on May 30?",
+        "groupItemTitle": "72-73°F",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.002\", \"0.998\"]",
+        "bestAsk": 0.003,
+        "bestBid": 0.001,
+        "clobTokenIds": "[\"102044087630203224814695625926502396215037027482375704553371735194406064778166\", \"101294303213200147656349473859401327234939620076439324725538499307690838207639\"]"
+      },
+      {
+        "question": "Will the highest temperature in New York City be between 74-75°F on May 30?",
+        "groupItemTitle": "74-75°F",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0015\", \"0.9985\"]",
+        "bestAsk": 0.002,
+        "bestBid": 0.001,
+        "clobTokenIds": "[\"69912972628251077134104358012514391714847564252380639950025542111407027611245\", \"95746517423864442417968330886729044661196576150668655882146226796559404514996\"]"
+      },
+      {
+        "question": "Will the highest temperature in New York City be between 76-77°F on May 30?",
+        "groupItemTitle": "76-77°F",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.001\", \"0.999\"]",
+        "bestAsk": 0.002,
+        "bestBid": null,
+        "clobTokenIds": "[\"108403827475272408673585136743449419615509275503117618943931431162320814223871\", \"113735077542531308665560062123181187259220229607691672663312453506987414663357\"]"
+      },
+      {
+        "question": "Will the highest temperature in New York City be 78°F or higher on May 30?",
+        "groupItemTitle": "78°F or higher",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+        "bestAsk": 0.001,
+        "bestBid": null,
+        "clobTokenIds": "[\"56306028046278017658624800673970020197045534638375058763774052700292401538148\", \"60997777557394581196232798521270339624272272333229485730113027295114292307259\"]"
+      }
+    ]
+  }
+]
