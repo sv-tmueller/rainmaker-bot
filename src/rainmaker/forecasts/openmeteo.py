@@ -21,6 +21,13 @@ def _daily_field(variable: str) -> str:
     return "temperature_2m_max"
 
 
+def _check_fahrenheit(data: dict[str, Any], field: str) -> None:
+    units = data["daily_units"]
+    temp_units = [v for k, v in units.items() if k.startswith(field)]
+    if not temp_units or not all(str(u).endswith("F") for u in temp_units):
+        raise ValueError(f"expected Fahrenheit from Open-Meteo, got {temp_units}")
+
+
 def _target_index(daily: dict[str, Any], target: Target) -> int | None:
     iso = target.local_date.isoformat()
     times: list[str] = daily["time"]
@@ -33,6 +40,7 @@ def parse_multimodel(data: dict[str, Any], target: Target) -> list[ForecastSampl
     if idx is None:
         return []
     field = _daily_field(target.variable)
+    _check_fahrenheit(data, field)
     out: list[ForecastSample] = []
     for model in OPENMETEO_MODELS:
         values = daily.get(f"{field}_{model}")
@@ -59,6 +67,9 @@ def parse_multimodel(data: dict[str, Any], target: Target) -> list[ForecastSampl
 
 def parse_ensemble(data: dict[str, Any], target: Target, ens_model: str) -> list[ForecastSample]:
     field = _daily_field(target.variable)
+    _check_fahrenheit(data, field)
+    # Match only perturbed members (temperature_2m_max_memberNN); the bare
+    # temperature_2m_max control run is intentionally excluded from the sample set.
     member_re = re.compile(rf"{re.escape(field)}_member(\d+)")
     daily: dict[str, Any] = data["daily"]
     idx = _target_index(daily, target)

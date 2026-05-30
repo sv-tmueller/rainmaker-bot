@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 
 from rainmaker.config import build_target
 from rainmaker.forecasts.openmeteo import (
@@ -82,3 +83,23 @@ def test_open_meteo_source_pools_multimodel_and_ensemble(httpx_mock):
     ensemble = [s for s in samples if s.member is not None]
     assert len(multimodel) == 5
     assert len(ensemble) == 30 * 3  # OPENMETEO_ENSEMBLE_MODELS has 3 entries
+
+
+def test_parse_multimodel_rejects_non_fahrenheit():
+    data = _multimodel_fixture()
+    data["daily_units"] = {
+        k: ("°C" if k.startswith("temperature") else v) for k, v in data["daily_units"].items()
+    }
+    target = build_target("NYC", "TMAX", date(2026, 5, 31))
+    with pytest.raises(ValueError, match="Fahrenheit"):
+        parse_multimodel(data, target)
+
+
+def test_parse_ensemble_rejects_non_fahrenheit():
+    data = _ensemble_fixture()
+    data["daily_units"] = {
+        k: ("°C" if k.startswith("temperature") else v) for k, v in data["daily_units"].items()
+    }
+    target = build_target("NYC", "TMAX", date(2026, 5, 31))
+    with pytest.raises(ValueError, match="Fahrenheit"):
+        parse_ensemble(data, target, "gfs_seamless")
