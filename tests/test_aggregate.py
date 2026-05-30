@@ -8,7 +8,7 @@ TARGET = build_target("NYC", "TMAX", date(2026, 5, 31))
 NOW = datetime(2026, 5, 30, 15, 0, tzinfo=UTC)
 
 
-def _sample(model: str, issued_at):
+def _sample(model: str, issued_at: datetime | None) -> ForecastSample:
     return ForecastSample(
         source="x", model=model, member=None, station="KLGA", variable="TMAX",
         target_date=date(2026, 5, 31), lead_time_days=1, value_f=70.0, issued_at=issued_at,
@@ -56,3 +56,26 @@ def test_aggregate_drops_stale_samples_but_keeps_unknown_issue_time():
     kept = {s.model for s in fs.samples}
     assert kept == {"fresh", "unknown"}
     assert fs.coverage[0].n_samples == 2
+
+
+def test_aggregate_empty_sources_returns_empty_set():
+    fs = aggregate(TARGET, [], now=NOW)
+    assert fs.samples == []
+    assert fs.coverage == []
+
+
+def test_aggregate_all_sources_fail_returns_empty_samples_with_failed_coverage():
+    bad1 = _StubSource("a", error=RuntimeError("down"))
+    bad2 = _StubSource("b", error=ValueError("bad data"))
+    fs = aggregate(TARGET, [bad1, bad2], now=NOW)
+    assert fs.samples == []
+    assert all(not c.ok for c in fs.coverage)
+    assert len(fs.coverage) == 2
+
+
+def test_aggregate_all_stale_source_is_ok_with_zero_samples():
+    stale_only = _StubSource("a", samples=[_sample("m1", NOW - timedelta(hours=48))])
+    fs = aggregate(TARGET, [stale_only], now=NOW, freshness_limit_hours=24)
+    assert fs.samples == []
+    assert fs.coverage[0].ok is True
+    assert fs.coverage[0].n_samples == 0

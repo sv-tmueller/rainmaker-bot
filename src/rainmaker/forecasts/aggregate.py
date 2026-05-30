@@ -5,6 +5,8 @@ from rainmaker.forecasts.base import ForecastSample, ForecastSet, ForecastSource
 
 
 def _is_fresh(sample: ForecastSample, now: datetime, limit_hours: int) -> bool:
+    # None issued_at means the source does not publish a run time (e.g. Open-Meteo).
+    # Treat as fresh: we have no evidence it is stale.
     if sample.issued_at is None:
         return True
     return (now - sample.issued_at) <= timedelta(hours=limit_hours)
