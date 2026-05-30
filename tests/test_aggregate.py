@@ -10,8 +10,15 @@ NOW = datetime(2026, 5, 30, 15, 0, tzinfo=UTC)
 
 def _sample(model: str, issued_at: datetime | None) -> ForecastSample:
     return ForecastSample(
-        source="x", model=model, member=None, station="KLGA", variable="TMAX",
-        target_date=date(2026, 5, 31), lead_time_days=1, value_f=70.0, issued_at=issued_at,
+        source="x",
+        model=model,
+        member=None,
+        station="KLGA",
+        variable="TMAX",
+        target_date=date(2026, 5, 31),
+        lead_time_days=1,
+        value_f=70.0,
+        issued_at=issued_at,
     )
 
 

@@ -39,9 +39,7 @@ def test_fetch_calls_points_then_forecast_and_sets_user_agent(httpx_mock):
     points_body = {
         "properties": {"forecast": "https://api.weather.gov/gridpoints/OKX/37,46/forecast"}
     }
-    httpx_mock.add_response(
-        url="https://api.weather.gov/points/40.7792,-73.8803", json=points_body
-    )
+    httpx_mock.add_response(url="https://api.weather.gov/points/40.7792,-73.8803", json=points_body)
     httpx_mock.add_response(
         url="https://api.weather.gov/gridpoints/OKX/37,46/forecast",
         json=_forecast_fixture(),
@@ -57,9 +55,7 @@ def test_fetch_calls_points_then_forecast_and_sets_user_agent(httpx_mock):
 
 
 def test_fetch_raises_on_http_error(httpx_mock):
-    httpx_mock.add_response(
-        url="https://api.weather.gov/points/40.7792,-73.8803", status_code=500
-    )
+    httpx_mock.add_response(url="https://api.weather.gov/points/40.7792,-73.8803", status_code=500)
     client = httpx.Client()
     target = build_target("NYC", "TMAX", date(2026, 5, 31))
     with pytest.raises(httpx.HTTPStatusError):

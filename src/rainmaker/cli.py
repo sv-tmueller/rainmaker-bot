@@ -41,7 +41,9 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "run":
         station = STATIONS[args.city]
-        target_date = date.fromisoformat(args.date) if args.date else _default_date(station.timezone)
+        target_date = (
+            date.fromisoformat(args.date) if args.date else _default_date(station.timezone)
+        )
         target = build_target(args.city, args.variable, target_date)
         client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=30.0)
         try:
