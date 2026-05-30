@@ -1078,7 +1078,7 @@ Expected: all pass. Fix any ruff/mypy issues inline (e.g. unused imports, missin
 - [ ] **Step 2: Live end-to-end smoke (manual, not a test)**
 
 Run: `uv run rainmaker run --city NYC --variable TMAX`
-Expected: prints a Target line, a Coverage block showing `nws` and `open-meteo` ok, and a Samples table with ~36 rows (1 NWS + 5 multi-model + 30 ensemble) of real values. This is the "end to end" deliverable. If a source is down, coverage shows it FAILED and the run still prints the rest.
+Expected: prints a Target line, a Coverage block showing `nws` and `open-meteo` ok, and a Samples table of real values. Row count is roughly 125: 1 NWS + 5 multi-model + ~119 ensemble. Ensemble member counts vary per model (gfs 30, ecmwf 50, icon 39), so do not assume a uniform count. This is the "end to end" deliverable. If a source is down, coverage shows it FAILED and the run still prints the rest.
 
 - [ ] **Step 3: Record commands and layout in CLAUDE.md**
 
