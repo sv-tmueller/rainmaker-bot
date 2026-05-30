@@ -1,6 +1,7 @@
 import json
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -15,7 +16,7 @@ from rainmaker.polymarket.markets import (
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def _nyc_event() -> dict:
+def _nyc_event() -> dict[str, Any]:
     events = json.loads((FIXTURES / "polymarket_weather_events.json").read_text())
     return next(e for e in events if e["id"] == "533147")
 
@@ -86,3 +87,31 @@ def test_parse_market_station_mismatch_raises():
     event["description"] = "resolves at some other station, no icao here"
     with pytest.raises(ValueError, match="resolution station"):
         parse_market(event)
+
+
+def test_parse_bucket_label_negative_below():
+    assert parse_bucket_label("-5°F or below") == ("below", None, None, -5)
+
+
+def test_parse_bucket_label_negative_range():
+    assert parse_bucket_label("-10--5°F") == ("range", -10, -5, None)
+
+
+def test_parse_market_rejects_non_midday_enddate():
+    event = dict(_nyc_event())
+    event["endDate"] = "2026-05-30T03:00:00Z"
+    with pytest.raises(ValueError, match="midday UTC"):
+        parse_market(event)
+
+
+def test_parse_market_tmin():
+    event = dict(_nyc_event())
+    event["title"] = "Lowest temperature in NYC on May 30?"
+    m = parse_market(event)
+    assert m.target.variable == "TMIN"
+    assert m.target.station.icao == "KLGA"
+
+
+def test_parse_bucket_label_unrecognized_raises():
+    with pytest.raises(ValueError, match="unrecognized"):
+        parse_bucket_label("total nonsense")

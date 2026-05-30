@@ -3,7 +3,7 @@ from typing import Any, cast
 import httpx
 
 from rainmaker.config import STATIONS
-from rainmaker.polymarket.markets import _TITLE_RE, Market, parse_market
+from rainmaker.polymarket.markets import Market, parse_city, parse_market
 
 GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
 
@@ -33,10 +33,11 @@ def fetch_weather_events(
 
 
 def _is_us_temp_event(event: dict[str, Any]) -> bool:
-    match = _TITLE_RE.match(event.get("title", ""))
-    if match is None:
+    try:
+        city = parse_city(event.get("title", ""))
+    except ValueError:
         return False
-    return match.group(2).strip() in STATIONS
+    return city in STATIONS
 
 
 def discover_markets(client: httpx.Client) -> list[Market]:

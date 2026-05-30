@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -10,8 +10,8 @@ from rainmaker.config import STATIONS, Target, Variable, build_target
 
 BucketKind = Literal["below", "range", "above"]
 
-_RANGE_RE = re.compile(r"(\d+)\s*-\s*(\d+)")
-_THRESHOLD_RE = re.compile(r"(\d+)")
+_RANGE_RE = re.compile(r"(-?\d+)\s*-\s*(-?\d+)")
+_THRESHOLD_RE = re.compile(r"(-?\d+)")
 
 
 def parse_bucket_label(label: str) -> tuple[BucketKind, int | None, int | None, int | None]:
@@ -35,7 +35,10 @@ def parse_bucket_label(label: str) -> tuple[BucketKind, int | None, int | None, 
     match = _RANGE_RE.search(label)
     if match is None:
         raise ValueError(f"unrecognized bucket label: {label!r}")
-    return ("range", int(match.group(1)), int(match.group(2)), None)
+    lo, hi = int(match.group(1)), int(match.group(2))
+    if lo > hi:
+        raise ValueError(f"inverted range bucket label: {label!r}")
+    return ("range", lo, hi, None)
 
 
 class Bucket(BaseModel):
@@ -74,6 +77,8 @@ _TITLE_RE = re.compile(r"(highest|lowest) temperature in (.+?) on .+", re.IGNORE
 
 
 class Market(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     id: str
     slug: str
     title: str
@@ -97,14 +102,25 @@ def parse_city(title: str) -> str:
 
 def parse_market(event: dict[str, Any]) -> Market:
     title = event["title"]
-    city = parse_city(title)
-    variable = parse_variable(title)
+    match = _TITLE_RE.match(title)
+    if match is None:
+        raise ValueError(f"not a temperature market title: {title!r}")
+    variable: Variable = "TMAX" if match.group(1).lower() == "highest" else "TMIN"
+    city = match.group(2).strip()
     station = STATIONS[city]  # KeyError for an unknown city is intended
     if station.icao not in event["description"]:
         raise ValueError(
             f"resolution station {station.icao} not named in market {event['id']} rules"
         )
     end = datetime.fromisoformat(event["endDate"])
+    # These daily markets publish endDate at ~12:00 UTC, which is mid-morning in
+    # every US timezone, so the local settlement date is unambiguous. Fail loud if
+    # that convention ever changes rather than silently resolving the wrong day.
+    if not 6 <= end.astimezone(UTC).hour <= 18:
+        raise ValueError(
+            f"market {event['id']} endDate {event['endDate']} is not midday UTC; "
+            "cannot safely derive the settlement date"
+        )
     local_date = end.astimezone(ZoneInfo(station.timezone)).date()
     target = build_target(city, variable, local_date)
     buckets = [parse_bucket(m) for m in event["markets"]]
