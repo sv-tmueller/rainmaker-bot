@@ -13,7 +13,6 @@ from rainmaker.forecasts.base import ForecastSample
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
-_MEMBER_RE = re.compile(r"temperature_2m_max_member(\d+)")
 
 
 def _daily_field(variable: str) -> str:
@@ -36,8 +35,11 @@ def parse_multimodel(data: dict[str, Any], target: Target) -> list[ForecastSampl
     field = _daily_field(target.variable)
     out: list[ForecastSample] = []
     for model in OPENMETEO_MODELS:
-        values: list[float | None] | None = daily.get(f"{field}_{model}")
-        if not values or values[idx] is None:
+        values = daily.get(f"{field}_{model}")
+        if not values:
+            continue
+        val = values[idx]
+        if val is None:
             continue
         out.append(
             ForecastSample(
@@ -48,7 +50,7 @@ def parse_multimodel(data: dict[str, Any], target: Target) -> list[ForecastSampl
                 variable=target.variable,
                 target_date=target.local_date,
                 lead_time_days=idx,
-                value_f=float(values[idx]),  # type: ignore[arg-type]
+                value_f=float(val),
                 issued_at=None,
             )
         )
@@ -56,14 +58,19 @@ def parse_multimodel(data: dict[str, Any], target: Target) -> list[ForecastSampl
 
 
 def parse_ensemble(data: dict[str, Any], target: Target, ens_model: str) -> list[ForecastSample]:
+    field = _daily_field(target.variable)
+    member_re = re.compile(rf"{re.escape(field)}_member(\d+)")
     daily: dict[str, Any] = data["daily"]
     idx = _target_index(daily, target)
     if idx is None:
         return []
     out: list[ForecastSample] = []
     for key, values in daily.items():
-        match = _MEMBER_RE.fullmatch(key)
-        if match is None or not values or values[idx] is None:
+        match = member_re.fullmatch(key)
+        if match is None or not values:
+            continue
+        val = values[idx]
+        if val is None:
             continue
         out.append(
             ForecastSample(
@@ -74,7 +81,7 @@ def parse_ensemble(data: dict[str, Any], target: Target, ens_model: str) -> list
                 variable=target.variable,
                 target_date=target.local_date,
                 lead_time_days=idx,
-                value_f=float(values[idx]),
+                value_f=float(val),
                 issued_at=None,
             )
         )

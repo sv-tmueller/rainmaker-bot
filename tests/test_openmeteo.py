@@ -2,20 +2,27 @@ import json
 import re
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import httpx
 
 from rainmaker.config import build_target
-from rainmaker.forecasts.openmeteo import ENSEMBLE_URL, FORECAST_URL, parse_multimodel
+from rainmaker.forecasts.openmeteo import (
+    ENSEMBLE_URL,
+    FORECAST_URL,
+    OpenMeteoSource,
+    parse_ensemble,
+    parse_multimodel,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def _multimodel_fixture() -> dict:  # type: ignore[type-arg]
+def _multimodel_fixture() -> dict[str, Any]:
     return json.loads((FIXTURES / "openmeteo_multimodel_klga.json").read_text())
 
 
-def _ensemble_fixture() -> dict:  # type: ignore[type-arg]
+def _ensemble_fixture() -> dict[str, Any]:
     return json.loads((FIXTURES / "openmeteo_ensemble_gfs_klga.json").read_text())
 
 
@@ -45,8 +52,6 @@ def test_parse_multimodel_empty_when_date_absent():
 
 def test_parse_ensemble_returns_one_sample_per_member():
     target = build_target("NYC", "TMAX", date(2026, 5, 31))
-    from rainmaker.forecasts.openmeteo import parse_ensemble
-
     samples = parse_ensemble(_ensemble_fixture(), target, "gfs_seamless")
     assert len(samples) == 30
     members = {s.member for s in samples}
@@ -59,17 +64,19 @@ def test_parse_ensemble_returns_one_sample_per_member():
     assert m1.issued_at is None
 
 
-def test_open_meteo_source_pools_multimodel_and_ensemble(httpx_mock):
-    from rainmaker.forecasts.openmeteo import OpenMeteoSource
+def test_parse_ensemble_empty_when_date_absent():
+    target = build_target("NYC", "TMAX", date(2030, 1, 1))
+    assert parse_ensemble(_ensemble_fixture(), target, "gfs_seamless") == []
 
+
+def test_open_meteo_source_pools_multimodel_and_ensemble(httpx_mock):
     httpx_mock.add_response(url=re.compile(re.escape(FORECAST_URL)), json=_multimodel_fixture())
     for _ in range(3):
         httpx_mock.add_response(url=re.compile(re.escape(ENSEMBLE_URL)), json=_ensemble_fixture())
 
-    client = httpx.Client()
     target = build_target("NYC", "TMAX", date(2026, 5, 31))
-    samples = OpenMeteoSource(client).fetch(target)
-    client.close()
+    with httpx.Client() as client:
+        samples = OpenMeteoSource(client).fetch(target)
 
     multimodel = [s for s in samples if s.member is None]
     ensemble = [s for s in samples if s.member is not None]
