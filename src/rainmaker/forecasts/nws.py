@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -9,7 +10,7 @@ from rainmaker.forecasts.base import ForecastSample
 NWS_BASE = "https://api.weather.gov"
 
 
-def parse(forecast_json: dict, target: Target) -> list[ForecastSample]:
+def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]:
     if target.variable != "TMAX":
         raise NotImplementedError("Phase 1 supports TMAX only")
     props = forecast_json["properties"]
@@ -36,13 +37,13 @@ def parse(forecast_json: dict, target: Target) -> list[ForecastSample]:
     return []
 
 
-def fetch_raw(target: Target, client: httpx.Client) -> dict:
+def fetch_raw(target: Target, client: httpx.Client) -> dict[str, Any]:
     points = client.get(f"{NWS_BASE}/points/{target.station.lat},{target.station.lon}")
     points.raise_for_status()
     forecast_url = points.json()["properties"]["forecast"]
     forecast = client.get(forecast_url)
     forecast.raise_for_status()
-    return forecast.json()
+    return forecast.json()  # type: ignore[no-any-return]
 
 
 class NwsSource:
