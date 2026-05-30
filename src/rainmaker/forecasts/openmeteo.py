@@ -1,7 +1,11 @@
 import re
-from typing import Any
+from typing import Any, cast
+
+import httpx
 
 from rainmaker.config import (
+    OPENMETEO_ENSEMBLE_MODELS,
+    OPENMETEO_FORECAST_DAYS,
     OPENMETEO_MODELS,
     Target,
 )
@@ -75,3 +79,42 @@ def parse_ensemble(data: dict[str, Any], target: Target, ens_model: str) -> list
             )
         )
     return out
+
+
+def _common_params(target: Target) -> dict[str, str]:
+    return {
+        "latitude": str(target.station.lat),
+        "longitude": str(target.station.lon),
+        "daily": _daily_field(target.variable),
+        "temperature_unit": "fahrenheit",
+        "timezone": target.station.timezone,
+        "forecast_days": str(OPENMETEO_FORECAST_DAYS),
+    }
+
+
+def fetch_raw_multimodel(target: Target, client: httpx.Client) -> dict[str, Any]:
+    params = _common_params(target) | {"models": ",".join(OPENMETEO_MODELS)}
+    resp = client.get(FORECAST_URL, params=params)
+    resp.raise_for_status()
+    return cast(dict[str, Any], resp.json())
+
+
+def fetch_raw_ensemble(target: Target, client: httpx.Client, ens_model: str) -> dict[str, Any]:
+    params = _common_params(target) | {"models": ens_model}
+    resp = client.get(ENSEMBLE_URL, params=params)
+    resp.raise_for_status()
+    return cast(dict[str, Any], resp.json())
+
+
+class OpenMeteoSource:
+    name = "open-meteo"
+
+    def __init__(self, client: httpx.Client) -> None:
+        self.client = client
+
+    def fetch(self, target: Target) -> list[ForecastSample]:
+        samples = parse_multimodel(fetch_raw_multimodel(target, self.client), target)
+        for ens_model in OPENMETEO_ENSEMBLE_MODELS:
+            data = fetch_raw_ensemble(target, self.client, ens_model)
+            samples.extend(parse_ensemble(data, target, ens_model))
+        return samples

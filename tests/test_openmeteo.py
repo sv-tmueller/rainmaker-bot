@@ -1,9 +1,12 @@
 import json
+import re
 from datetime import date
 from pathlib import Path
 
+import httpx
+
 from rainmaker.config import build_target
-from rainmaker.forecasts.openmeteo import parse_multimodel
+from rainmaker.forecasts.openmeteo import ENSEMBLE_URL, FORECAST_URL, parse_multimodel
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -54,3 +57,21 @@ def test_parse_ensemble_returns_one_sample_per_member():
     assert m1.source == "open-meteo"
     assert m1.lead_time_days == 1
     assert m1.issued_at is None
+
+
+def test_open_meteo_source_pools_multimodel_and_ensemble(httpx_mock):
+    from rainmaker.forecasts.openmeteo import OpenMeteoSource
+
+    httpx_mock.add_response(url=re.compile(re.escape(FORECAST_URL)), json=_multimodel_fixture())
+    for _ in range(3):
+        httpx_mock.add_response(url=re.compile(re.escape(ENSEMBLE_URL)), json=_ensemble_fixture())
+
+    client = httpx.Client()
+    target = build_target("NYC", "TMAX", date(2026, 5, 31))
+    samples = OpenMeteoSource(client).fetch(target)
+    client.close()
+
+    multimodel = [s for s in samples if s.member is None]
+    ensemble = [s for s in samples if s.member is not None]
+    assert len(multimodel) == 5
+    assert len(ensemble) == 30 * 3  # OPENMETEO_ENSEMBLE_MODELS has 3 entries
