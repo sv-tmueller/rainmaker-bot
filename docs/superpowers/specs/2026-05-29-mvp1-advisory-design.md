@@ -19,8 +19,9 @@ top priority.
 ## Roadmap context
 
 - MVP 1.0: advisory (this doc).
-- MVP 2.0: tracking. Log positions, daily P&L, settle markets against NOAA
-  actuals, and report calibration over time. Likely the point we move the
+- MVP 2.0: tracking. Log positions, daily P&L, settle markets against the
+  resolution source (Weather Underground, not NOAA; see the Phase 0 findings
+  doc), and report calibration over time. Likely the point we move the
   datastore from SQLite to Supabase and add a web dashboard.
 - MVP 3.0: fully automated trading via Polymarket's CLOB API.
 
@@ -31,8 +32,12 @@ Paid data sources are a revenue-gated roadmap item, not part of 1.0.
 - Language: Python.
 - Data sources: free only. NWS/NOAA (official US forecasts and observations)
   and Open-Meteo (multi-model deterministic + ensemble API).
-- Geography: US cities only. NWS/NOAA station data is the settlement ground
-  truth.
+- Geography: US cities only. The settlement ground truth is Weather
+  Underground's reading of one named airport station per market (Phase 0
+  finding, see docs/architecture/polymarket-weather-markets.md), not NWS/NOAA as
+  first assumed. NWS/NOAA and Open-Meteo stay the forecast inputs; we forecast
+  what Weather Underground will report for that station in whole degrees
+  Fahrenheit.
 - Markets: mixed. Daily high temperature (bucketed), precipitation yes/no, and
   threshold temperature. The bot scans whatever weather markets are live.
 - Ranking: by edge (forecast probability minus implied market price), gated by
@@ -55,6 +60,11 @@ weather markets and documents their resolution rules. It is a decision gate. If
 markets are absent or thin, stop and reconsider (for example, add or pivot to
 Kalshi) before building the rest.
 
+Resolved (issue #3, 2026-05-30): live US-city daily temperature markets exist in
+good numbers on Polymarket; the gate passed. Resolution source is Weather
+Underground per named airport station, whole degrees Fahrenheit. Full findings in
+docs/architecture/polymarket-weather-markets.md.
+
 ## Architecture
 
 A Python package with a CLI entry point. `rainmaker run` executes a linear
@@ -68,7 +78,8 @@ input and output. No web server and no always-on process.
    each market's resolution rule: station, variable, buckets or threshold,
    settlement time, rounding.
 2. Resolve settlement target. Turn each market into a concrete forecastable
-   quantity: station id (for example KNYC = Central Park), variable (Tmax or
+   quantity: station id (for example KLGA = LaGuardia, the station NYC markets
+   resolve on), variable (Tmax or
    precipitation occurrence), local date, units.
 3. Fetch forecasts. Query NWS and Open-Meteo (multi-model + ensemble) for that
    exact quantity and lead time. Normalize units and timezones.
@@ -82,8 +93,11 @@ input and output. No web server and no always-on process.
    source gate. Sort survivors by edge.
 7. Report and persist. Terminal table + dated markdown/JSON file. Write
    everything to SQLite.
-8. (MVP 2.0) Settle and recalibrate. Once NOAA actuals land, record the
-   realized outcome and update calibration.
+8. (MVP 2.0) Settle and recalibrate. Settle against the market's resolution
+   source (Weather Underground for the named station). Whether to read Weather
+   Underground directly or settle against NOAA after proving the two match is an
+   open 2.0 decision (see the findings doc). Record the realized outcome and
+   update calibration.
 
 ### Repo layout
 
@@ -127,7 +141,8 @@ Fit a predictive distribution (Gaussian for temperature via mean and calibrated
 sigma; a pooled probability for binary precipitation), then correct it with a
 per-(station, variable, lead_time) bias and spread-scale learned from history.
 
-`backfill` pulls past Open-Meteo forecasts and NOAA actuals, builds
+`backfill` pulls past Open-Meteo forecasts and NOAA actuals (revisit against the
+resolution source, Weather Underground, per the Phase 0 finding), builds
 forecast-vs-outcome pairs, and fits those correction terms, so the bot is
 calibrated before going live. Until a cell has enough samples, fall back to a
 conservative widened spread and flag low confidence.
