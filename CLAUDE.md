@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Orientation for Claude Code sessions in this repo. Read this first.
 
 ## What this repo is
 
@@ -14,6 +14,12 @@ Status: pre-implementation. The repo is currently empty except for docs. Nothing
 is scaffolded yet. Do not assume code, a `pyproject.toml`, or a test suite
 exists until Phase 1 lands.
 
+## Working principles
+
+The four principles in `~/.claude/CLAUDE.md` apply here: think before coding,
+simplicity first, surgical changes, goal-driven execution. This file adds only
+what is specific to this project; it does not repeat them.
+
 ## Where decisions live
 
 Read these before proposing changes that touch their area:
@@ -22,6 +28,11 @@ Read these before proposing changes that touch their area:
   1.0 design. Architecture, the forecast/calibration/ranking logic, the data
   model, and the phase plan. This is authoritative until the code exists; once
   code lands, the code wins and this doc gets updated in the same PR.
+- `docs/architecture/` - stack and policy decisions, the data model, the domain
+  math, extracted from the spec as the code lands. Empty at pre-implementation.
+- `docs/operations/` - how to run, deploy, and operate the bot: environments,
+  secrets policy, the daily-report runbook. Filled in from Phase 1.
+- `docs/plans/` - implementation plans, one per issue as `<issue-number>-<slug>.md`.
 
 When a contradiction appears between code and a doc, the code wins and the doc
 is corrected in the same change.
@@ -75,15 +86,75 @@ Python, with `httpx`, `pydantic`, `numpy`, `scipy`, `pandas`. CLI entry point
 the project, record the exact install/test/lint/run commands here so future
 sessions do not have to rediscover them.
 
+## Repo layout
+
+```
+docs/
+  architecture/      stack and policy decisions, data model, domain math
+  operations/        run/deploy/operate: environments, secrets, runbooks
+  plans/             implementation plans, <issue-number>-<slug>.md
+  superpowers/specs/ approved designs, YYYY-MM-DD-<topic>-design.md
+```
+
+Application code lands in Phase 1 (`src/` and `tests/`, the layout recorded here
+once it exists). The golden end-to-end test (fixture markets and fixture
+forecasts in, expected ranked report out) is the safety net for the whole
+pipeline; keep it green before any change that touches forecasting, calibration,
+or ranking.
+
 ## How we work
+
+### Issues and branches
 
 - Every unit of work is a GitHub issue first.
 - Branch from `main` per issue: `feat/<issue-number>-<short-slug>` or
-  `fix/<issue-number>-<short-slug>`. Merge via PR. PR references the issue with
-  `Closes #N`. One topic per PR.
+  `fix/<issue-number>-<short-slug>`. Merge via PR. The PR references the issue
+  with `Closes #N`. One topic per PR.
+
+### Sub-plans (checkpoint before deep work)
+
+Before deep planning or implementation, post a short sub-plan first: a handful of
+checkpoint bullets (the approach, the files you expect to touch, the order, the
+verification step) on the issue or the draft PR. Cheap insurance: if the session
+drops, the next one reads the checkpoint and resumes instead of restarting.
+Expanding it into a full plan in `docs/plans/` comes later (see "How to pick up a
+task").
+
+### Commits
+
 - Conventional Commits: `feat:`, `fix:`, `chore:`, `docs:`, `test:`,
   `refactor:`, `perf:`, `build:`, `ci:`. Imperative mood, lowercase, no period.
   The body explains why, not what.
+
+## How to pick up a task
+
+1. `gh issue list --state open` (add `--label phase:<current>` if you use phase
+   labels) to see what is available.
+2. Pick an unassigned issue with no unresolved blockers. Respect the phase order:
+   Phase 0 (discovery spike) is a hard gate (see above).
+3. Post a short sub-plan on the issue (the checkpoint bullets above).
+4. Create a branch and open a draft PR linking the issue (`Closes #N`).
+5. Expand the sub-plan into a full plan via `superpowers:writing-plans`, saved to
+   `docs/plans/<issue-number>-<slug>.md`.
+6. Implement with TDD per the plan (see Testing).
+7. Run the full check suite (lint, type check, tests including the golden e2e).
+   It must pass before requesting review.
+8. Mark the PR ready for review.
+
+## Workflow defaults
+
+Standing preferences for this project:
+
+- Effort: maximum. Use deepest reasoning.
+- Permission mode: bypass during development (user-controlled).
+  <!-- Modes (set with /permissions or settings.json "defaultMode"): default = prompt on
+       first use of each tool; acceptEdits = auto-accept edits, prompt other actions;
+       plan = read-only; bypassPermissions = no prompts (the mode above). -->
+- Superpowers: use relevant skills proactively (brainstorming, writing-plans,
+  test-driven-development, subagent-driven-development, executing-plans,
+  verification-before-completion).
+- Parallel work: fan out subagents for independent research or implementation
+  streams. Default to parallel over serial.
 
 ## Testing
 
