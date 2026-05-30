@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from rainmaker.polymarket.markets import (
-    Bucket,
     Market,
     parse_bucket,
     parse_bucket_label,

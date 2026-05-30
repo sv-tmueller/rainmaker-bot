@@ -3,7 +3,7 @@ from typing import Any, cast
 import httpx
 
 from rainmaker.config import STATIONS
-from rainmaker.polymarket.markets import Market, _TITLE_RE, parse_market
+from rainmaker.polymarket.markets import _TITLE_RE, Market, parse_market
 
 GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
 
