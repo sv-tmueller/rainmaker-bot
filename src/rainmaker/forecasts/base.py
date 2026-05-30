@@ -1,9 +1,9 @@
-from datetime import date, datetime
+from datetime import date
 from typing import Protocol
 
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel
 
-from rainmaker.config import Target
+from rainmaker.config import Target, Variable
 
 
 class ForecastSample(BaseModel):
@@ -11,11 +11,11 @@ class ForecastSample(BaseModel):
     model: str
     member: int | None
     station: str
-    variable: str
+    variable: Variable
     target_date: date
     lead_time_days: int
     value_f: float
-    issued_at: datetime | None
+    issued_at: AwareDatetime | None
 
 
 class SourceCoverage(BaseModel):
@@ -26,7 +26,7 @@ class SourceCoverage(BaseModel):
 
 
 class ForecastSet(BaseModel):
-    target: Target | None
+    target: Target
     samples: list[ForecastSample]
     coverage: list[SourceCoverage]
 

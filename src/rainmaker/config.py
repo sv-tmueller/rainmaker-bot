@@ -1,12 +1,14 @@
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 Variable = Literal["TMAX", "TMIN"]
 
 
 class Station(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     city: str
     icao: str
     name: str
@@ -17,6 +19,8 @@ class Station(BaseModel):
 
 
 class Target(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     station: Station
     variable: Variable
     local_date: date
