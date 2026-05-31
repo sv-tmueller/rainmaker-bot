@@ -12,24 +12,50 @@ from rainmaker.polymarket.markets import Bucket, Market
 
 def _market(variable: str) -> Market:
     return Market(
-        id="m1", slug="s",
+        id="m1",
+        slug="s",
         title=f"{'Highest' if variable == 'TMAX' else 'Lowest'} temperature in NYC on May 31?",
         target=build_target("NYC", variable, date(2026, 5, 31)),
-        buckets=[Bucket(label="70-71°F", kind="range", lo=70, hi=71, threshold=None,
-                        yes_token_id="t", best_ask=0.40, best_bid=None, yes_price=0.0)],
+        buckets=[
+            Bucket(
+                label="70-71°F",
+                kind="range",
+                lo=70,
+                hi=71,
+                threshold=None,
+                yes_token_id="t",
+                best_ask=0.40,
+                best_bid=None,
+                yes_price=0.0,
+            )
+        ],
     )
 
 
 def _forecast_set() -> ForecastSet:
     target = build_target("NYC", "TMAX", date(2026, 5, 31))
     samples = [
-        ForecastSample(source="nws", model="m", member=None, station="KLGA", variable="TMAX",
-                       target_date=date(2026, 5, 31), lead_time_days=1, value_f=v, issued_at=None)
+        ForecastSample(
+            source="nws",
+            model="m",
+            member=None,
+            station="KLGA",
+            variable="TMAX",
+            target_date=date(2026, 5, 31),
+            lead_time_days=1,
+            value_f=v,
+            issued_at=None,
+        )
         for v in (69, 70, 71, 72)
     ]
-    return ForecastSet(target=target, samples=samples,
-                       coverage=[SourceCoverage(source="nws", ok=True, n_samples=4),
-                                 SourceCoverage(source="open-meteo", ok=True, n_samples=4)])
+    return ForecastSet(
+        target=target,
+        samples=samples,
+        coverage=[
+            SourceCoverage(source="nws", ok=True, n_samples=4),
+            SourceCoverage(source="open-meteo", ok=True, n_samples=4),
+        ],
+    )
 
 
 def test_run_builds_report_and_writes_files(monkeypatch, tmp_path, capsys):
@@ -59,7 +85,9 @@ def test_run_skips_unsupported_variable(monkeypatch, tmp_path, capsys):
 
 def test_run_aborts_when_polymarket_down(monkeypatch, tmp_path):
     def _boom(client):
-        raise httpx.HTTPStatusError("down", request=httpx.Request("GET", "x"), response=httpx.Response(500))
+        raise httpx.HTTPStatusError(
+            "down", request=httpx.Request("GET", "x"), response=httpx.Response(500)
+        )
 
     monkeypatch.setattr(cli, "discover_markets", _boom)
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())

@@ -78,7 +78,9 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="rainmaker")
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="produce the daily edge-ranked report")
-    run.add_argument("--reports-dir", default=REPORTS_DIR, help="directory for dated md/json output")
+    run.add_argument(
+        "--reports-dir", default=REPORTS_DIR, help="directory for dated md/json output"
+    )
     args = parser.parse_args(argv)
 
     if args.command == "run":
