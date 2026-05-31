@@ -10,6 +10,7 @@ from collections import defaultdict
 
 from rainmaker.forecasts.base import ForecastSet
 from rainmaker.polymarket.markets import Market
+from rainmaker.probability.calibration import Calibration
 from rainmaker.ranking.edge import MarketReport
 
 # One evaluated market: the market, the forecasts it got, and the resulting report.
@@ -123,3 +124,27 @@ def _record_predictions(
             # confidence stays NULL: no calibrated confidence metric until Phase 4.
             (run_id, market_id, o.p_win, None, dist_params, o.edge, int(o.recommended), created_at),
         )
+
+
+def save_calibration(conn: sqlite3.Connection, cal: Calibration, *, updated_at: str) -> None:
+    """Upsert one calibration cell (keyed by station, variable, lead_time)."""
+    conn.execute(
+        """
+        INSERT INTO calibration
+            (station, variable, lead_time, bias, spread_scale, n_samples, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(station, variable, lead_time) DO UPDATE SET
+            bias = excluded.bias, spread_scale = excluded.spread_scale,
+            n_samples = excluded.n_samples, updated_at = excluded.updated_at
+        """,
+        (
+            cal.station,
+            cal.variable,
+            cal.lead_time,
+            cal.bias,
+            cal.spread_scale,
+            cal.n_samples,
+            updated_at,
+        ),
+    )
+    conn.commit()
