@@ -1,7 +1,7 @@
 import argparse
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import httpx
@@ -23,6 +23,10 @@ from rainmaker.ranking.edge import evaluate_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
 
 SUPPORTED_VARIABLES = {"TMAX"}
+
+
+def _today() -> date:
+    return datetime.now(UTC).date()
 
 
 def _forecast_for(target: Target, client: httpx.Client) -> ForecastSet:
@@ -67,7 +71,7 @@ def _run(reports_dir: str) -> None:
     finally:
         client.close()
 
-    run_date = market_reports[0].settlement_date if market_reports else datetime.now(UTC).date()
+    run_date = _today()
     report = Report(run_date=run_date, markets=market_reports)
     print(render_terminal(report))
     paths = _write_reports(report, reports_dir)

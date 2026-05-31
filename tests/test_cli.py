@@ -62,6 +62,7 @@ def test_run_builds_report_and_writes_files(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMAX")])
     monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set())
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 5, 31))
 
     cli.main(["run", "--reports-dir", str(tmp_path)])
 

@@ -15,10 +15,12 @@ def bucket_probability(g: Gaussian, bucket: Bucket) -> float:
         return float(norm.cdf(x, loc=g.mu, scale=g.sigma))
 
     if bucket.kind == "below":
+        # parse_bucket guarantees a "below" bucket always has a threshold set.
         assert bucket.threshold is not None
         return cdf(bucket.threshold + 0.5)
     if bucket.kind == "above":
         assert bucket.threshold is not None
         return 1.0 - cdf(bucket.threshold - 0.5)
+    # parse_bucket guarantees a "range" bucket always has lo and hi set.
     assert bucket.lo is not None and bucket.hi is not None
     return cdf(bucket.hi + 0.5) - cdf(bucket.lo - 0.5)
