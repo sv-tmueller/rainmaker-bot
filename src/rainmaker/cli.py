@@ -1,53 +1,85 @@
 import argparse
-from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
+import json
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 
-from rainmaker.config import NWS_USER_AGENT, STATIONS, build_target
+from rainmaker.config import (
+    CONFIDENCE_FLOOR,
+    MIN_SIGMA_F,
+    MIN_SOURCES,
+    NWS_USER_AGENT,
+    REPORTS_DIR,
+    Target,
+)
 from rainmaker.forecasts.aggregate import aggregate
 from rainmaker.forecasts.base import ForecastSet
 from rainmaker.forecasts.nws import NwsSource
 from rainmaker.forecasts.openmeteo import OpenMeteoSource
+from rainmaker.polymarket.client import discover_markets
+from rainmaker.ranking.edge import evaluate_market
+from rainmaker.report.render import Report, render_markdown, render_terminal
+
+SUPPORTED_VARIABLES = {"TMAX"}
 
 
-def _default_date(timezone_name: str) -> date:
-    today_local = datetime.now(ZoneInfo(timezone_name)).date()
-    return today_local + timedelta(days=1)
+def _forecast_for(target: Target, client: httpx.Client) -> ForecastSet:
+    return aggregate(target, [NwsSource(client), OpenMeteoSource(client)])
 
 
-def _print_report(fs: ForecastSet) -> None:
-    target = fs.target
-    print(f"Target: {target.station.icao} {target.variable} {target.local_date}")
-    print("Coverage:")
-    for c in fs.coverage:
-        status = "ok" if c.ok else f"FAILED ({c.error})"
-        print(f"  {c.source:12} {status:30} samples={c.n_samples}")
-    print(f"Samples ({len(fs.samples)}):")
-    print(f"  {'source':12} {'model':24} {'member':>6} {'value_f':>8} {'lead':>4}")
-    for s in sorted(fs.samples, key=lambda x: (x.source, x.model, x.member or 0)):
-        member = "" if s.member is None else str(s.member)
-        print(f"  {s.source:12} {s.model:24} {member:>6} {s.value_f:>8.1f} {s.lead_time_days:>4}")
+def _write_reports(report: Report, reports_dir: str) -> list[Path]:
+    out = Path(reports_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = report.run_date.isoformat()
+    md_path = out / f"{stamp}.md"
+    json_path = out / f"{stamp}.json"
+    md_path.write_text(render_markdown(report))
+    json_path.write_text(json.dumps(report.model_dump(mode="json"), indent=2))
+    return [md_path, json_path]
+
+
+def _run(reports_dir: str) -> None:
+    client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=30.0)
+    try:
+        try:
+            markets = discover_markets(client)
+        except httpx.HTTPError as exc:
+            print(f"Polymarket unavailable, aborting: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+
+        market_reports = []
+        for market in markets:
+            if market.target.variable not in SUPPORTED_VARIABLES:
+                print(f"skipped {market.id}: unsupported variable {market.target.variable}")
+                continue
+            forecast_set = _forecast_for(market.target, client)
+            market_reports.append(
+                evaluate_market(
+                    market,
+                    forecast_set,
+                    floor=CONFIDENCE_FLOOR,
+                    min_sources=MIN_SOURCES,
+                    min_sigma=MIN_SIGMA_F,
+                )
+            )
+    finally:
+        client.close()
+
+    run_date = market_reports[0].settlement_date if market_reports else datetime.now(UTC).date()
+    report = Report(run_date=run_date, markets=market_reports)
+    print(render_terminal(report))
+    paths = _write_reports(report, reports_dir)
+    print(f"wrote {paths[0]} and {paths[1]}")
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="rainmaker")
     sub = parser.add_subparsers(dest="command", required=True)
-    run = sub.add_parser("run", help="fetch and normalize forecasts for one target")
-    run.add_argument("--city", default="NYC")
-    run.add_argument("--variable", default="TMAX")
-    run.add_argument("--date", default=None, help="YYYY-MM-DD local; default tomorrow")
+    run = sub.add_parser("run", help="produce the daily edge-ranked report")
+    run.add_argument("--reports-dir", default=REPORTS_DIR, help="directory for dated md/json output")
     args = parser.parse_args(argv)
 
     if args.command == "run":
-        station = STATIONS[args.city]
-        target_date = (
-            date.fromisoformat(args.date) if args.date else _default_date(station.timezone)
-        )
-        target = build_target(args.city, args.variable, target_date)
-        client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=30.0)
-        try:
-            fs = aggregate(target, [NwsSource(client), OpenMeteoSource(client)])
-        finally:
-            client.close()
-        _print_report(fs)
+        _run(args.reports_dir)
