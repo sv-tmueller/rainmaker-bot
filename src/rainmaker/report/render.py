@@ -17,11 +17,17 @@ def _coverage_str(report: MarketReport) -> str:
 
 
 def render_terminal(report: Report) -> str:
-    lines: list[str] = [f"Rainmaker report {report.run_date.isoformat()}", ""]
+    lines: list[str] = [
+        f"Rainmaker report {report.run_date.isoformat()}",
+        "",
+        "P(win)=our probability  ask=YES price paid  edge=P(win)-ask  (all 0-1)  REC=passes gates",
+        "",
+    ]
     for m in report.markets:
         lines.append(f"{m.title}  [{m.station} {m.variable} {m.settlement_date.isoformat()}]")
+        lines.append(f"  sources: {m.n_sources}")
         if m.mu is not None and m.sigma is not None:
-            lines.append(f"  forecast: mu={m.mu:.1f}F sigma={m.sigma:.1f}F  sources={m.n_sources}")
+            lines.append(f"  forecast: mu={m.mu:.1f}F sigma={m.sigma:.1f}F")
         lines.append(f"  coverage: {_coverage_str(m)}")
         if not m.outcomes:
             lines.append("  no tradeable outcomes (insufficient forecast data)")
@@ -41,7 +47,13 @@ def render_terminal(report: Report) -> str:
 
 
 def render_markdown(report: Report) -> str:
-    lines: list[str] = [f"# Rainmaker report {report.run_date.isoformat()}", ""]
+    lines: list[str] = [
+        f"# Rainmaker report {report.run_date.isoformat()}",
+        "",
+        "_P(win) = our probability  ask = YES price paid"
+        "  edge = P(win)-ask  (all 0-1)  rec = passes gates_",
+        "",
+    ]
     for m in report.markets:
         lines.append(f"## {m.title}")
         lines.append("")
@@ -49,8 +61,9 @@ def render_markdown(report: Report) -> str:
             f"- station: {m.station}  variable: {m.variable}"
             f"  settlement: {m.settlement_date.isoformat()}"
         )
+        lines.append(f"- sources: {m.n_sources}")
         if m.mu is not None and m.sigma is not None:
-            lines.append(f"- forecast: mu={m.mu:.1f}F sigma={m.sigma:.1f}F  sources: {m.n_sources}")
+            lines.append(f"- forecast: mu={m.mu:.1f}F sigma={m.sigma:.1f}F")
         lines.append(f"- coverage: {_coverage_str(m)}")
         lines.append("")
         if m.outcomes:

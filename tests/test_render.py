@@ -57,3 +57,31 @@ def test_render_markdown_has_table_and_settlement_date():
     assert md.startswith("# Rainmaker report 2026-05-31")
     assert "| bucket | P(win) | ask | edge | rec |" in md
     assert "2026-05-31" in md
+
+
+def test_render_handles_empty_samples_market():
+    empty = MarketReport(
+        market_id="m2",
+        title="Highest temperature in NYC on May 31?",
+        station="KLGA",
+        variable="TMAX",
+        settlement_date=date(2026, 5, 31),
+        mu=None,
+        sigma=None,
+        n_sources=0,
+        coverage=[SourceCoverage(source="nws", ok=False, n_samples=0, error="down")],
+        outcomes=[],
+        excluded_no_ask=[],
+    )
+    report = Report(run_date=date(2026, 5, 31), markets=[empty])
+    text = render_terminal(report)
+    md = render_markdown(report)
+    assert "no tradeable outcomes" in text
+    assert "no tradeable outcomes" in md
+    assert "sources" in text  # source count still shown for a failed-data market
+
+
+def test_render_multi_market_report():
+    report = Report(run_date=date(2026, 5, 31), markets=[_market_report(), _market_report()])
+    text = render_terminal(report)
+    assert text.count("70-71°F") == 2  # both markets rendered

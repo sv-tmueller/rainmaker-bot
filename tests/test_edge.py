@@ -31,6 +31,8 @@ def _market(buckets) -> Market:
 
 
 def _forecast_set(values, *, ok_sources=("nws", "open-meteo")) -> ForecastSet:
+    # All samples are tagged source="nws" for simplicity; n_sources is derived from
+    # coverage entries (ok=True), not from sample tags.
     samples = [
         ForecastSample(
             source="nws",

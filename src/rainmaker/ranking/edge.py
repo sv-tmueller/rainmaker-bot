@@ -1,6 +1,7 @@
 from datetime import date
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from rainmaker.forecasts.base import ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import Market
@@ -9,6 +10,8 @@ from rainmaker.probability.outcomes import bucket_probability
 
 
 class RankedOutcome(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     bucket_label: str
     p_win: float
     best_ask: float
@@ -17,6 +20,8 @@ class RankedOutcome(BaseModel):
 
 
 class MarketReport(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     market_id: str
     title: str
     station: str
@@ -39,21 +44,17 @@ def evaluate_market(
     min_sigma: float,
 ) -> MarketReport:
     n_sources = sum(1 for c in forecast_set.coverage if c.ok)
-    base = MarketReport(
+    common: dict[str, Any] = dict(
         market_id=market.id,
         title=market.title,
         station=market.target.station.icao,
         variable=market.target.variable,
         settlement_date=market.target.local_date,
-        mu=None,
-        sigma=None,
         n_sources=n_sources,
         coverage=forecast_set.coverage,
-        outcomes=[],
-        excluded_no_ask=[],
     )
     if not forecast_set.samples:
-        return base
+        return MarketReport(**common, mu=None, sigma=None, outcomes=[], excluded_no_ask=[])
 
     gaussian = fit_gaussian(forecast_set.samples, min_sigma=min_sigma)
     outcomes: list[RankedOutcome] = []
@@ -64,6 +65,9 @@ def evaluate_market(
             continue
         p_win = bucket_probability(gaussian, bucket)
         edge = p_win - bucket.best_ask
+        # recommended gates: confidence floor + min sources + positive edge.
+        # A minimum-edge threshold (e.g. edge >= 0.05) is a natural Phase 4 tuning
+        # knob; the spec requires only floor + min-source for now.
         recommended = p_win >= floor and n_sources >= min_sources and edge > 0
         outcomes.append(
             RankedOutcome(
@@ -75,11 +79,6 @@ def evaluate_market(
             )
         )
     outcomes.sort(key=lambda o: o.edge, reverse=True)
-    return base.model_copy(
-        update={
-            "mu": gaussian.mu,
-            "sigma": gaussian.sigma,
-            "outcomes": outcomes,
-            "excluded_no_ask": excluded,
-        }
+    return MarketReport(
+        **common, mu=gaussian.mu, sigma=gaussian.sigma, outcomes=outcomes, excluded_no_ask=excluded
     )
