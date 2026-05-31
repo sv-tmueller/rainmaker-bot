@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+import uuid
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import httpx
 
 from rainmaker.config import (
     CONFIDENCE_FLOOR,
+    DB_PATH,
     MIN_SIGMA_F,
     MIN_SOURCES,
     NWS_USER_AGENT,
@@ -21,12 +23,22 @@ from rainmaker.forecasts.openmeteo import OpenMeteoSource
 from rainmaker.polymarket.client import discover_markets
 from rainmaker.ranking.edge import evaluate_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
+from rainmaker.store.db import connect, init_schema
+from rainmaker.store.record import EvaluatedMarket, record_run
 
 SUPPORTED_VARIABLES = {"TMAX"}
 
 
 def _today() -> date:
     return datetime.now(UTC).date()
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _new_run_id() -> str:
+    return str(uuid.uuid4())
 
 
 def _forecast_for(target: Target, client: httpx.Client) -> ForecastSet:
@@ -44,7 +56,8 @@ def _write_reports(report: Report, reports_dir: str) -> list[Path]:
     return [md_path, json_path]
 
 
-def _run(reports_dir: str) -> None:
+def _run(reports_dir: str, db_path: str) -> None:
+    started_at = _now_iso()
     client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=30.0)
     try:
         try:
@@ -53,29 +66,42 @@ def _run(reports_dir: str) -> None:
             print(f"Polymarket unavailable, aborting: {exc}", file=sys.stderr)
             raise SystemExit(1) from exc
 
-        market_reports = []
+        evaluated: list[EvaluatedMarket] = []
         for market in markets:
             if market.target.variable not in SUPPORTED_VARIABLES:
                 print(f"skipped {market.id}: unsupported variable {market.target.variable}")
                 continue
             forecast_set = _forecast_for(market.target, client)
-            market_reports.append(
-                evaluate_market(
-                    market,
-                    forecast_set,
-                    floor=CONFIDENCE_FLOOR,
-                    min_sources=MIN_SOURCES,
-                    min_sigma=MIN_SIGMA_F,
-                )
+            report = evaluate_market(
+                market,
+                forecast_set,
+                floor=CONFIDENCE_FLOOR,
+                min_sources=MIN_SOURCES,
+                min_sigma=MIN_SIGMA_F,
             )
+            evaluated.append((market, forecast_set, report))
     finally:
         client.close()
+    finished_at = _now_iso()
 
-    run_date = _today()
-    report = Report(run_date=run_date, markets=market_reports)
-    print(render_terminal(report))
-    paths = _write_reports(report, reports_dir)
-    print(f"wrote {paths[0]} and {paths[1]}")
+    daily_report = Report(run_date=_today(), markets=[r for _, _, r in evaluated])
+    print(render_terminal(daily_report))
+    paths = _write_reports(daily_report, reports_dir)
+
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        record_run(
+            conn,
+            run_id=_new_run_id(),
+            started_at=started_at,
+            finished_at=finished_at,
+            status="ok",
+            evaluated=evaluated,
+        )
+    finally:
+        conn.close()
+    print(f"wrote {paths[0]} and {paths[1]}; recorded run to {db_path}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -85,7 +111,8 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument(
         "--reports-dir", default=REPORTS_DIR, help="directory for dated md/json output"
     )
+    run.add_argument("--db", default=DB_PATH, help="SQLite database path for run persistence")
     args = parser.parse_args(argv)
 
     if args.command == "run":
-        _run(args.reports_dir)
+        _run(args.reports_dir, args.db)

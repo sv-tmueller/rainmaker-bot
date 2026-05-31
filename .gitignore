@@ -8,3 +8,4 @@ dist/
 *.egg-info/
 reports/
 .DS_Store
+*.db

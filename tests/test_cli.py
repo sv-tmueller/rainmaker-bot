@@ -8,6 +8,8 @@ from rainmaker import cli
 from rainmaker.config import build_target
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import Bucket, Market
+from rainmaker.store.db import connect
+from rainmaker.store.query import count_rows
 
 
 def _market(variable: str) -> Market:
@@ -63,21 +65,27 @@ def test_run_builds_report_and_writes_files(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set())
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 5, 31))
+    db = tmp_path / "t.db"
 
-    cli.main(["run", "--reports-dir", str(tmp_path)])
+    cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(db)])
 
     out = capsys.readouterr().out
     assert "70-71°F" in out
     assert "KLGA" in out
-    written = sorted(p.name for p in tmp_path.iterdir())
+    written = sorted(p.name for p in tmp_path.iterdir() if p.suffix in {".md", ".json"})
     assert written == ["2026-05-31.json", "2026-05-31.md"]
+
+    conn = connect(str(db))
+    assert count_rows(conn, "runs") == 1
+    assert count_rows(conn, "predictions") == 1  # one bucket -> one prediction
+    conn.close()
 
 
 def test_run_skips_unsupported_variable(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMIN")])
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
 
-    cli.main(["run", "--reports-dir", str(tmp_path)])
+    cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(tmp_path / "t.db")])
 
     out = capsys.readouterr().out
     assert "skipped" in out.lower()
@@ -94,7 +102,7 @@ def test_run_aborts_when_polymarket_down(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
 
     with pytest.raises(SystemExit) as exc:
-        cli.main(["run", "--reports-dir", str(tmp_path)])
+        cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(tmp_path / "t.db")])
     assert exc.value.code != 0
 
 

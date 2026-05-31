@@ -10,7 +10,7 @@ into a calibrated probability for each market outcome, compares that probability
 to the market price, and produces a daily report of bets ranked by edge
 (expected value). A human reviews the report and places bets manually.
 
-Status: Phase 2 complete: the pipeline produces a daily edge-ranked report. Phase 3 (SQLite persistence) is next.
+Status: Phase 3 complete: the pipeline produces a daily edge-ranked report and persists every run to SQLite. Phase 4 (historical backfill + calibration) is next.
 
 ## Working principles
 
@@ -111,6 +111,10 @@ src/rainmaker/
   polymarket/
     client.py         Gamma discovery (read-only)
     markets.py        event JSON -> Market (target + buckets)
+  store/
+    db.py             SQLite schema + connection (Postgres-ready)
+    record.py         persist a run (runs/markets/prices/forecasts/predictions)
+    query.py          read-back helpers
 tests/
   fixtures/           saved API responses for KLGA (NWS + Open-Meteo)
   test_*.py           unit and I/O tests (pytest-httpx for mocked HTTP)

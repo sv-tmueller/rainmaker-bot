@@ -56,6 +56,7 @@ MIN_SIGMA_F = 1.5
 CONFIDENCE_FLOOR = 0.90
 MIN_SOURCES = 2
 REPORTS_DIR = "reports"
+DB_PATH = "rainmaker.db"
 
 
 def build_target(city: str, variable: Variable, local_date: date) -> Target:
