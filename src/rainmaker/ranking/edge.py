@@ -76,5 +76,10 @@ def evaluate_market(
         )
     outcomes.sort(key=lambda o: o.edge, reverse=True)
     return base.model_copy(
-        update={"mu": gaussian.mu, "sigma": gaussian.sigma, "outcomes": outcomes, "excluded_no_ask": excluded}
+        update={
+            "mu": gaussian.mu,
+            "sigma": gaussian.sigma,
+            "outcomes": outcomes,
+            "excluded_no_ask": excluded,
+        }
     )

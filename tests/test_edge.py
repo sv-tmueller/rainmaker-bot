@@ -3,28 +3,45 @@ from datetime import date
 from rainmaker.config import build_target
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import Bucket, Market
-from rainmaker.ranking.edge import MarketReport, RankedOutcome, evaluate_market
+from rainmaker.ranking.edge import MarketReport, evaluate_market
 
 
 def _bucket(label, kind, *, lo=None, hi=None, threshold=None, best_ask=None) -> Bucket:
     return Bucket(
-        label=label, kind=kind, lo=lo, hi=hi, threshold=threshold,
-        yes_token_id="t", best_ask=best_ask, best_bid=None, yes_price=0.0,
+        label=label,
+        kind=kind,
+        lo=lo,
+        hi=hi,
+        threshold=threshold,
+        yes_token_id="t",
+        best_ask=best_ask,
+        best_bid=None,
+        yes_price=0.0,
     )
 
 
 def _market(buckets) -> Market:
     return Market(
-        id="m1", slug="s", title="Highest temperature in NYC on May 31?",
-        target=build_target("NYC", "TMAX", date(2026, 5, 31)), buckets=buckets,
+        id="m1",
+        slug="s",
+        title="Highest temperature in NYC on May 31?",
+        target=build_target("NYC", "TMAX", date(2026, 5, 31)),
+        buckets=buckets,
     )
 
 
 def _forecast_set(values, *, ok_sources=("nws", "open-meteo")) -> ForecastSet:
     samples = [
         ForecastSample(
-            source="nws", model="m", member=None, station="KLGA", variable="TMAX",
-            target_date=date(2026, 5, 31), lead_time_days=1, value_f=v, issued_at=None,
+            source="nws",
+            model="m",
+            member=None,
+            station="KLGA",
+            variable="TMAX",
+            target_date=date(2026, 5, 31),
+            lead_time_days=1,
+            value_f=v,
+            issued_at=None,
         )
         for v in values
     ]
@@ -38,17 +55,20 @@ def _forecast_set(values, *, ok_sources=("nws", "open-meteo")) -> ForecastSet:
 
 def test_evaluate_market_ranks_by_edge_and_flags_recommended():
     # Forecast centered at 70.5 -> mode bucket 70-71 has high P(win).
-    market = _market([
-        _bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.40),  # cheap mode -> big edge
-        _bucket("72-73°F", "range", lo=72, hi=73, best_ask=0.30),
-    ])
+    market = _market(
+        [
+            _bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.40),  # cheap mode -> big edge
+            _bucket("72-73°F", "range", lo=72, hi=73, best_ask=0.30),
+        ]
+    )
     fs = _forecast_set([69, 70, 71, 72])  # mean 70.5
     # floor=0.45: p_win for the mode bucket at mu=70.5, sigma=1.5 is ~0.495, which
     # clears 0.45 but not 0.50 (2-degree bucket + sigma floor make it tight).
     report = evaluate_market(market, fs, floor=0.45, min_sources=2, min_sigma=1.5)
     assert isinstance(report, MarketReport)
     assert report.n_sources == 2
-    assert [o.bucket_label for o in report.outcomes] == ["70-71°F", "72-73°F"]  # sorted by edge desc
+    # sorted by edge desc
+    assert [o.bucket_label for o in report.outcomes] == ["70-71°F", "72-73°F"]
     top = report.outcomes[0]
     assert top.edge > 0
     assert top.recommended is True
@@ -59,7 +79,7 @@ def test_recommended_requires_confidence_floor():
     fs = _forecast_set([60, 80])  # wide spread -> low P on any single 2-degree bucket
     report = evaluate_market(market, fs, floor=0.90, min_sources=2, min_sigma=1.5)
     o = report.outcomes[0]
-    assert o.edge > 0          # cheap ask, positive edge
+    assert o.edge > 0  # cheap ask, positive edge
     assert o.p_win < 0.90
     assert o.recommended is False  # fails the confidence floor
 
@@ -73,10 +93,12 @@ def test_recommended_requires_min_sources():
 
 
 def test_bucket_without_ask_is_excluded_not_ranked():
-    market = _market([
-        _bucket("70-71°F", "range", lo=70, hi=71, best_ask=None),
-        _bucket("72-73°F", "range", lo=72, hi=73, best_ask=0.20),
-    ])
+    market = _market(
+        [
+            _bucket("70-71°F", "range", lo=70, hi=71, best_ask=None),
+            _bucket("72-73°F", "range", lo=72, hi=73, best_ask=0.20),
+        ]
+    )
     fs = _forecast_set([70, 71, 72])
     report = evaluate_market(market, fs, floor=0.50, min_sources=2, min_sigma=1.5)
     assert [o.bucket_label for o in report.outcomes] == ["72-73°F"]
