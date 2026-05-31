@@ -7,6 +7,8 @@ recorder; Phase 4 backfill/calibration builds on the same read surface.
 import sqlite3
 from typing import Any
 
+from rainmaker.probability.calibration import Calibration
+
 
 def get_run(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
@@ -26,3 +28,14 @@ def count_rows(conn: sqlite3.Connection, table: str) -> int:
     # table is a fixed internal identifier, never user input.
     (count,) = conn.execute(f"SELECT count(*) FROM {table}").fetchone()
     return int(count)
+
+
+def load_calibration(
+    conn: sqlite3.Connection, station: str, variable: str, lead_time: int
+) -> Calibration | None:
+    row = conn.execute(
+        "SELECT station, variable, lead_time, bias, spread_scale, n_samples "
+        "FROM calibration WHERE station = ? AND variable = ? AND lead_time = ?",
+        (station, variable, lead_time),
+    ).fetchone()
+    return Calibration(**dict(row)) if row is not None else None
