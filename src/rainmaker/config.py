@@ -51,6 +51,12 @@ OPENMETEO_ENSEMBLE_MODELS = ["gfs_seamless", "ecmwf_ifs025", "icon_seamless"]
 OPENMETEO_FORECAST_DAYS = 7
 FRESHNESS_LIMIT_HOURS = 24
 
+# Probability engine + ranking thresholds (uncalibrated; tune in Phase 4)
+MIN_SIGMA_F = 1.5
+CONFIDENCE_FLOOR = 0.90
+MIN_SOURCES = 2
+REPORTS_DIR = "reports"
+
 
 def build_target(city: str, variable: Variable, local_date: date) -> Target:
     return Target(station=STATIONS[city], variable=variable, local_date=local_date)

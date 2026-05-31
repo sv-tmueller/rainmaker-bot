@@ -10,9 +10,7 @@ into a calibrated probability for each market outcome, compares that probability
 to the market price, and produces a daily report of bets ranked by edge
 (expected value). A human reviews the report and places bets manually.
 
-Status: Phase 1 complete. `src/rainmaker` is scaffolded with config, forecast
-sources (NWS, Open-Meteo), aggregation, and CLI. `pyproject.toml`, `uv.lock`,
-and a passing test suite exist. Phase 2 (probability engine) is next.
+Status: Phase 2 complete: the pipeline produces a daily edge-ranked report. Phase 3 (SQLite persistence) is next.
 
 ## Working principles
 
@@ -103,6 +101,16 @@ src/rainmaker/
     nws.py            NWS fetch + parse
     openmeteo.py      Open-Meteo multi-model and ensemble fetch + parse
     aggregate.py      pool sources, coverage, freshness
+  probability/
+    distribution.py   pooled samples -> Gaussian (uncalibrated, sigma floor)
+    outcomes.py       integrate Gaussian over buckets (continuity-corrected)
+  ranking/
+    edge.py           evaluate_market -> edge-ranked outcomes + gates
+  report/
+    render.py         terminal + markdown/JSON report
+  polymarket/
+    client.py         Gamma discovery (read-only)
+    markets.py        event JSON -> Market (target + buckets)
 tests/
   fixtures/           saved API responses for KLGA (NWS + Open-Meteo)
   test_*.py           unit and I/O tests (pytest-httpx for mocked HTTP)
