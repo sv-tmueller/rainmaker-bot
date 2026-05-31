@@ -3,13 +3,20 @@ from datetime import date
 import pytest
 
 from rainmaker.forecasts.base import ForecastSample
-from rainmaker.probability.distribution import Gaussian, fit_gaussian
+from rainmaker.probability.distribution import fit_gaussian
 
 
 def _sample(value_f: float) -> ForecastSample:
     return ForecastSample(
-        source="x", model="m", member=None, station="KLGA", variable="TMAX",
-        target_date=date(2026, 5, 31), lead_time_days=1, value_f=value_f, issued_at=None,
+        source="x",
+        model="m",
+        member=None,
+        station="KLGA",
+        variable="TMAX",
+        target_date=date(2026, 5, 31),
+        lead_time_days=1,
+        value_f=value_f,
+        issued_at=None,
     )
 
 
