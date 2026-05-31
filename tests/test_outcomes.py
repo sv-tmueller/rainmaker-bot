@@ -52,5 +52,6 @@ def test_mode_bucket_has_highest_probability():
         *[_bucket("range", lo=lo, hi=lo + 1) for lo in range(60, 78, 2)],
         _bucket("above", threshold=78),
     ]
-    probs = {(b.lo, b.hi): bucket_probability(g, b) for b in buckets}
-    assert max(probs, key=probs.get) == (70, 71)
+    probs = {(b.kind, b.lo, b.hi, b.threshold): bucket_probability(g, b) for b in buckets}
+    mode_key = max(probs, key=probs.get)
+    assert mode_key == ("range", 70, 71, None)

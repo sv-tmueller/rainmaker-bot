@@ -1,13 +1,15 @@
 import numpy as np
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from rainmaker.config import MIN_SIGMA_F
 from rainmaker.forecasts.base import ForecastSample
 
 
 class Gaussian(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     mu: float
-    sigma: float
+    sigma: float = Field(gt=0)
 
 
 def fit_gaussian(samples: list[ForecastSample], min_sigma: float = MIN_SIGMA_F) -> Gaussian:

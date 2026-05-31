@@ -1,5 +1,6 @@
 from datetime import date
 
+import numpy as np
 import pytest
 
 from rainmaker.forecasts.base import ForecastSample
@@ -41,3 +42,10 @@ def test_fit_gaussian_single_sample_uses_floor():
 def test_fit_gaussian_empty_raises():
     with pytest.raises(ValueError, match="no samples"):
         fit_gaussian([], min_sigma=1.5)
+
+
+def test_fit_gaussian_realistic_mixed_pool():
+    values = [68.0, 69.5, 70.0, 70.2, 70.8, 71.0, 71.3, 72.0, 69.0, 70.5]
+    g = fit_gaussian([_sample(v) for v in values], min_sigma=0.5)
+    assert g.mu == pytest.approx(float(np.mean(values)))
+    assert g.sigma == pytest.approx(float(np.std(values, ddof=1)))
