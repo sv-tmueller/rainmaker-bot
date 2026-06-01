@@ -3,6 +3,7 @@ from datetime import date
 from rainmaker.config import build_target
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import Bucket, Market
+from rainmaker.probability.calibration import Calibration
 from rainmaker.ranking.edge import MarketReport, evaluate_market
 
 
@@ -118,3 +119,29 @@ def test_evaluate_market_no_samples_yields_empty_outcomes():
     assert report.outcomes == []
     assert report.mu is None and report.sigma is None
     assert report.n_sources == 0
+
+
+def test_evaluate_market_applies_calibration():
+    market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.20)])
+    fs = _forecast_set([70, 70, 71, 71])  # raw fit mean 70.5
+    cal = Calibration(
+        station="KLGA", variable="TMAX", lead_time=1, bias=2.0, spread_scale=1.0, n_samples=50
+    )
+    raw = evaluate_market(market, fs, floor=0.5, min_sources=2, min_sigma=1.5)
+    cald = evaluate_market(market, fs, floor=0.5, min_sources=2, min_sigma=1.5, calibration=cal)
+    assert raw.calibrated is False
+    assert cald.calibrated is True
+    assert raw.mu is not None and cald.mu is not None
+    assert cald.mu == raw.mu - 2.0  # bias shifts mu down
+
+
+def test_evaluate_market_low_sample_calibration_falls_back():
+    market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.20)])
+    fs = _forecast_set([70, 70, 71, 71])
+    cal = Calibration(
+        station="KLGA", variable="TMAX", lead_time=1, bias=2.0, spread_scale=1.0, n_samples=5
+    )
+    out = evaluate_market(market, fs, floor=0.5, min_sources=2, min_sigma=1.5, calibration=cal)
+    assert out.calibrated is False
+    assert out.mu == 70.5  # bias not applied below MIN_CAL_SAMPLES
+    assert out.sigma is not None and out.sigma > 1.5  # widened fallback

@@ -15,6 +15,7 @@ def _market_report() -> MarketReport:
         mu=70.5,
         sigma=2.0,
         n_sources=2,
+        calibrated=True,
         coverage=[
             SourceCoverage(source="nws", ok=True, n_samples=1),
             SourceCoverage(source="open-meteo", ok=True, n_samples=124),
@@ -49,6 +50,7 @@ def test_render_terminal_shows_key_columns_and_recommended_marker():
     assert "0.53" in text  # edge
     assert "REC" in text  # recommended marker on the recommended row
     assert "59°F or below" in text  # excluded note
+    assert "calibrated" in text  # calibration status shown
 
 
 def test_render_markdown_has_table_and_settlement_date():
@@ -69,6 +71,7 @@ def test_render_handles_empty_samples_market():
         mu=None,
         sigma=None,
         n_sources=0,
+        calibrated=False,
         coverage=[SourceCoverage(source="nws", ok=False, n_samples=0, error="down")],
         outcomes=[],
         excluded_no_ask=[],

@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict
 
 from rainmaker.forecasts.base import ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import Market
+from rainmaker.probability.calibration import Calibration, apply_calibration
 from rainmaker.probability.distribution import fit_gaussian
 from rainmaker.probability.outcomes import bucket_probability
 
@@ -30,6 +31,7 @@ class MarketReport(BaseModel):
     mu: float | None
     sigma: float | None
     n_sources: int
+    calibrated: bool
     coverage: list[SourceCoverage]
     outcomes: list[RankedOutcome]
     excluded_no_ask: list[str]
@@ -42,6 +44,7 @@ def evaluate_market(
     floor: float,
     min_sources: int,
     min_sigma: float,
+    calibration: Calibration | None = None,
 ) -> MarketReport:
     n_sources = sum(1 for c in forecast_set.coverage if c.ok)
     common: dict[str, Any] = dict(
@@ -54,9 +57,15 @@ def evaluate_market(
         coverage=forecast_set.coverage,
     )
     if not forecast_set.samples:
-        return MarketReport(**common, mu=None, sigma=None, outcomes=[], excluded_no_ask=[])
+        return MarketReport(
+            **common, calibrated=False, mu=None, sigma=None, outcomes=[], excluded_no_ask=[]
+        )
 
     gaussian = fit_gaussian(forecast_set.samples, min_sigma=min_sigma)
+    # Apply calibration only when a cell is provided; with none, use the raw fit.
+    calibrated = False
+    if calibration is not None:
+        gaussian, calibrated = apply_calibration(gaussian, calibration, min_sigma=min_sigma)
     outcomes: list[RankedOutcome] = []
     excluded: list[str] = []
     for bucket in market.buckets:
@@ -80,5 +89,10 @@ def evaluate_market(
         )
     outcomes.sort(key=lambda o: o.edge, reverse=True)
     return MarketReport(
-        **common, mu=gaussian.mu, sigma=gaussian.sigma, outcomes=outcomes, excluded_no_ask=excluded
+        **common,
+        calibrated=calibrated,
+        mu=gaussian.mu,
+        sigma=gaussian.sigma,
+        outcomes=outcomes,
+        excluded_no_ask=excluded,
     )

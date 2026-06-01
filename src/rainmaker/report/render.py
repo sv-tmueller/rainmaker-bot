@@ -27,7 +27,8 @@ def render_terminal(report: Report) -> str:
         lines.append(f"{m.title}  [{m.station} {m.variable} {m.settlement_date.isoformat()}]")
         lines.append(f"  sources: {m.n_sources}")
         if m.mu is not None and m.sigma is not None:
-            lines.append(f"  forecast: mu={m.mu:.1f}F sigma={m.sigma:.1f}F")
+            cal = "calibrated" if m.calibrated else "uncalibrated"
+            lines.append(f"  forecast: mu={m.mu:.1f}F sigma={m.sigma:.1f}F ({cal})")
         lines.append(f"  coverage: {_coverage_str(m)}")
         if not m.outcomes:
             lines.append("  no tradeable outcomes (insufficient forecast data)")
@@ -63,7 +64,8 @@ def render_markdown(report: Report) -> str:
         )
         lines.append(f"- sources: {m.n_sources}")
         if m.mu is not None and m.sigma is not None:
-            lines.append(f"- forecast: mu={m.mu:.1f}F sigma={m.sigma:.1f}F")
+            cal = "calibrated" if m.calibrated else "uncalibrated"
+            lines.append(f"- forecast: mu={m.mu:.1f}F sigma={m.sigma:.1f}F ({cal})")
         lines.append(f"- coverage: {_coverage_str(m)}")
         lines.append("")
         if m.outcomes:

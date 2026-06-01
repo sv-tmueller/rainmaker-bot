@@ -24,6 +24,7 @@ from rainmaker.polymarket.client import discover_markets
 from rainmaker.ranking.edge import evaluate_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
 from rainmaker.store.db import connect, init_schema
+from rainmaker.store.query import load_calibration
 from rainmaker.store.record import EvaluatedMarket, record_run
 
 SUPPORTED_VARIABLES = {"TMAX"}
@@ -58,6 +59,10 @@ def _write_reports(report: Report, reports_dir: str) -> list[Path]:
 
 def _run(reports_dir: str, db_path: str) -> None:
     started_at = _now_iso()
+    today = _today()
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    init_schema(conn)
     client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=30.0)
     try:
         try:
@@ -72,25 +77,24 @@ def _run(reports_dir: str, db_path: str) -> None:
                 print(f"skipped {market.id}: unsupported variable {market.target.variable}")
                 continue
             forecast_set = _forecast_for(market.target, client)
+            lead_time = (market.target.local_date - today).days
+            calibration = load_calibration(
+                conn, market.target.station.icao, market.target.variable, lead_time
+            )
             report = evaluate_market(
                 market,
                 forecast_set,
                 floor=CONFIDENCE_FLOOR,
                 min_sources=MIN_SOURCES,
                 min_sigma=MIN_SIGMA_F,
+                calibration=calibration,
             )
             evaluated.append((market, forecast_set, report))
-    finally:
-        client.close()
-    finished_at = _now_iso()
+        finished_at = _now_iso()
 
-    daily_report = Report(run_date=_today(), markets=[r for _, _, r in evaluated])
-    print(render_terminal(daily_report))
-    paths = _write_reports(daily_report, reports_dir)
-
-    conn = connect(db_path)
-    try:
-        init_schema(conn)
+        daily_report = Report(run_date=today, markets=[r for _, _, r in evaluated])
+        print(render_terminal(daily_report))
+        paths = _write_reports(daily_report, reports_dir)
         record_run(
             conn,
             run_id=_new_run_id(),
@@ -99,9 +103,10 @@ def _run(reports_dir: str, db_path: str) -> None:
             status="ok",
             evaluated=evaluated,
         )
+        print(f"wrote {paths[0]} and {paths[1]}; recorded run to {db_path}")
     finally:
+        client.close()
         conn.close()
-    print(f"wrote {paths[0]} and {paths[1]}; recorded run to {db_path}")
 
 
 def main(argv: list[str] | None = None) -> None:
