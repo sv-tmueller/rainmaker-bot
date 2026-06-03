@@ -98,8 +98,19 @@ def test_translate_guards_placeholder_count():
 
 
 def test_schema_for_uses_identity_only_on_postgres():
+    pg = _schema_for("postgres")
+    sl = _schema_for("sqlite")
     # all three surrogate-key tables (prices, forecasts, predictions) must get an
     # identity column on Postgres; a partial .replace would break inserts at runtime
-    assert _schema_for("postgres").count("GENERATED ALWAYS AS IDENTITY") == 3
-    assert "GENERATED ALWAYS AS IDENTITY" not in _schema_for("sqlite")
-    assert _schema_for("sqlite").count("INTEGER PRIMARY KEY") == 3
+    assert pg.count("GENERATED ALWAYS AS IDENTITY") == 3
+    assert "GENERATED ALWAYS AS IDENTITY" not in sl
+    assert sl.count("INTEGER PRIMARY KEY") == 3
+
+
+def test_postgres_schema_uses_double_precision_not_real():
+    # Postgres REAL is float4 and underflows on tiny tail probabilities; float8 matches SQLite
+    pg = _schema_for("postgres")
+    sl = _schema_for("sqlite")
+    assert " REAL," not in pg
+    assert "DOUBLE PRECISION" in pg
+    assert " REAL," in sl  # SQLite REAL is already 8-byte, left as-is

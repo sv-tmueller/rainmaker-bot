@@ -5,6 +5,8 @@ with name-keyed rows). Portability rules (see CLAUDE.md / spec data model):
 - JSON columns are TEXT on both backends (jsonb is deferred; the recorder writes
   json.dumps strings, which Postgres will not implicitly cast into jsonb).
 - Timestamps are ISO-8601 UTC TEXT; booleans are INTEGER 0/1.
+- Floating-point columns are REAL in SQLite (8-byte) and DOUBLE PRECISION in
+  Postgres (its REAL is 4-byte float4 and underflows on tiny tail probabilities).
 - The three surrogate INTEGER PRIMARY KEY columns are SQLite rowids; in Postgres
   they are identity columns. The shared SQL uses no SQLite-only features.
 """
@@ -88,14 +90,22 @@ CREATE TABLE IF NOT EXISTS calibration (
 );
 """
 
-# Identical to the SQLite schema except the three surrogate keys, which must be
-# identity columns in Postgres (a plain INTEGER PRIMARY KEY does not auto-generate).
-_POSTGRES_SCHEMA = _SQLITE_SCHEMA.replace(
-    "id           INTEGER PRIMARY KEY,",
-    "id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,",
-).replace(
-    "id          INTEGER PRIMARY KEY,",
-    "id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,",
+# The SQLite schema with two backend differences:
+# - the three surrogate keys become identity columns (a plain Postgres INTEGER
+#   PRIMARY KEY does not auto-generate);
+# - REAL becomes DOUBLE PRECISION. SQLite REAL is 8-byte (double); Postgres REAL
+#   is 4-byte float4 and underflows on the tiny tail-bucket probabilities the
+#   engine produces, so we match SQLite's precision with float8.
+_POSTGRES_SCHEMA = (
+    _SQLITE_SCHEMA.replace(
+        "id           INTEGER PRIMARY KEY,",
+        "id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,",
+    )
+    .replace(
+        "id          INTEGER PRIMARY KEY,",
+        "id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,",
+    )
+    .replace(" REAL,", " DOUBLE PRECISION,")
 )
 
 
