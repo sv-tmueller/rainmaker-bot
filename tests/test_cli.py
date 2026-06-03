@@ -125,6 +125,13 @@ def test_backfill_fits_and_saves_calibration(monkeypatch, tmp_path, capsys):
     assert saved == cal
 
 
+def test_datastore_prefers_database_url(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x/y")
+    assert cli._datastore("local.db") == "postgresql://x/y"
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert cli._datastore("local.db") == "local.db"
+
+
 class _DummyClient:
     def close(self):
         pass
