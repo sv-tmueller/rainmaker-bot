@@ -16,7 +16,12 @@ jobs:
       - name: Run the bot
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: uv run rainmaker run
+        run: |
+          case "$DATABASE_URL" in
+            postgres://*|postgresql://*) ;;
+            *) echo "DATABASE_URL is not a Postgres DSN; refusing to run (would silently write to ephemeral SQLite)"; exit 1 ;;
+          esac
+          uv run rainmaker run
       - name: Upload report artifacts
         if: always()
         uses: actions/upload-artifact@v4
