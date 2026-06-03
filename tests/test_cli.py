@@ -125,6 +125,14 @@ def test_backfill_fits_and_saves_calibration(monkeypatch, tmp_path, capsys):
     assert saved == cal
 
 
+def test_settle_command_reports_summary(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "run_settlement", lambda conn, client, today, settled_at: (2, 1))
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    cli.main(["settle", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+    assert "settled 2 market(s); 1 waiting" in out
+
+
 def test_datastore_prefers_database_url(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x/y")
     assert cli._datastore("local.db") == "postgresql://x/y"
