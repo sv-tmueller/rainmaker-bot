@@ -1,0 +1,42 @@
+[
+  {
+    "id": "900001",
+    "slug": "highest-temperature-in-los-angeles",
+    "title": "Highest temperature in Los Angeles on June 3?",
+    "endDate": "2026-06-03T12:00:00Z",
+    "description": "Resolves to the highest temperature recorded at the Los Angeles International Airport Station (KLAX) in whole degrees Fahrenheit, per Wunderground KLAX.",
+    "markets": [
+      {"groupItemTitle": "70-71°F", "outcomePrices": "[\"0.5\", \"0.5\"]", "clobTokenIds": "[\"la-yes\", \"la-no\"]", "bestAsk": 0.5, "bestBid": 0.4}
+    ]
+  },
+  {
+    "id": "900002",
+    "slug": "highest-temperature-in-dallas",
+    "title": "Highest temperature in Dallas on June 3?",
+    "endDate": "2026-06-03T12:00:00Z",
+    "description": "Resolves to the highest temperature recorded at Dallas Love Field (KDAL) in whole degrees Fahrenheit, per Wunderground KDAL.",
+    "markets": [
+      {"groupItemTitle": "88-89°F", "outcomePrices": "[\"0.3\", \"0.7\"]", "clobTokenIds": "[\"dal-yes\", \"dal-no\"]", "bestAsk": 0.31, "bestBid": 0.29}
+    ]
+  },
+  {
+    "id": "900003",
+    "slug": "highest-temperature-in-nyc-broken",
+    "title": "Highest temperature in NYC on June 3?",
+    "endDate": "2026-06-03T12:00:00Z",
+    "description": "This description is missing the resolution station id entirely.",
+    "markets": [
+      {"groupItemTitle": "70-71°F", "outcomePrices": "[\"0.5\", \"0.5\"]", "clobTokenIds": "[\"nyc-yes\", \"nyc-no\"]", "bestAsk": 0.5, "bestBid": 0.4}
+    ]
+  },
+  {
+    "id": "900004",
+    "slug": "highest-temperature-in-london",
+    "title": "Highest temperature in London on June 3?",
+    "endDate": "2026-06-03T12:00:00Z",
+    "description": "London resolves at EGLL.",
+    "markets": [
+      {"groupItemTitle": "70-71°F", "outcomePrices": "[\"0.5\", \"0.5\"]", "clobTokenIds": "[\"lon-yes\", \"lon-no\"]", "bestAsk": 0.5, "bestBid": 0.4}
+    ]
+  }
+]

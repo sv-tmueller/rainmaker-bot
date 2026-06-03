@@ -1,3 +1,4 @@
+import sys
 from typing import Any, cast
 
 import httpx
@@ -41,5 +42,18 @@ def _is_us_temp_event(event: dict[str, Any]) -> bool:
 
 
 def discover_markets(client: httpx.Client) -> list[Market]:
-    """Fetch live weather events and parse the US-city temperature markets."""
-    return [parse_market(ev) for ev in fetch_weather_events(client) if _is_us_temp_event(ev)]
+    """Fetch live weather events and parse the US-city temperature markets.
+
+    A market that fails to parse (for example its description does not name the
+    resolution station) is skipped with a warning so one bad market does not
+    abort the whole run. Polymarket being down still aborts upstream.
+    """
+    markets: list[Market] = []
+    for ev in fetch_weather_events(client):
+        if not _is_us_temp_event(ev):
+            continue
+        try:
+            markets.append(parse_market(ev))
+        except ValueError as exc:
+            print(f"skipping market {ev.get('id')}: {exc}", file=sys.stderr)
+    return markets
