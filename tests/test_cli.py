@@ -8,8 +8,9 @@ from rainmaker import cli
 from rainmaker.config import build_target
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import Bucket, Market
+from rainmaker.probability.calibration import Calibration
 from rainmaker.store.db import connect
-from rainmaker.store.query import count_rows
+from rainmaker.store.query import count_rows, load_calibration
 
 
 def _market(variable: str) -> Market:
@@ -104,6 +105,24 @@ def test_run_aborts_when_polymarket_down(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as exc:
         cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(tmp_path / "t.db")])
     assert exc.value.code != 0
+
+
+def test_backfill_fits_and_saves_calibration(monkeypatch, tmp_path, capsys):
+    cal = Calibration(
+        station="KLGA", variable="TMAX", lead_time=1, bias=-2.0, spread_scale=1.1, n_samples=42
+    )
+    monkeypatch.setattr(cli, "run_backfill", lambda *a, **k: cal)
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    db = tmp_path / "t.db"
+
+    cli.main(["backfill", "--db", str(db), "--lead", "1"])
+
+    out = capsys.readouterr().out
+    assert "calibrated KLGA TMAX lead=1" in out
+    conn = connect(str(db))
+    saved = load_calibration(conn, "KLGA", "TMAX", 1)
+    conn.close()
+    assert saved == cal
 
 
 class _DummyClient:

@@ -2,11 +2,12 @@ import argparse
 import json
 import sys
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
 
+from rainmaker.backfill import run_backfill
 from rainmaker.config import (
     CONFIDENCE_FLOOR,
     DB_PATH,
@@ -14,6 +15,7 @@ from rainmaker.config import (
     MIN_SOURCES,
     NWS_USER_AGENT,
     REPORTS_DIR,
+    STATIONS,
     Target,
 )
 from rainmaker.forecasts.aggregate import aggregate
@@ -25,7 +27,7 @@ from rainmaker.ranking.edge import evaluate_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
 from rainmaker.store.db import connect, init_schema
 from rainmaker.store.query import load_calibration
-from rainmaker.store.record import EvaluatedMarket, record_run
+from rainmaker.store.record import EvaluatedMarket, record_run, save_calibration
 
 SUPPORTED_VARIABLES = {"TMAX"}
 
@@ -109,6 +111,29 @@ def _run(reports_dir: str, db_path: str) -> None:
         conn.close()
 
 
+def _backfill(city: str, variable: str, days: int, lead: int, db_path: str) -> None:
+    station = STATIONS[city]
+    end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
+    start = end - timedelta(days=days)
+    client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=60.0)
+    try:
+        cal = run_backfill(station, variable, lead, start, end, client)
+    finally:
+        client.close()
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        save_calibration(conn, cal, updated_at=_now_iso())
+    finally:
+        conn.close()
+    print(
+        f"calibrated {cal.station} {cal.variable} lead={cal.lead_time}: "
+        f"bias={cal.bias:+.2f}F spread_scale={cal.spread_scale:.2f} "
+        f"n={cal.n_samples} -> {db_path}"
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="rainmaker")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -117,7 +142,21 @@ def main(argv: list[str] | None = None) -> None:
         "--reports-dir", default=REPORTS_DIR, help="directory for dated md/json output"
     )
     run.add_argument("--db", default=DB_PATH, help="SQLite database path for run persistence")
+
+    backfill = sub.add_parser(
+        "backfill", help="fit calibration from historical forecasts vs actuals"
+    )
+    backfill.add_argument("--city", default="NYC")
+    backfill.add_argument("--variable", default="TMAX")
+    backfill.add_argument("--days", type=int, default=60, help="history window length in days")
+    backfill.add_argument(
+        "--lead", type=int, default=1, help="forecast lead time the archive represents"
+    )
+    backfill.add_argument("--db", default=DB_PATH, help="SQLite database path")
+
     args = parser.parse_args(argv)
 
     if args.command == "run":
         _run(args.reports_dir, args.db)
+    elif args.command == "backfill":
+        _backfill(args.city, args.variable, args.days, args.lead, args.db)

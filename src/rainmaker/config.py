@@ -16,6 +16,7 @@ class Station(BaseModel):
     lon: float
     timezone: str
     wunderground_url: str
+    ghcnd_id: str  # NOAA NCEI GHCND station id, for backfill actuals
 
 
 class Target(BaseModel):
@@ -35,6 +36,7 @@ STATIONS: dict[str, Station] = {
         lon=-73.8803,
         timezone="America/New_York",
         wunderground_url="https://www.wunderground.com/history/daily/us/ny/new-york-city/KLGA",
+        ghcnd_id="USW00014732",
     ),
 }
 
