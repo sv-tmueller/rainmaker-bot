@@ -75,12 +75,25 @@ spread and labels the forecast `(uncalibrated)`, so the report is correct from
 day one. Fitting a calibration cell per city is a follow-on
 `rainmaker backfill --city <X>` run, not part of this slice.
 
+## Discovery resilience (one small change beyond the registry)
+
+`parse_market` raises on a bad market (missing resolution ICAO, non-midday
+endDate, unparseable bucket). Today that exception propagates out of
+`discover_markets` and aborts the whole run. With one city that is tolerable;
+with eleven it means a single malformed market kills the report for the other
+ten. That conflicts with the project's core rule: "proceed with the rest and
+reflect reduced coverage". So `discover_markets` will skip a market that fails
+to parse, warn to stderr with the market id and reason, and continue. The
+per-market guard still fails loud (it is logged and the market is excluded), it
+just no longer takes the run down with it. Polymarket-down still aborts, as
+before.
+
 ## Components that do not change
 
-`polymarket/client.py` (discovery + filtering), `polymarket/markets.py`
-(parsing + the ICAO guard), the forecast sources, `probability/`, `ranking/`,
-`report/`, and `store/`. Only `config.py` (the registry) gains rows. Tests are
-added.
+`polymarket/markets.py` (parsing + the ICAO guard), the forecast sources,
+`probability/`, `ranking/`, `report/`, and `store/`. `config.py` gains the
+registry rows and `polymarket/client.py` gains the skip-and-warn loop above.
+Tests are added.
 
 ## Verification (TDD)
 
@@ -93,7 +106,12 @@ Write the failing test first in each case.
    international city (London). Assert discovery keeps exactly the US registry
    cities and maps each to the right station and ICAO.
 3. Wrong-station guard: a market whose description omits its ICAO is rejected
-   with a clear error.
+   with a clear error (already covered by the existing
+   `test_parse_market_station_mismatch_raises`).
+3b. Discovery resilience: a fixture with a valid US city, a trap city, an
+   international city, and a registry city with a broken description. Discovery
+   returns the two good US markets, skips the broken one with a stderr warning,
+   and drops the international one.
 4. GHCND ids: verified during implementation by a manual one-shot NCEI query
    per station, confirming each returns TMAX data for the expected station. This
    is a manual gate, not a committed test, because tests never hit live
