@@ -87,4 +87,43 @@ def test_render_handles_empty_samples_market():
 def test_render_multi_market_report():
     report = Report(run_date=date(2026, 5, 31), markets=[_market_report(), _market_report()])
     text = render_terminal(report)
-    assert text.count("70-71°F") == 2  # both markets rendered
+    # both market detail sections rendered (the forecast line is per-market, not
+    # in the recommended-bets summary, so it is a stable count of two)
+    assert text.count("forecast: mu=70.5F") == 2
+
+
+def test_render_leads_with_recommended_bets_summary():
+    report = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
+    text = render_terminal(report)
+    md = render_markdown(report)
+    assert "Recommended bets" in text
+    assert "Recommended bets" in md
+    # the summary comes before the per-market detail
+    assert text.index("Recommended bets") < text.index("Highest temperature in NYC")
+    assert md.index("Recommended bets") < md.index("## Highest temperature in NYC")
+    # the one recommended bet is listed in the summary
+    assert "70-71°F" in md
+
+
+def test_render_summary_says_none_when_no_recommendations():
+    no_rec = MarketReport(
+        market_id="m3",
+        title="Highest temperature in NYC on May 31?",
+        station="KLGA",
+        variable="TMAX",
+        settlement_date=date(2026, 5, 31),
+        mu=70.5,
+        sigma=2.0,
+        n_sources=2,
+        calibrated=False,
+        coverage=[SourceCoverage(source="nws", ok=True, n_samples=1)],
+        outcomes=[
+            RankedOutcome(
+                bucket_label="72-73°F", p_win=0.04, best_ask=0.30, edge=-0.26, recommended=False
+            )
+        ],
+        excluded_no_ask=[],
+    )
+    report = Report(run_date=date(2026, 5, 31), markets=[no_rec])
+    assert "No bets pass the gates today." in render_terminal(report)
+    assert "No bets pass the gates today." in render_markdown(report)

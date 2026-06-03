@@ -2,7 +2,7 @@ from datetime import date
 
 from pydantic import BaseModel
 
-from rainmaker.ranking.edge import MarketReport
+from rainmaker.ranking.edge import MarketReport, RankedOutcome
 
 
 class Report(BaseModel):
@@ -16,6 +16,13 @@ def _coverage_str(report: MarketReport) -> str:
     )
 
 
+def _recommended_pairs(report: Report) -> list[tuple[MarketReport, RankedOutcome]]:
+    """Every gate-passing outcome across all markets, best edge first."""
+    pairs = [(m, o) for m in report.markets for o in m.outcomes if o.recommended]
+    pairs.sort(key=lambda mo: mo[1].edge, reverse=True)
+    return pairs
+
+
 def render_terminal(report: Report) -> str:
     lines: list[str] = [
         f"Rainmaker report {report.run_date.isoformat()}",
@@ -23,6 +30,17 @@ def render_terminal(report: Report) -> str:
         "P(win)=our probability  ask=YES price paid  edge=P(win)-ask  (all 0-1)  REC=passes gates",
         "",
     ]
+    bets = _recommended_pairs(report)
+    lines.append("Recommended bets (ranked by edge):")
+    if bets:
+        for m, o in bets:
+            lines.append(
+                f"  {m.title}  {o.bucket_label}  "
+                f"P(win)={o.p_win:.2f} ask={o.best_ask:.2f} edge={o.edge:+.2f}"
+            )
+    else:
+        lines.append("  No bets pass the gates today.")
+    lines.append("")
     for m in report.markets:
         lines.append(f"{m.title}  [{m.station} {m.variable} {m.settlement_date.isoformat()}]")
         lines.append(f"  sources: {m.n_sources}")
@@ -55,6 +73,20 @@ def render_markdown(report: Report) -> str:
         "  edge = P(win)-ask  (all 0-1)  rec = passes gates_",
         "",
     ]
+    bets = _recommended_pairs(report)
+    lines.append("## Recommended bets (ranked by edge)")
+    lines.append("")
+    if bets:
+        lines.append("| market | bucket | P(win) | ask | edge |")
+        lines.append("|--------|--------|--------|-----|------|")
+        for m, o in bets:
+            lines.append(
+                f"| {m.title} | {o.bucket_label} | {o.p_win:.2f}"
+                f" | {o.best_ask:.2f} | {o.edge:+.2f} |"
+            )
+    else:
+        lines.append("_No bets pass the gates today._")
+    lines.append("")
     for m in report.markets:
         lines.append(f"## {m.title}")
         lines.append("")
