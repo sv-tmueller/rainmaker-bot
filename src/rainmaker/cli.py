@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import sys
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -44,6 +45,11 @@ def _new_run_id() -> str:
     return str(uuid.uuid4())
 
 
+def _datastore(default: str) -> str:
+    """Use the Postgres DSN from the environment when set, else the SQLite path."""
+    return os.environ.get("DATABASE_URL") or default
+
+
 def _forecast_for(target: Target, client: httpx.Client) -> ForecastSet:
     return aggregate(target, [NwsSource(client), OpenMeteoSource(client)])
 
@@ -62,7 +68,8 @@ def _write_reports(report: Report, reports_dir: str) -> list[Path]:
 def _run(reports_dir: str, db_path: str) -> None:
     started_at = _now_iso()
     today = _today()
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
     init_schema(conn)
     client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=30.0)
@@ -120,7 +127,8 @@ def _backfill(city: str, variable: str, days: int, lead: int, db_path: str) -> N
         cal = run_backfill(station, variable, lead, start, end, client)
     finally:
         client.close()
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
     try:
         init_schema(conn)
@@ -156,7 +164,8 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
 
+    db = _datastore(args.db)
     if args.command == "run":
-        _run(args.reports_dir, args.db)
+        _run(args.reports_dir, db)
     elif args.command == "backfill":
-        _backfill(args.city, args.variable, args.days, args.lead, args.db)
+        _backfill(args.city, args.variable, args.days, args.lead, db)
