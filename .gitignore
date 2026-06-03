@@ -9,3 +9,6 @@ dist/
 reports/
 .DS_Store
 *.db
+.env
+.env.*
+.dburl
