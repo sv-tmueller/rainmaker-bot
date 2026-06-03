@@ -39,3 +39,18 @@ def test_fetch_weather_events_paginates(httpx_mock):
     with httpx.Client() as client:
         events = fetch_weather_events(client)
     assert len(events) == 100 + 3  # full first page + short second page stops paging
+
+
+def _multicity_body() -> list[dict[str, Any]]:
+    return json.loads((FIXTURES / "polymarket_weather_multicity.json").read_text())
+
+
+def test_discover_skips_unparseable_and_drops_international(httpx_mock, capsys):
+    httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=_multicity_body())
+    with httpx.Client() as client:
+        markets = discover_markets(client)
+    # Los Angeles (multi-word) and Dallas (trap KDAL) are kept; NYC is skipped
+    # because its description omits KLGA; London is filtered (not US registry).
+    assert sorted(m.target.station.icao for m in markets) == ["KDAL", "KLAX"]
+    err = capsys.readouterr().err
+    assert "900003" in err and "skip" in err.lower()
