@@ -50,12 +50,20 @@ Our SQL contains no `?` inside string literals, so a positional replacement is
 safe; the wrapper asserts the count of `?` matches the parameter count as a
 guard.
 
-`init_schema(conn)` runs the SQLite DDL (current `executescript`) or, for
-Postgres, executes the Postgres DDL. The Postgres DDL is the current schema with
-two edits: `id INTEGER PRIMARY KEY` becomes `id BIGINT GENERATED ALWAYS AS
-IDENTITY PRIMARY KEY` (tables `prices`, `forecasts`, `predictions`), and the
-JSON `TEXT` columns become `jsonb`. The recorder already passes JSON via
-`json.dumps`, which Postgres accepts into a `jsonb` column.
+`init_schema(conn)` executes the backend-appropriate DDL, statement by statement
+(split on `;`), which works for both backends and drops the SQLite-only
+`executescript`. The Postgres DDL is the current schema with exactly one change:
+the three surrogate keys `id INTEGER PRIMARY KEY` (tables `prices`, `forecasts`,
+`predictions`) become `id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY`,
+because a plain Postgres `INTEGER PRIMARY KEY` does not auto-generate and the
+recorder never inserts those ids. Everything else (`TEXT`, `REAL`, `INTEGER`,
+foreign keys, `ON CONFLICT` upserts) is already valid Postgres.
+
+The JSON columns stay `TEXT` on both backends. `jsonb` is deferred: the recorder
+passes JSON as `json.dumps(...)` strings, and Postgres has no implicit text-to-
+`jsonb` assignment cast, so a `jsonb` column would reject the string insert
+without a per-backend cast. We move to `jsonb` only when a later sub-project
+needs to query inside the JSON, at which point the cast lives with that need.
 
 `record.py` is unchanged except for the connection type annotation (the wrapper,
 not `sqlite3.Connection`); it only writes, using `?` params that the wrapper
