@@ -1,6 +1,14 @@
 import sqlite3
 
-from rainmaker.store.db import connect, init_schema
+import pytest
+
+from rainmaker.store.db import (
+    _backend_for,
+    _schema_for,
+    _translate,
+    connect,
+    init_schema,
+)
 
 EXPECTED_TABLES = {
     "runs",
@@ -69,3 +77,29 @@ def test_foreign_key_violation_is_enforced():
         raised = True
     assert raised
     conn.close()
+
+
+def test_backend_for_detects_postgres_and_sqlite():
+    assert _backend_for("postgresql://u:p@host:5432/db") == "postgres"
+    assert _backend_for("postgres://u:p@host/db") == "postgres"
+    assert _backend_for("rainmaker.db") == "sqlite"
+    assert _backend_for(":memory:") == "sqlite"
+
+
+def test_translate_rewrites_placeholders():
+    got = _translate("INSERT INTO t (a, b) VALUES (?, ?)", 2)
+    assert got == "INSERT INTO t (a, b) VALUES (%s, %s)"
+    assert _translate("SELECT 1", 0) == "SELECT 1"
+
+
+def test_translate_guards_placeholder_count():
+    with pytest.raises(ValueError):
+        _translate("VALUES (?, ?)", 1)
+
+
+def test_schema_for_uses_identity_only_on_postgres():
+    # all three surrogate-key tables (prices, forecasts, predictions) must get an
+    # identity column on Postgres; a partial .replace would break inserts at runtime
+    assert _schema_for("postgres").count("GENERATED ALWAYS AS IDENTITY") == 3
+    assert "GENERATED ALWAYS AS IDENTITY" not in _schema_for("sqlite")
+    assert _schema_for("sqlite").count("INTEGER PRIMARY KEY") == 3

@@ -4,18 +4,18 @@ The write/read round-trip these support is the integrity check for the schema an
 recorder; Phase 4 backfill/calibration builds on the same read surface.
 """
 
-import sqlite3
 from typing import Any
 
 from rainmaker.probability.calibration import Calibration
+from rainmaker.store.db import Conn
 
 
-def get_run(conn: sqlite3.Connection, run_id: str) -> dict[str, Any] | None:
+def get_run(conn: Conn, run_id: str) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
     return dict(row) if row is not None else None
 
 
-def get_predictions(conn: sqlite3.Connection, run_id: str) -> list[dict[str, Any]]:
+def get_predictions(conn: Conn, run_id: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT market_id, p_win, edge, recommended FROM predictions "
         "WHERE run_id = ? ORDER BY edge DESC",
@@ -24,15 +24,13 @@ def get_predictions(conn: sqlite3.Connection, run_id: str) -> list[dict[str, Any
     return [dict(r) for r in rows]
 
 
-def count_rows(conn: sqlite3.Connection, table: str) -> int:
+def count_rows(conn: Conn, table: str) -> int:
     # table is a fixed internal identifier, never user input.
-    (count,) = conn.execute(f"SELECT count(*) FROM {table}").fetchone()
-    return int(count)
+    row = conn.execute(f"SELECT count(*) AS n FROM {table}").fetchone()
+    return int(row["n"])
 
 
-def load_calibration(
-    conn: sqlite3.Connection, station: str, variable: str, lead_time: int
-) -> Calibration | None:
+def load_calibration(conn: Conn, station: str, variable: str, lead_time: int) -> Calibration | None:
     row = conn.execute(
         "SELECT station, variable, lead_time, bias, spread_scale, n_samples "
         "FROM calibration WHERE station = ? AND variable = ? AND lead_time = ?",

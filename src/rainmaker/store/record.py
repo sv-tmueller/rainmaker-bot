@@ -5,20 +5,20 @@ rendered report, so every run is fully reconstructable.
 """
 
 import json
-import sqlite3
 from collections import defaultdict
 
 from rainmaker.forecasts.base import ForecastSet
 from rainmaker.polymarket.markets import Market
 from rainmaker.probability.calibration import Calibration
 from rainmaker.ranking.edge import MarketReport
+from rainmaker.store.db import Conn
 
 # One evaluated market: the market, the forecasts it got, and the resulting report.
 EvaluatedMarket = tuple[Market, ForecastSet, MarketReport]
 
 
 def record_run(
-    conn: sqlite3.Connection,
+    conn: Conn,
     *,
     run_id: str,
     started_at: str,
@@ -46,7 +46,7 @@ def _run_coverage(evaluated: list[EvaluatedMarket]) -> dict[str, object]:
     return {"n_markets": len(evaluated), "ok_sources": sorted(sources)}
 
 
-def _record_market(conn: sqlite3.Connection, market: Market, captured_at: str) -> None:
+def _record_market(conn: Conn, market: Market, captured_at: str) -> None:
     spec = [
         {"label": b.label, "kind": b.kind, "lo": b.lo, "hi": b.hi, "threshold": b.threshold}
         for b in market.buckets
@@ -78,7 +78,7 @@ def _record_market(conn: sqlite3.Connection, market: Market, captured_at: str) -
     )
 
 
-def _record_prices(conn: sqlite3.Connection, run_id: str, market: Market, captured_at: str) -> None:
+def _record_prices(conn: Conn, run_id: str, market: Market, captured_at: str) -> None:
     for b in market.buckets:
         conn.execute(
             "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
@@ -88,7 +88,7 @@ def _record_prices(conn: sqlite3.Connection, run_id: str, market: Market, captur
 
 
 def _record_forecasts(
-    conn: sqlite3.Connection,
+    conn: Conn,
     run_id: str,
     market_id: str,
     forecast_set: ForecastSet,
@@ -107,7 +107,7 @@ def _record_forecasts(
 
 
 def _record_predictions(
-    conn: sqlite3.Connection,
+    conn: Conn,
     run_id: str,
     market_id: str,
     report: MarketReport,
@@ -126,7 +126,7 @@ def _record_predictions(
         )
 
 
-def save_calibration(conn: sqlite3.Connection, cal: Calibration, *, updated_at: str) -> None:
+def save_calibration(conn: Conn, cal: Calibration, *, updated_at: str) -> None:
     """Upsert one calibration cell (keyed by station, variable, lead_time)."""
     conn.execute(
         """
