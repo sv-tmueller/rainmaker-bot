@@ -148,3 +148,14 @@ def save_calibration(conn: Conn, cal: Calibration, *, updated_at: str) -> None:
         ),
     )
     conn.commit()
+
+
+def record_outcome(conn: Conn, market_id: str, actual_value: float, settled_at: str) -> None:
+    """Upsert the settled actual for a market (keyed by market_id)."""
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(market_id) DO UPDATE SET "
+        "actual_value = excluded.actual_value, settled_at = excluded.settled_at",
+        (market_id, actual_value, settled_at),
+    )
+    conn.commit()

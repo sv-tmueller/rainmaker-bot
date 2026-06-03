@@ -4,6 +4,7 @@ The write/read round-trip these support is the integrity check for the schema an
 recorder; Phase 4 backfill/calibration builds on the same read surface.
 """
 
+from datetime import date
 from typing import Any
 
 from rainmaker.probability.calibration import Calibration
@@ -37,3 +38,16 @@ def load_calibration(conn: Conn, station: str, variable: str, lead_time: int) ->
         (station, variable, lead_time),
     ).fetchone()
     return Calibration(**dict(row)) if row is not None else None
+
+
+def unsettled_markets(conn: Conn, before: date) -> list[dict[str, Any]]:
+    """Recorded markets with a past settlement date and no outcome yet."""
+    rows = conn.execute(
+        "SELECT m.id AS market_id, m.city AS city, m.variable AS variable, "
+        "m.settlement_date AS settlement_date "
+        "FROM markets m LEFT JOIN outcomes o ON o.market_id = m.id "
+        "WHERE o.market_id IS NULL AND m.settlement_date < ? "
+        "ORDER BY m.settlement_date",
+        (before.isoformat(),),
+    ).fetchall()
+    return [dict(r) for r in rows]
