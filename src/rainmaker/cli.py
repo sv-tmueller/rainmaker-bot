@@ -26,6 +26,7 @@ from rainmaker.forecasts.openmeteo import OpenMeteoSource
 from rainmaker.polymarket.client import discover_markets
 from rainmaker.ranking.edge import evaluate_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
+from rainmaker.settle import run_settlement
 from rainmaker.store.db import connect, init_schema
 from rainmaker.store.query import load_calibration
 from rainmaker.store.record import EvaluatedMarket, record_run, save_calibration
@@ -142,6 +143,22 @@ def _backfill(city: str, variable: str, days: int, lead: int, db_path: str) -> N
     )
 
 
+def _settle(db_path: str) -> None:
+    today = _today()
+    settled_at = _now_iso()
+    if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=60.0)
+    try:
+        init_schema(conn)
+        settled, waiting = run_settlement(conn, client, today, settled_at)
+    finally:
+        client.close()
+        conn.close()
+    print(f"settled {settled} market(s); {waiting} waiting on NCEI data -> {db_path}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="rainmaker")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -162,6 +179,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     backfill.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
+    settle = sub.add_parser("settle", help="settle past markets against NOAA actuals")
+    settle.add_argument("--db", default=DB_PATH, help="SQLite database path")
+
     args = parser.parse_args(argv)
 
     db = _datastore(args.db)
@@ -169,3 +189,5 @@ def main(argv: list[str] | None = None) -> None:
         _run(args.reports_dir, db)
     elif args.command == "backfill":
         _backfill(args.city, args.variable, args.days, args.lead, db)
+    elif args.command == "settle":
+        _settle(db)

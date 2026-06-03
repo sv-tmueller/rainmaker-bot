@@ -104,3 +104,11 @@ def test_run_backfill_fits_calibration_from_history(httpx_mock):
     # forecasts run cold across the window (mean signed error mu - actual is negative)
     assert cal.bias == pytest.approx(-2.38, abs=1e-2)
     assert cal.spread_scale > 0
+
+
+def test_fetch_actuals_reads_tmin_when_asked(httpx_mock):
+    rows = [{"DATE": "2026-03-01", "STATION": "X", "TMIN": "29"}]
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=rows)
+    with httpx.Client() as client:
+        actuals = fetch_actuals("X", date(2026, 3, 1), date(2026, 3, 1), client, "TMIN")
+    assert actuals == {date(2026, 3, 1): 29.0}

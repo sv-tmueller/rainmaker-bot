@@ -23,14 +23,23 @@ NCEI_URL = "https://www.ncei.noaa.gov/access/services/data/v1"
 HISTORICAL_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 
 
-def fetch_actuals(ghcnd_id: str, start: date, end: date, client: httpx.Client) -> dict[date, float]:
-    """Daily max (degrees F) per date from NCEI daily-summaries. Raises on HTTP error."""
+def fetch_actuals(
+    ghcnd_id: str,
+    start: date,
+    end: date,
+    client: httpx.Client,
+    variable: str = "TMAX",
+) -> dict[date, float]:
+    """Daily extreme (degrees F) per date from NCEI daily-summaries. Raises on HTTP error.
+
+    `variable` is the GHCND element to read: TMAX (daily high) or TMIN (daily low).
+    """
     resp = client.get(
         NCEI_URL,
         params={
             "dataset": "daily-summaries",
             "stations": ghcnd_id,
-            "dataTypes": "TMAX",
+            "dataTypes": variable,
             "startDate": start.isoformat(),
             "endDate": end.isoformat(),
             "units": "standard",
@@ -39,7 +48,11 @@ def fetch_actuals(ghcnd_id: str, start: date, end: date, client: httpx.Client) -
     )
     resp.raise_for_status()
     rows: list[dict[str, Any]] = resp.json()
-    return {date.fromisoformat(r["DATE"]): float(r["TMAX"]) for r in rows if r.get("TMAX") != ""}
+    return {
+        date.fromisoformat(r["DATE"]): float(r[variable])
+        for r in rows
+        if r.get(variable) not in (None, "")
+    }
 
 
 def fetch_historical_forecasts(
@@ -94,6 +107,6 @@ def run_backfill(
 ) -> Calibration:
     """Fetch history, build pairs, and fit one calibration cell."""
     forecasts = fetch_historical_forecasts(station, start, end, client)
-    actuals = fetch_actuals(station.ghcnd_id, start, end, client)
+    actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)
     pairs = build_pairs(forecasts, actuals)
     return fit_calibration(station.icao, variable, lead_time, pairs)
