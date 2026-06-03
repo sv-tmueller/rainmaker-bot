@@ -1,0 +1,26 @@
+name: daily-run
+on:
+  schedule:
+    - cron: "0 13 * * *"  # 13:00 UTC daily, after US markets post
+  workflow_dispatch: {}
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync dependencies
+        run: uv sync
+      - name: Run the bot
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: uv run rainmaker run
+      - name: Upload report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-report
+          path: reports/
+          if-no-files-found: ignore
