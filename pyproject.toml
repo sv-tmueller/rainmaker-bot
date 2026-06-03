@@ -8,6 +8,7 @@ dependencies = [
     "pydantic>=2.7",
     "numpy>=2.0",
     "scipy>=1.13",
+    "psycopg[binary]>=3.3.4",
 ]
 
 [project.scripts]
