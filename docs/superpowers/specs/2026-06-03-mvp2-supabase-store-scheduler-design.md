@@ -52,11 +52,15 @@ guard.
 
 `init_schema(conn)` executes the backend-appropriate DDL, statement by statement
 (split on `;`), which works for both backends and drops the SQLite-only
-`executescript`. The Postgres DDL is the current schema with exactly one change:
-the three surrogate keys `id INTEGER PRIMARY KEY` (tables `prices`, `forecasts`,
+`executescript`. The Postgres DDL is the current schema with two changes. First, the three
+surrogate keys `id INTEGER PRIMARY KEY` (tables `prices`, `forecasts`,
 `predictions`) become `id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY`,
 because a plain Postgres `INTEGER PRIMARY KEY` does not auto-generate and the
-recorder never inserts those ids. Everything else (`TEXT`, `REAL`, `INTEGER`,
+recorder never inserts those ids. Second, `REAL` becomes `DOUBLE PRECISION`:
+SQLite `REAL` is 8-byte (double), but Postgres `REAL` is 4-byte `float4` and
+raises an underflow error on the tiny tail-bucket probabilities the engine
+produces (~1e-40); `float8` matches SQLite's precision. This was caught by the
+live dev-Postgres run during verification. Everything else (`TEXT`, `INTEGER`,
 foreign keys, `ON CONFLICT` upserts) is already valid Postgres.
 
 The JSON columns stay `TEXT` on both backends. `jsonb` is deferred: the recorder
