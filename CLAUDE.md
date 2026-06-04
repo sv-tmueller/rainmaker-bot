@@ -93,7 +93,8 @@ Python 3.11+ managed with uv. Commands:
 - Settle: `uv run rainmaker settle` (record NOAA actuals for past markets)
 - Track: `uv run rainmaker track` (P&L + calibration summary over settled markets)
 - Snapshot: `uv run rainmaker snapshot` (upsert the daily metrics row the dashboard reads)
-- Backfill: `uv run rainmaker backfill --city <X>` (fit a calibration cell from history)
+- Backfill: `uv run rainmaker backfill --city <X>` (fit a calibration cell and
+  backtest accuracy from history; `--city all` covers every city)
 - Test: `uv run pytest`
 - Lint: `uv run ruff check .`  Format: `uv run ruff format .`
 - Type check: `uv run mypy src`

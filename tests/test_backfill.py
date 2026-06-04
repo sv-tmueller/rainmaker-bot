@@ -90,13 +90,13 @@ def test_build_pairs_joins_forecasts_and_actuals_on_date():
     ]
 
 
-def test_run_backfill_fits_calibration_from_history(httpx_mock):
+def test_run_backfill_fits_calibration_and_accuracy_from_history(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
     )
     httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
     with httpx.Client() as client:
-        cal = run_backfill(KLGA, "TMAX", 1, date(2026, 3, 1), date(2026, 3, 5), client)
+        cal, acc = run_backfill(KLGA, "TMAX", 1, date(2026, 3, 1), date(2026, 3, 5), client)
     assert cal.station == "KLGA"
     assert cal.variable == "TMAX"
     assert cal.lead_time == 1
@@ -104,6 +104,11 @@ def test_run_backfill_fits_calibration_from_history(httpx_mock):
     # forecasts run cold across the window (mean signed error mu - actual is negative)
     assert cal.bias == pytest.approx(-2.38, abs=1e-2)
     assert cal.spread_scale > 0
+    # accuracy is measured over the same pairs
+    assert acc.n == 5
+    assert acc.bias_f == pytest.approx(cal.bias)
+    assert acc.mae_f >= abs(acc.bias_f)  # mean |e| always >= |mean e|
+    assert acc.mae_f > 0
 
 
 def test_fetch_actuals_reads_tmin_when_asked(httpx_mock):

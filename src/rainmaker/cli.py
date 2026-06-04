@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
+from pydantic import ValidationError
 
 from rainmaker.backfill import run_backfill
 from rainmaker.config import (
@@ -30,7 +31,7 @@ from rainmaker.report.render import Report, render_markdown, render_terminal
 from rainmaker.settle import run_settlement
 from rainmaker.store.db import connect, init_schema
 from rainmaker.store.query import load_calibration
-from rainmaker.store.record import EvaluatedMarket, record_run, save_calibration
+from rainmaker.store.record import EvaluatedMarket, record_run, save_accuracy, save_calibration
 from rainmaker.tracking import compute_calibration, compute_pnl, write_snapshot
 
 SUPPORTED_VARIABLES = {"TMAX"}
@@ -123,27 +124,48 @@ def _run(reports_dir: str, db_path: str) -> None:
 
 
 def _backfill(city: str, variable: str, days: int, lead: int, db_path: str) -> None:
-    station = STATIONS[city]
+    cities = sorted(STATIONS) if city == "all" else [city]
     end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
     start = end - timedelta(days=days)
-    client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=60.0)
-    try:
-        cal = run_backfill(station, variable, lead, start, end, client)
-    finally:
-        client.close()
     if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
+    client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=60.0)
+    succeeded = 0
     try:
         init_schema(conn)
-        save_calibration(conn, cal, updated_at=_now_iso())
+        for name in cities:
+            station = STATIONS[name]
+            try:
+                cal, acc = run_backfill(station, variable, lead, start, end, client)
+            except (httpx.HTTPError, ValueError) as exc:
+                if isinstance(exc, ValidationError):
+                    raise  # schema bug, not a data gap; fail loud
+                print(f"{name}: backfill failed: {exc}", file=sys.stderr)
+                continue
+            now = _now_iso()
+            save_calibration(conn, cal, updated_at=now)
+            save_accuracy(
+                conn,
+                station=cal.station,
+                city=station.city,
+                variable=cal.variable,
+                lead_time=cal.lead_time,
+                kind="backtest",
+                accuracy=acc,
+                updated_at=now,
+            )
+            succeeded += 1
+            print(
+                f"calibrated {cal.station} {cal.variable} lead={cal.lead_time}: "
+                f"bias={cal.bias:+.2f}F spread_scale={cal.spread_scale:.2f} "
+                f"mae={acc.mae_f:.2f}F n={cal.n_samples} -> {db_path}"
+            )
     finally:
+        client.close()
         conn.close()
-    print(
-        f"calibrated {cal.station} {cal.variable} lead={cal.lead_time}: "
-        f"bias={cal.bias:+.2f}F spread_scale={cal.spread_scale:.2f} "
-        f"n={cal.n_samples} -> {db_path}"
-    )
+    if succeeded == 0:
+        raise SystemExit(1)
 
 
 def _settle(db_path: str) -> None:
@@ -207,7 +229,9 @@ def main(argv: list[str] | None = None) -> None:
     backfill = sub.add_parser(
         "backfill", help="fit calibration from historical forecasts vs actuals"
     )
-    backfill.add_argument("--city", default="NYC")
+    backfill.add_argument(
+        "--city", default="NYC", help="city key from the station registry, or 'all'"
+    )
     backfill.add_argument("--variable", default="TMAX")
     backfill.add_argument("--days", type=int, default=60, help="history window length in days")
     backfill.add_argument(

@@ -5,10 +5,16 @@ prediction row is one one-unit bet (a market re-recommended across daily runs
 counts as separate bets). Tracking only covers rows with a bucket recorded.
 """
 
+import json
+from collections import defaultdict
+from datetime import date
 from typing import Any
 
+from rainmaker.config import STATIONS
 from rainmaker.polymarket.markets import parse_bucket_label
+from rainmaker.probability.calibration import CalibrationPair, compute_accuracy
 from rainmaker.store.db import Conn
+from rainmaker.store.record import save_accuracy
 
 
 def _won(bucket_label: str, actual_value: float) -> bool:
@@ -81,6 +87,56 @@ def compute_calibration(conn: Conn) -> dict[str, Any]:
     return {"n": len(rows), "brier": brier, "hit_rate": hit_rate}
 
 
+def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
+    """Degrees-space accuracy of the bot's own forecasts over settled markets.
+
+    One sample per (run, market): the predicted mu against the settled actual,
+    grouped per (station, variable, lead). DISTINCT collapses the per-bucket
+    prediction rows, which share one dist_params. This relies on _record_predictions
+    writing an identical dist_params string for every bucket row of one (run, market);
+    if that changes, replace DISTINCT with a subquery. Rows with an unknown city,
+    unparsable dist_params, a null actual, or no usable mu/sigma are skipped.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT p.run_id AS run_id, p.market_id AS market_id, "
+        "p.dist_params AS dist_params, m.city AS city, m.variable AS variable, "
+        "m.settlement_date AS settlement_date, r.started_at AS started_at, "
+        "o.actual_value AS actual_value "
+        "FROM predictions p "
+        "JOIN outcomes o ON o.market_id = p.market_id "
+        "JOIN markets m ON m.id = p.market_id "
+        "JOIN runs r ON r.id = p.run_id "
+        "WHERE p.dist_params IS NOT NULL AND o.actual_value IS NOT NULL"
+    ).fetchall()
+    groups: dict[tuple[str, str, str, int], list[CalibrationPair]] = defaultdict(list)
+    for r in (dict(row) for row in rows):
+        station = STATIONS.get(r["city"])
+        if station is None:
+            continue
+        try:
+            params = json.loads(r["dist_params"])
+        except json.JSONDecodeError:
+            continue  # unparsable dist_params: skip, never fail the snapshot
+        mu, sigma = params.get("mu"), params.get("sigma")
+        if mu is None or sigma is None or sigma <= 0:
+            continue
+        lead = (
+            date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
+        ).days
+        key = (station.icao, r["city"], r["variable"], lead)
+        groups[key].append(CalibrationPair(mu=mu, sigma=sigma, actual=r["actual_value"]))
+    return [
+        {
+            "station": station,
+            "city": city,
+            "variable": variable,
+            "lead_time": lead,
+            "accuracy": compute_accuracy(pairs),
+        }
+        for (station, city, variable, lead), pairs in sorted(groups.items())
+    ]
+
+
 def write_snapshot(conn: Conn, on_date: str, created_at: str) -> dict[str, Any]:
     """Compute the current P&L/calibration and upsert a snapshot row for on_date."""
     pnl = compute_pnl(conn)
@@ -108,5 +164,18 @@ def write_snapshot(conn: Conn, on_date: str, created_at: str) -> dict[str, Any]:
             created_at,
         ),
     )
+    # save_accuracy commits internally after each row; when there are no accuracy
+    # rows, the snapshot upsert above is committed by conn.commit() below.
+    for row in compute_live_accuracy(conn):
+        save_accuracy(
+            conn,
+            station=row["station"],
+            city=row["city"],
+            variable=row["variable"],
+            lead_time=row["lead_time"],
+            kind="live",
+            accuracy=row["accuracy"],
+            updated_at=created_at,
+        )
     conn.commit()
     return {"pnl": pnl, "calibration": cal}

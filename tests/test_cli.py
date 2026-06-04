@@ -107,11 +107,14 @@ def test_run_aborts_when_polymarket_down(monkeypatch, tmp_path):
     assert exc.value.code != 0
 
 
-def test_backfill_fits_and_saves_calibration(monkeypatch, tmp_path, capsys):
+def test_backfill_fits_and_saves_calibration_and_accuracy(monkeypatch, tmp_path, capsys):
+    from rainmaker.probability.calibration import Accuracy
+
     cal = Calibration(
         station="KLGA", variable="TMAX", lead_time=1, bias=-2.0, spread_scale=1.1, n_samples=42
     )
-    monkeypatch.setattr(cli, "run_backfill", lambda *a, **k: cal)
+    acc = Accuracy(n=42, mae_f=2.5, bias_f=-2.0)
+    monkeypatch.setattr(cli, "run_backfill", lambda *a, **k: (cal, acc))
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
     db = tmp_path / "t.db"
 
@@ -119,10 +122,87 @@ def test_backfill_fits_and_saves_calibration(monkeypatch, tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "calibrated KLGA TMAX lead=1" in out
+    assert "mae=2.50F" in out
     conn = connect(str(db))
     saved = load_calibration(conn, "KLGA", "TMAX", 1)
+    row = conn.execute("SELECT * FROM forecast_accuracy").fetchone()
     conn.close()
     assert saved == cal
+    assert (row["station"], row["city"], row["kind"]) == ("KLGA", "NYC", "backtest")
+    assert row["n"] == 42
+
+
+def test_backfill_all_covers_every_city(monkeypatch, tmp_path):
+    from rainmaker.config import STATIONS
+    from rainmaker.probability.calibration import Accuracy
+
+    def _fake(station, variable, lead, start, end, client):
+        cal = Calibration(
+            station=station.icao,
+            variable=variable,
+            lead_time=lead,
+            bias=0.0,
+            spread_scale=1.0,
+            n_samples=42,
+        )
+        return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
+
+    monkeypatch.setattr(cli, "run_backfill", _fake)
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    db = tmp_path / "t.db"
+
+    cli.main(["backfill", "--city", "all", "--db", str(db)])
+
+    conn = connect(str(db))
+    n = conn.execute("SELECT count(*) AS n FROM forecast_accuracy").fetchone()["n"]
+    conn.close()
+    assert n == len(STATIONS)
+
+
+def test_backfill_exits_nonzero_when_all_cities_fail(monkeypatch, tmp_path, capsys):
+    def _boom(*a, **k):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(cli, "run_backfill", _boom)
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["backfill", "--city", "all", "--db", str(tmp_path / "t.db")])
+    assert exc.value.code == 1
+    assert "failed" in capsys.readouterr().err
+
+
+def test_backfill_partial_failure_exits_zero(monkeypatch, tmp_path, capsys):
+    from rainmaker.config import STATIONS
+    from rainmaker.probability.calibration import Accuracy
+
+    fail_city = sorted(STATIONS)[0]
+
+    def _mixed(station, variable, lead, start, end, client):
+        if station.icao == STATIONS[fail_city].icao:
+            raise httpx.ConnectError("down")
+        cal = Calibration(
+            station=station.icao,
+            variable=variable,
+            lead_time=lead,
+            bias=0.0,
+            spread_scale=1.0,
+            n_samples=42,
+        )
+        return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
+
+    monkeypatch.setattr(cli, "run_backfill", _mixed)
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    db = tmp_path / "t.db"
+
+    cli.main(["backfill", "--city", "all", "--db", str(db)])  # must not raise SystemExit
+
+    err = capsys.readouterr().err
+    assert fail_city in err and "failed" in err
+    conn = connect(str(db))
+    n = conn.execute("SELECT count(*) AS n FROM forecast_accuracy").fetchone()["n"]
+    conn.close()
+    assert n == len(STATIONS) - 1
 
 
 def test_snapshot_command_writes_and_reports(monkeypatch, tmp_path, capsys):

@@ -16,7 +16,13 @@ from typing import Any
 import httpx
 
 from rainmaker.config import OPENMETEO_MODELS, Station
-from rainmaker.probability.calibration import Calibration, CalibrationPair, fit_calibration
+from rainmaker.probability.calibration import (
+    Accuracy,
+    Calibration,
+    CalibrationPair,
+    compute_accuracy,
+    fit_calibration,
+)
 from rainmaker.probability.distribution import Gaussian
 
 NCEI_URL = "https://www.ncei.noaa.gov/access/services/data/v1"
@@ -104,9 +110,9 @@ def run_backfill(
     start: date,
     end: date,
     client: httpx.Client,
-) -> Calibration:
-    """Fetch history, build pairs, and fit one calibration cell."""
+) -> tuple[Calibration, Accuracy]:
+    """Fetch history, build pairs, fit one calibration cell, measure accuracy."""
     forecasts = fetch_historical_forecasts(station, start, end, client)
     actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)
     pairs = build_pairs(forecasts, actuals)
-    return fit_calibration(station.icao, variable, lead_time, pairs)
+    return fit_calibration(station.icao, variable, lead_time, pairs), compute_accuracy(pairs)

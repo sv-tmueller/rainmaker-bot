@@ -1,13 +1,16 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from rainmaker.config import CONFIDENCE_FLOOR, MIN_EDGE, MIN_SIGMA_F, MIN_SOURCES
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import parse_market
+from rainmaker.probability.calibration import Accuracy
 from rainmaker.ranking.edge import evaluate_market
 from rainmaker.store.db import connect, init_schema
 from rainmaker.store.query import count_rows, get_predictions, get_run
-from rainmaker.store.record import record_run
+from rainmaker.store.record import record_run, save_accuracy
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -159,3 +162,42 @@ def test_record_predictions_stores_bucket():
     rows = conn.execute("SELECT bucket FROM predictions WHERE run_id = ?", ("run-1",)).fetchall()
     conn.close()
     assert {r["bucket"] for r in rows} == {o.bucket_label for o in report.outcomes}
+
+
+def test_accuracy_save_and_upsert_round_trip():
+    conn = connect(":memory:")
+    init_schema(conn)
+    save_accuracy(
+        conn,
+        station="KSEA",
+        city="Seattle",
+        variable="TMAX",
+        lead_time=1,
+        kind="backtest",
+        accuracy=Accuracy(n=60, mae_f=2.1, bias_f=-0.4),
+        updated_at="t0",
+    )
+    row = conn.execute("SELECT * FROM forecast_accuracy").fetchone()
+    assert (row["station"], row["city"], row["kind"]) == ("KSEA", "Seattle", "backtest")
+    assert row["n"] == 60
+    assert row["mae_f"] == pytest.approx(2.1)
+    assert row["bias_f"] == pytest.approx(-0.4)
+
+    # same key again -> upserted, not duplicated
+    save_accuracy(
+        conn,
+        station="KSEA",
+        city="Seattle",
+        variable="TMAX",
+        lead_time=1,
+        kind="backtest",
+        accuracy=Accuracy(n=61, mae_f=2.0, bias_f=-0.3),
+        updated_at="t1",
+    )
+    rows = conn.execute("SELECT * FROM forecast_accuracy").fetchall()
+    conn.close()
+    assert len(rows) == 1
+    assert rows[0]["n"] == 61
+    assert rows[0]["mae_f"] == pytest.approx(2.0)  # updated
+    assert rows[0]["bias_f"] == pytest.approx(-0.3)  # updated
+    assert rows[0]["updated_at"] == "t1"  # updated

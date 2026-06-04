@@ -31,8 +31,10 @@ you mean to touch prod.
   ask, so a market re-recommended on several days counts as several bets.
 - `uv run rainmaker snapshot`: upsert today's metrics row into
   `tracking_snapshot`. This is what the dashboard reads.
-- `uv run rainmaker backfill --city <X>`: fit a calibration cell from history
-  (NCEI actuals vs Open-Meteo historical forecasts).
+- `uv run rainmaker backfill --city <X>`: fit a calibration cell and backtest
+  accuracy from history (NCEI actuals vs Open-Meteo historical forecasts). A
+  `mae=...F` field appears in the output line. Use `--city all` to cover every
+  city in one pass.
 
 ## Daily report runbook
 
@@ -89,10 +91,12 @@ and widens the spread to stay conservative. To fit a correction from history:
 
 ```sh
 uv run rainmaker backfill --city "Los Angeles"
+# or: uv run rainmaker backfill --city all
 ```
 
 The next run applies it and labels the forecast `(calibrated)`. Cells are
-per-(station, variable, lead time); the default fits lead 1.
+per-(station, variable, lead time); the default fits lead 1. The output line
+includes a `mae=...F` field showing the backtest mean absolute error.
 
 ## The dashboard
 

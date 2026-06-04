@@ -9,7 +9,7 @@ from collections import defaultdict
 
 from rainmaker.forecasts.base import ForecastSet
 from rainmaker.polymarket.markets import Market
-from rainmaker.probability.calibration import Calibration
+from rainmaker.probability.calibration import Accuracy, Calibration
 from rainmaker.ranking.edge import MarketReport
 from rainmaker.store.db import Conn
 
@@ -155,6 +155,42 @@ def save_calibration(conn: Conn, cal: Calibration, *, updated_at: str) -> None:
             cal.bias,
             cal.spread_scale,
             cal.n_samples,
+            updated_at,
+        ),
+    )
+    conn.commit()
+
+
+def save_accuracy(
+    conn: Conn,
+    *,
+    station: str,
+    city: str,
+    variable: str,
+    lead_time: int,
+    kind: str,
+    accuracy: Accuracy,
+    updated_at: str,
+) -> None:
+    """Upsert one accuracy row (keyed by station, variable, lead_time, kind)."""
+    conn.execute(
+        """
+        INSERT INTO forecast_accuracy
+            (station, city, variable, lead_time, kind, n, mae_f, bias_f, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(station, variable, lead_time, kind) DO UPDATE SET
+            city = excluded.city, n = excluded.n, mae_f = excluded.mae_f,
+            bias_f = excluded.bias_f, updated_at = excluded.updated_at
+        """,
+        (
+            station,
+            city,
+            variable,
+            lead_time,
+            kind,
+            accuracy.n,
+            accuracy.mae_f,
+            accuracy.bias_f,
             updated_at,
         ),
     )

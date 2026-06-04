@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from rainmaker.store.db import connect, init_schema
@@ -86,3 +88,124 @@ def test_write_snapshot_is_idempotent_per_day():
     n = conn.execute("SELECT count(*) AS n FROM tracking_snapshot").fetchone()["n"]
     conn.close()
     assert n == 1
+
+
+def _setup_live(conn, city="NYC"):
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("r1", "2026-05-30T12:00:00+00:00", "ok"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        ("m1", city, "TMAX", "2026-05-31"),
+    )
+    dist = json.dumps({"mu": 70.0, "sigma": 2.0, "n_sources": 2})
+    for bucket in ("70-71°F", "72-73°F"):  # two buckets, same market -> one sample
+        conn.execute(
+            "INSERT INTO predictions "
+            "(run_id, market_id, bucket, p_win, dist_params, edge, recommended, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("r1", "m1", bucket, 0.5, dist, 0.1, 1, "t"),
+        )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("m1", 73.0, "t"),
+    )
+    conn.commit()
+
+
+def test_compute_live_accuracy_dedupes_buckets():
+    from rainmaker.tracking import compute_live_accuracy
+
+    conn = connect(":memory:")
+    _setup_live(conn)
+    rows = compute_live_accuracy(conn)
+    conn.close()
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row["station"], row["city"], row["variable"], row["lead_time"]) == (
+        "KLGA",
+        "NYC",
+        "TMAX",
+        1,
+    )
+    acc = row["accuracy"]
+    assert acc.n == 1  # two bucket rows collapse to one (run, market) sample
+    assert acc.mae_f == pytest.approx(3.0)  # |70 - 73|
+    assert acc.bias_f == pytest.approx(-3.0)  # forecast ran cold
+
+
+def test_compute_live_accuracy_skips_unknown_city():
+    from rainmaker.tracking import compute_live_accuracy
+
+    conn = connect(":memory:")
+    _setup_live(conn, city="Gotham")
+    rows = compute_live_accuracy(conn)
+    conn.close()
+    assert rows == []
+
+
+def test_compute_live_accuracy_empty_when_nothing_settled():
+    from rainmaker.tracking import compute_live_accuracy
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    assert compute_live_accuracy(conn) == []
+    conn.close()
+
+
+def test_write_snapshot_writes_live_accuracy_rows():
+    from rainmaker.tracking import write_snapshot
+
+    conn = connect(":memory:")
+    _setup_live(conn)
+    write_snapshot(conn, "2026-06-04", "t")
+    row = conn.execute("SELECT * FROM forecast_accuracy WHERE kind = 'live'").fetchone()
+    conn.close()
+    assert row is not None
+    assert row["station"] == "KLGA"
+    assert row["mae_f"] == pytest.approx(3.0)
+
+
+def test_compute_live_accuracy_skips_bad_rows():
+    from rainmaker.tracking import compute_live_accuracy
+
+    conn = connect(":memory:")
+    _setup_live(conn)
+    # a second market with unparsable dist_params
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        ("m2", "NYC", "TMAX", "2026-05-31"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, dist_params, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "m2", "70-71°F", 0.5, "not json", 0.1, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("m2", 71.0, "t"),
+    )
+    # a third market settled with a null actual
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        ("m3", "NYC", "TMAX", "2026-05-31"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, dist_params, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "m3", "70-71°F", 0.5, json.dumps({"mu": 70.0, "sigma": 2.0}), 0.1, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("m3", None, "t"),
+    )
+    conn.commit()
+    rows = compute_live_accuracy(conn)
+    conn.close()
+    # both bad rows are skipped; only the good m1 sample remains
+    assert len(rows) == 1
+    assert rows[0]["accuracy"].n == 1

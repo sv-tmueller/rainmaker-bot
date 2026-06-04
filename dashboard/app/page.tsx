@@ -47,15 +47,50 @@ async function getData() {
     .limit(1);
   const snap = snaps?.[0] ?? null;
 
-  return { bets, snap };
+  const { data: accRows } = await db
+    .from("forecast_accuracy")
+    .select("city, lead_time, kind, n, mae_f, bias_f")
+    .order("city")
+    .order("lead_time");
+
+  type AccCell = { n: number; mae: number; bias: number } | null;
+  type AccLine = { city: string; lead: number; backtest: AccCell; live: AccCell };
+  const accMap = new Map<string, AccLine>();
+  for (const r of accRows ?? []) {
+    // TMAX-only today; include r.variable in this key when TMIN accuracy lands.
+    const key = `${r.city}|${r.lead_time}`;
+    const line = accMap.get(key) ?? {
+      city: r.city as string,
+      lead: r.lead_time as number,
+      backtest: null,
+      live: null,
+    };
+    const cell = { n: r.n as number, mae: r.mae_f as number, bias: r.bias_f as number };
+    if (r.kind === "backtest") line.backtest = cell;
+    else line.live = cell;
+    accMap.set(key, line);
+  }
+  const accuracy = [...accMap.values()];
+
+  return { bets, snap, accuracy };
 }
 
 function pct(x: number) {
   return `${(x * 100).toFixed(0)}%`;
 }
 
+function degDelta(f: number) {
+  return `${f.toFixed(1)}°F (${((f * 5) / 9).toFixed(1)}°C)`;
+}
+
+function accCell(c: { n: number; mae: number; bias: number } | null) {
+  if (!c) return "–";
+  const sign = c.bias >= 0 ? "+" : "";
+  return `${degDelta(c.mae)}, bias ${sign}${degDelta(c.bias)}, n=${c.n}`;
+}
+
 export default async function Page() {
-  const { bets, snap } = await getData();
+  const { bets, snap, accuracy } = await getData();
   return (
     <main className="mx-auto max-w-3xl p-6 font-sans">
       <h1 className="text-2xl font-bold">Rainmaker</h1>
@@ -107,6 +142,31 @@ export default async function Page() {
             {snap.hit_rate === null ? "n/a" : pct(snap.hit_rate)} (n={snap.n_scored})
           </li>
         </ul>
+      )}
+      <h2 className="mt-6 text-lg font-semibold">Forecast accuracy</h2>
+      {accuracy.length === 0 ? (
+        <p className="text-gray-500">No accuracy data yet.</p>
+      ) : (
+        <table className="mt-2 w-full text-sm">
+          <thead>
+            <tr className="text-left text-gray-500">
+              <th>City</th>
+              <th>Lead</th>
+              <th>Backtest MAE</th>
+              <th>Live MAE</th>
+            </tr>
+          </thead>
+          <tbody>
+            {accuracy.map((a, i) => (
+              <tr key={i} className="border-t">
+                <td>{a.city}</td>
+                <td>{a.lead}d</td>
+                <td>{accCell(a.backtest)}</td>
+                <td>{accCell(a.live)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
       <p className="mt-6 text-xs text-gray-400">
         {snap ? `snapshot ${snap.snapshot_date}` : "no snapshot yet"}
