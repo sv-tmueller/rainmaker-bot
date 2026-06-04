@@ -57,6 +57,7 @@ async function getData() {
   type AccLine = { city: string; lead: number; backtest: AccCell; live: AccCell };
   const accMap = new Map<string, AccLine>();
   for (const r of accRows ?? []) {
+    // TMAX-only today; include r.variable in this key when TMIN accuracy lands.
     const key = `${r.city}|${r.lead_time}`;
     const line = accMap.get(key) ?? {
       city: r.city as string,
