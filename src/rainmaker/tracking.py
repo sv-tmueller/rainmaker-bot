@@ -79,3 +79,34 @@ def compute_calibration(conn: Conn) -> dict[str, Any]:
         else None
     )
     return {"n": len(rows), "brier": brier, "hit_rate": hit_rate}
+
+
+def write_snapshot(conn: Conn, on_date: str, created_at: str) -> dict[str, Any]:
+    """Compute the current P&L/calibration and upsert a snapshot row for on_date."""
+    pnl = compute_pnl(conn)
+    cal = compute_calibration(conn)
+    conn.execute(
+        "INSERT INTO tracking_snapshot "
+        "(snapshot_date, n_bets, wins, losses, total_pnl, roi, brier, hit_rate, "
+        "n_scored, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(snapshot_date) DO UPDATE SET "
+        "n_bets = excluded.n_bets, wins = excluded.wins, losses = excluded.losses, "
+        "total_pnl = excluded.total_pnl, roi = excluded.roi, brier = excluded.brier, "
+        "hit_rate = excluded.hit_rate, n_scored = excluded.n_scored, "
+        "created_at = excluded.created_at",
+        (
+            on_date,
+            pnl["n_bets"],
+            pnl["wins"],
+            pnl["losses"],
+            pnl["total_pnl"],
+            pnl["roi"],
+            cal["brier"],
+            cal["hit_rate"],
+            cal["n"],
+            created_at,
+        ),
+    )
+    conn.commit()
+    return {"pnl": pnl, "calibration": cal}

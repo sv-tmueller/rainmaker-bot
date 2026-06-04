@@ -30,7 +30,7 @@ from rainmaker.settle import run_settlement
 from rainmaker.store.db import connect, init_schema
 from rainmaker.store.query import load_calibration
 from rainmaker.store.record import EvaluatedMarket, record_run, save_calibration
-from rainmaker.tracking import compute_calibration, compute_pnl
+from rainmaker.tracking import compute_calibration, compute_pnl, write_snapshot
 
 SUPPORTED_VARIABLES = {"TMAX"}
 
@@ -179,6 +179,20 @@ def _track(db_path: str) -> None:
     print(f"calibration: Brier {brier}, recommended hit rate {hit} (n={cal['n']})")
 
 
+def _snapshot(db_path: str) -> None:
+    on_date = _today().isoformat()
+    if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        result = write_snapshot(conn, on_date, _now_iso())
+    finally:
+        conn.close()
+    p = result["pnl"]
+    print(f"snapshot {on_date}: {p['n_bets']} bets, total {p['total_pnl']:+.2f}u -> {db_path}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="rainmaker")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -205,6 +219,9 @@ def main(argv: list[str] | None = None) -> None:
     track = sub.add_parser("track", help="report P&L and calibration over settled markets")
     track.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
+    snapshot = sub.add_parser("snapshot", help="write a daily P&L/calibration snapshot row")
+    snapshot.add_argument("--db", default=DB_PATH, help="SQLite database path")
+
     args = parser.parse_args(argv)
 
     db = _datastore(args.db)
@@ -216,3 +233,5 @@ def main(argv: list[str] | None = None) -> None:
         _settle(db)
     elif args.command == "track":
         _track(db)
+    elif args.command == "snapshot":
+        _snapshot(db)

@@ -59,3 +59,30 @@ def test_compute_pnl_empty_when_nothing_settled():
     pnl = compute_pnl(conn)
     conn.close()
     assert pnl == {"n_bets": 0, "wins": 0, "losses": 0, "total_pnl": 0.0, "roi": 0.0}
+
+
+def test_write_snapshot_persists_metrics():
+    from rainmaker.tracking import write_snapshot
+
+    conn = connect(":memory:")
+    _setup(conn)
+    write_snapshot(conn, "2026-06-04", "2026-06-04T00:00:00Z")
+    row = conn.execute(
+        "SELECT * FROM tracking_snapshot WHERE snapshot_date = ?", ("2026-06-04",)
+    ).fetchone()
+    conn.close()
+    assert row["n_bets"] == 2
+    assert row["total_pnl"] == pytest.approx(0.30)
+    assert row["n_scored"] == 2
+
+
+def test_write_snapshot_is_idempotent_per_day():
+    from rainmaker.tracking import write_snapshot
+
+    conn = connect(":memory:")
+    _setup(conn)
+    write_snapshot(conn, "2026-06-04", "t1")
+    write_snapshot(conn, "2026-06-04", "t2")
+    n = conn.execute("SELECT count(*) AS n FROM tracking_snapshot").fetchone()["n"]
+    conn.close()
+    assert n == 1

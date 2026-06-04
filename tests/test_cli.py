@@ -125,6 +125,20 @@ def test_backfill_fits_and_saves_calibration(monkeypatch, tmp_path, capsys):
     assert saved == cal
 
 
+def test_snapshot_command_writes_and_reports(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        cli,
+        "write_snapshot",
+        lambda conn, on_date, created_at: {
+            "pnl": {"n_bets": 2, "wins": 1, "losses": 1, "total_pnl": 0.3, "roi": 0.42},
+            "calibration": {"n": 2, "brier": 0.13, "hit_rate": 0.5},
+        },
+    )
+    cli.main(["snapshot", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+    assert "snapshot" in out and "2 bets" in out
+
+
 def test_track_command_reports_pnl_and_calibration(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         cli,
