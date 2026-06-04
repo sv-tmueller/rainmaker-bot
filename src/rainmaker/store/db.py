@@ -89,6 +89,19 @@ CREATE TABLE IF NOT EXISTS calibration (
     PRIMARY KEY (station, variable, lead_time)
 );
 
+CREATE TABLE IF NOT EXISTS forecast_accuracy (
+    station    TEXT NOT NULL,
+    city       TEXT,
+    variable   TEXT NOT NULL,
+    lead_time  INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    n          INTEGER,
+    mae_f      REAL,
+    bias_f     REAL,
+    updated_at TEXT,
+    PRIMARY KEY (station, variable, lead_time, kind)
+);
+
 CREATE TABLE IF NOT EXISTS tracking_snapshot (
     snapshot_date TEXT PRIMARY KEY,
     n_bets        INTEGER,
