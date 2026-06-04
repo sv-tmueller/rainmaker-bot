@@ -172,6 +172,39 @@ def test_backfill_exits_nonzero_when_all_cities_fail(monkeypatch, tmp_path, caps
     assert "failed" in capsys.readouterr().err
 
 
+def test_backfill_partial_failure_exits_zero(monkeypatch, tmp_path, capsys):
+    from rainmaker.config import STATIONS
+    from rainmaker.probability.calibration import Accuracy
+
+    fail_city = sorted(STATIONS)[0]
+
+    def _mixed(station, variable, lead, start, end, client):
+        if station.icao == STATIONS[fail_city].icao:
+            raise httpx.ConnectError("down")
+        cal = Calibration(
+            station=station.icao,
+            variable=variable,
+            lead_time=lead,
+            bias=0.0,
+            spread_scale=1.0,
+            n_samples=42,
+        )
+        return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
+
+    monkeypatch.setattr(cli, "run_backfill", _mixed)
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    db = tmp_path / "t.db"
+
+    cli.main(["backfill", "--city", "all", "--db", str(db)])  # must not raise SystemExit
+
+    err = capsys.readouterr().err
+    assert fail_city in err and "failed" in err
+    conn = connect(str(db))
+    n = conn.execute("SELECT count(*) AS n FROM forecast_accuracy").fetchone()["n"]
+    conn.close()
+    assert n == len(STATIONS) - 1
+
+
 def test_snapshot_command_writes_and_reports(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         cli,

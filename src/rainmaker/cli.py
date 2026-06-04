@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
+from pydantic import ValidationError
 
 from rainmaker.backfill import run_backfill
 from rainmaker.config import (
@@ -136,6 +137,8 @@ def _backfill(city: str, variable: str, days: int, lead: int, db_path: str) -> N
             try:
                 cal, acc = run_backfill(station, variable, lead, start, end, client)
             except (httpx.HTTPError, ValueError) as exc:
+                if isinstance(exc, ValidationError):
+                    raise  # schema bug, not a data gap; fail loud
                 print(f"{name}: backfill failed: {exc}", file=sys.stderr)
                 continue
             now = _now_iso()
