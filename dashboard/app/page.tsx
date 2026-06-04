@@ -2,7 +2,7 @@ import { serverClient } from "../lib/supabase";
 
 export const dynamic = "force-dynamic"; // always read live data, never prerender
 
-type Bet = { title: string; bucket: string; pWin: number; ask: number; edge: number };
+type Bet = { title: string; bucket: string; pWin: number; ask: number; edge: number; forecastF: number | null };
 
 async function getData() {
   const db = serverClient();
@@ -19,7 +19,7 @@ async function getData() {
     const [{ data: preds }, { data: prices }, { data: markets }] = await Promise.all([
       db
         .from("predictions")
-        .select("market_id, bucket, p_win, edge")
+        .select("market_id, bucket, p_win, edge, dist_params")
         .eq("run_id", runId)
         .eq("recommended", 1),
       db.from("prices").select("market_id, outcome, price").eq("run_id", runId),
@@ -30,13 +30,23 @@ async function getData() {
     );
     const titleOf = new Map((markets ?? []).map((m) => [m.id, m.title as string]));
     bets = (preds ?? [])
-      .map((p) => ({
-        title: titleOf.get(p.market_id) ?? p.market_id,
-        bucket: p.bucket as string,
-        pWin: p.p_win as number,
-        ask: askOf.get(`${p.market_id}|${p.bucket}`) ?? 0,
-        edge: p.edge as number,
-      }))
+      .map((p) => {
+        let forecastF: number | null = null;
+        try {
+          const mu = JSON.parse(p.dist_params as string)?.mu;
+          if (typeof mu === "number") forecastF = mu;
+        } catch {
+          // no parsable mu -> blank forecast cell
+        }
+        return {
+          title: titleOf.get(p.market_id) ?? p.market_id,
+          bucket: p.bucket as string,
+          pWin: p.p_win as number,
+          ask: askOf.get(`${p.market_id}|${p.bucket}`) ?? 0,
+          edge: p.edge as number,
+          forecastF,
+        };
+      })
       .sort((a, b) => b.edge - a.edge);
   }
 
@@ -79,6 +89,24 @@ function pct(x: number) {
   return `${(x * 100).toFixed(0)}%`;
 }
 
+function degC(f: number) {
+  return (((f - 32) * 5) / 9).toFixed(1);
+}
+
+// Mirrors parse_bucket_label in src/rainmaker/polymarket/markets.py.
+function withCelsius(label: string): string {
+  const lowered = label.toLowerCase();
+  if (lowered.includes("below") || lowered.includes("higher") || lowered.includes("above")) {
+    const m = label.match(/-?\d+/);
+    if (!m) return label;
+    const op = lowered.includes("below") ? "<=" : ">=";
+    return `${label} (${op} ${degC(+m[0])}°C)`;
+  }
+  const m = label.match(/(-?\d+)\s*-\s*(-?\d+)/);
+  if (!m) return label;
+  return `${label} (${degC(+m[1])}-${degC(+m[2])}°C)`;
+}
+
 function degDelta(f: number) {
   return `${f.toFixed(1)}°F (${((f * 5) / 9).toFixed(1)}°C)`;
 }
@@ -104,6 +132,7 @@ export default async function Page() {
             <tr className="text-left text-gray-500">
               <th>Market</th>
               <th>Bucket</th>
+              <th>Forecast</th>
               <th>P(win)</th>
               <th>Ask</th>
               <th>Edge</th>
@@ -113,7 +142,8 @@ export default async function Page() {
             {bets.map((b, i) => (
               <tr key={i} className="border-t">
                 <td>{b.title}</td>
-                <td>{b.bucket}</td>
+                <td>{withCelsius(b.bucket)}</td>
+                <td>{b.forecastF === null ? "" : `${b.forecastF.toFixed(1)}°F / ${degC(b.forecastF)}°C`}</td>
                 <td>{pct(b.pWin)}</td>
                 <td>{b.ask.toFixed(2)}</td>
                 <td>
