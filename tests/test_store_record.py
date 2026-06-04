@@ -176,6 +176,7 @@ def test_accuracy_save_and_upsert_round_trip():
     assert (row["station"], row["city"], row["kind"]) == ("KSEA", "Seattle", "backtest")
     assert row["n"] == 60
     assert row["mae_f"] == pytest.approx(2.1)
+    assert row["bias_f"] == pytest.approx(-0.4)
 
     # same key again -> upserted, not duplicated
     save_accuracy(
@@ -192,3 +193,6 @@ def test_accuracy_save_and_upsert_round_trip():
     conn.close()
     assert len(rows) == 1
     assert rows[0]["n"] == 61
+    assert rows[0]["mae_f"] == pytest.approx(2.0)  # updated
+    assert rows[0]["bias_f"] == pytest.approx(-0.3)  # updated
+    assert rows[0]["updated_at"] == "t1"  # updated
