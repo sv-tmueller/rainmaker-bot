@@ -66,7 +66,11 @@ predictions (`recommended = 1` and `bucket IS NOT NULL`). For each:
 - `pnl = (1 - ask)` if won else `-ask` (one-unit stake).
 
 Aggregate to total P&L, win/loss record, and ROI (`total_pnl / total_staked`,
-where each bet stakes `ask`). Provide a by-date breakdown for a time series.
+where each bet stakes `ask`). Each recommended prediction row is one one-unit
+bet, so a market re-recommended across daily runs contributes several bets at
+different asks (this measures "bet one unit every time the bot recommended";
+deduping to one bet per market is a possible later refinement). The by-date time
+series is deferred to the dashboard (sub-project 4).
 
 ### Calibration accuracy (`src/rainmaker/tracking.py`)
 
