@@ -92,7 +92,9 @@ def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
 
     One sample per (run, market): the predicted mu against the settled actual,
     grouped per (station, variable, lead). DISTINCT collapses the per-bucket
-    prediction rows, which share one dist_params. Rows with an unknown city or
+    prediction rows, which share one dist_params. This relies on _record_predictions
+    writing an identical dist_params string for every bucket row of one (run, market);
+    if that changes, replace DISTINCT with a subquery. Rows with an unknown city or
     no usable mu/sigma are skipped.
     """
     rows = conn.execute(
@@ -159,6 +161,8 @@ def write_snapshot(conn: Conn, on_date: str, created_at: str) -> dict[str, Any]:
             created_at,
         ),
     )
+    # save_accuracy commits internally after each row; when there are no accuracy
+    # rows, the snapshot upsert above is committed by conn.commit() below.
     for row in compute_live_accuracy(conn):
         save_accuracy(
             conn,
