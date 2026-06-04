@@ -107,6 +107,17 @@ def test_compute_accuracy_mae_and_bias():
     assert acc.bias_f == pytest.approx(0.0)  # (2 - 3 + 1) / 3
 
 
+def test_compute_accuracy_bias_direction():
+    # all forecasts overshoot: bias is positive (mu - actual)
+    pairs = [
+        CalibrationPair(mu=72.0, sigma=2.0, actual=70.0),  # error +2
+        CalibrationPair(mu=74.0, sigma=2.0, actual=70.0),  # error +4
+    ]
+    acc = compute_accuracy(pairs)
+    assert acc.bias_f == pytest.approx(3.0)  # mean(+2, +4)
+    assert acc.mae_f == pytest.approx(3.0)
+
+
 def test_compute_accuracy_empty_raises():
     with pytest.raises(ValueError, match="no pairs"):
         compute_accuracy([])
