@@ -67,7 +67,7 @@ def test_evaluate_market_ranks_by_edge_and_flags_recommended():
     fs = _forecast_set([69, 70, 71, 72])  # mean 70.5
     # floor=0.45: p_win for the mode bucket at mu=70.5, sigma=1.5 is ~0.495, which
     # clears 0.45 but not 0.50 (2-degree bucket + sigma floor make it tight).
-    report = evaluate_market(market, fs, floor=0.45, min_sources=2, min_sigma=1.5)
+    report = evaluate_market(market, fs, floor=0.45, min_sources=2, min_sigma=1.5, min_edge=0.0)
     assert isinstance(report, MarketReport)
     assert report.n_sources == 2
     # sorted by edge desc
@@ -80,7 +80,7 @@ def test_evaluate_market_ranks_by_edge_and_flags_recommended():
 def test_recommended_requires_confidence_floor():
     market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.05)])
     fs = _forecast_set([60, 80])  # wide spread -> low P on any single 2-degree bucket
-    report = evaluate_market(market, fs, floor=0.90, min_sources=2, min_sigma=1.5)
+    report = evaluate_market(market, fs, floor=0.90, min_sources=2, min_sigma=1.5, min_edge=0.0)
     o = report.outcomes[0]
     assert o.edge > 0  # cheap ask, positive edge
     assert o.p_win < 0.90
@@ -90,7 +90,7 @@ def test_recommended_requires_confidence_floor():
 def test_recommended_requires_min_sources():
     market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.05)])
     fs = _forecast_set([70, 70, 71, 71], ok_sources=("nws",))  # only 1 source
-    report = evaluate_market(market, fs, floor=0.50, min_sources=2, min_sigma=1.5)
+    report = evaluate_market(market, fs, floor=0.50, min_sources=2, min_sigma=1.5, min_edge=0.0)
     assert report.n_sources == 1
     assert report.outcomes[0].recommended is False
 
@@ -103,7 +103,7 @@ def test_bucket_without_ask_is_excluded_not_ranked():
         ]
     )
     fs = _forecast_set([70, 71, 72])
-    report = evaluate_market(market, fs, floor=0.50, min_sources=2, min_sigma=1.5)
+    report = evaluate_market(market, fs, floor=0.50, min_sources=2, min_sigma=1.5, min_edge=0.0)
     assert [o.bucket_label for o in report.outcomes] == ["72-73°F"]
     assert report.excluded_no_ask == ["70-71°F"]
 
@@ -115,7 +115,7 @@ def test_evaluate_market_no_samples_yields_empty_outcomes():
         samples=[],
         coverage=[SourceCoverage(source="nws", ok=False, n_samples=0, error="down")],
     )
-    report = evaluate_market(market, fs, floor=0.50, min_sources=2, min_sigma=1.5)
+    report = evaluate_market(market, fs, floor=0.50, min_sources=2, min_sigma=1.5, min_edge=0.0)
     assert report.outcomes == []
     assert report.mu is None and report.sigma is None
     assert report.n_sources == 0
@@ -127,8 +127,10 @@ def test_evaluate_market_applies_calibration():
     cal = Calibration(
         station="KLGA", variable="TMAX", lead_time=1, bias=2.0, spread_scale=1.0, n_samples=50
     )
-    raw = evaluate_market(market, fs, floor=0.5, min_sources=2, min_sigma=1.5)
-    cald = evaluate_market(market, fs, floor=0.5, min_sources=2, min_sigma=1.5, calibration=cal)
+    raw = evaluate_market(market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0)
+    cald = evaluate_market(
+        market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0, calibration=cal
+    )
     assert raw.calibrated is False
     assert cald.calibrated is True
     assert raw.mu is not None and cald.mu is not None
@@ -141,7 +143,30 @@ def test_evaluate_market_low_sample_calibration_falls_back():
     cal = Calibration(
         station="KLGA", variable="TMAX", lead_time=1, bias=2.0, spread_scale=1.0, n_samples=5
     )
-    out = evaluate_market(market, fs, floor=0.5, min_sources=2, min_sigma=1.5, calibration=cal)
+    out = evaluate_market(
+        market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0, calibration=cal
+    )
     assert out.calibrated is False
     assert out.mu == 70.5  # bias not applied below MIN_CAL_SAMPLES
     assert out.sigma is not None and out.sigma > 1.5  # widened fallback
+
+
+def test_recommended_requires_min_edge():
+    # Near-certain bucket priced at 0.99: positive but tiny edge.
+    market = _market([_bucket("69°F or below", "below", threshold=69, best_ask=0.99)])
+    fs = _forecast_set([60, 60, 60, 60])  # far below threshold -> p_win ~1.0
+    report = evaluate_market(market, fs, floor=0.90, min_sources=2, min_sigma=1.5, min_edge=0.05)
+    o = report.outcomes[0]
+    assert o.p_win > 0.99
+    assert 0 < o.edge < 0.05
+    assert o.recommended is False  # passes floor and sources, fails min edge
+
+
+def test_recommended_passes_min_edge():
+    # Same near-certain bucket priced at 0.90: edge ~0.10 clears the threshold.
+    market = _market([_bucket("69°F or below", "below", threshold=69, best_ask=0.90)])
+    fs = _forecast_set([60, 60, 60, 60])
+    report = evaluate_market(market, fs, floor=0.90, min_sources=2, min_sigma=1.5, min_edge=0.05)
+    o = report.outcomes[0]
+    assert o.edge >= 0.05
+    assert o.recommended is True
