@@ -119,7 +119,8 @@ def _record_predictions(
     for o in report.outcomes:
         conn.execute(
             "INSERT INTO predictions "
-            "(run_id, market_id, bucket, p_win, confidence, dist_params, edge, recommended, created_at) "
+            "(run_id, market_id, bucket, p_win, confidence, dist_params, edge, "
+            "recommended, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             # confidence stays NULL: no calibrated confidence metric is recorded here.
             (
