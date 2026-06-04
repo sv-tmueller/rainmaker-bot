@@ -4,6 +4,7 @@ from rainmaker.probability.calibration import (
     Calibration,
     CalibrationPair,
     apply_calibration,
+    compute_accuracy,
     fit_calibration,
 )
 from rainmaker.probability.distribution import Gaussian
@@ -92,3 +93,20 @@ def test_calibration_save_load_round_trip():
     assert reloaded is not None and reloaded.bias == 2.0
     assert load_calibration(conn, "KLGA", "TMAX", 2) is None
     conn.close()
+
+
+def test_compute_accuracy_mae_and_bias():
+    pairs = [
+        CalibrationPair(mu=70.0, sigma=2.0, actual=68.0),  # error +2
+        CalibrationPair(mu=70.0, sigma=2.0, actual=73.0),  # error -3
+        CalibrationPair(mu=70.0, sigma=2.0, actual=69.0),  # error +1
+    ]
+    acc = compute_accuracy(pairs)
+    assert acc.n == 3
+    assert acc.mae_f == pytest.approx(2.0)  # (2 + 3 + 1) / 3
+    assert acc.bias_f == pytest.approx(0.0)  # (2 - 3 + 1) / 3
+
+
+def test_compute_accuracy_empty_raises():
+    with pytest.raises(ValueError, match="no pairs"):
+        compute_accuracy([])

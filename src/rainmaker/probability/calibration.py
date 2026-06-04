@@ -32,6 +32,14 @@ class Calibration(BaseModel):
     n_samples: int
 
 
+class Accuracy(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    n: int
+    mae_f: float  # mean absolute error, degrees F
+    bias_f: float  # mean signed error (mu - actual), degrees F
+
+
 def fit_calibration(
     station: str, variable: str, lead_time: int, pairs: list[CalibrationPair]
 ) -> Calibration:
@@ -51,6 +59,16 @@ def fit_calibration(
         bias=bias,
         spread_scale=max(spread_scale, 1e-6),  # keep > 0 for degenerate (perfect-fit) cells
         n_samples=len(pairs),
+    )
+
+
+def compute_accuracy(pairs: list[CalibrationPair]) -> Accuracy:
+    """Degrees-space forecast accuracy over forecast-vs-actual pairs."""
+    if not pairs:
+        raise ValueError("cannot compute accuracy with no pairs")
+    errors = np.array([p.mu - p.actual for p in pairs])
+    return Accuracy(
+        n=len(pairs), mae_f=float(np.mean(np.abs(errors))), bias_f=float(np.mean(errors))
     )
 
 
