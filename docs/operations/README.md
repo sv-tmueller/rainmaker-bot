@@ -98,6 +98,10 @@ The next run applies it and labels the forecast `(calibrated)`. Cells are
 per-(station, variable, lead time); the default fits lead 1. The output line
 includes a `mae=...F` field showing the backtest mean absolute error.
 
+To refresh the cloud database without handling the DSN locally, trigger the
+`backfill` workflow in the GitHub Actions tab (Run workflow). It runs
+`backfill --city all` against Supabase using the `DATABASE_URL` repo secret.
+
 ## The dashboard
 
 `dashboard/` is a read-only Next.js app showing today's recommended bets and the
