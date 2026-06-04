@@ -1,7 +1,38 @@
 # Operations
 
-How to run and operate the bot. MVP 1.0 is advisory and read-only: it tells you
-what to bet, you place the bet on Polymarket yourself.
+How to run and operate the bot. MVP 1.0/2.0 are advisory and tracking: the bot
+tells you what to bet and scores itself afterwards, but never trades. You place
+bets on Polymarket yourself.
+
+## The daily cloud run
+
+GitHub Actions runs `.github/workflows/daily-run.yml` at 13:00 UTC daily (and on
+manual `workflow_dispatch`): `rainmaker run`, then `rainmaker settle`, then
+`rainmaker snapshot`, all against Supabase Postgres via the `DATABASE_URL`
+repository secret (the Supabase session-pooler connection string). Each step
+refuses to run unless that secret is a Postgres DSN, so a misconfigured secret
+fails loud instead of silently writing to a throwaway SQLite file in the runner.
+The dated md/json report is attached to each run as an artifact.
+
+Every CLI command targets local SQLite (default `rainmaker.db`) unless
+`DATABASE_URL` is set to a postgres DSN. Export the prod DSN locally only when
+you mean to touch prod.
+
+## Commands
+
+- `uv run rainmaker run`: discover live US-city temperature markets, forecast,
+  rank by edge, print and write the report, persist the run.
+- `uv run rainmaker settle`: record NOAA NCEI daily extremes for past markets
+  into `outcomes`. NOAA is a documented proxy for Weather Underground, the true
+  resolution source. Idempotent catch-up: NCEI lags a day or two, so unsettled
+  markets are simply retried on later runs.
+- `uv run rainmaker track`: print P&L and calibration over settled markets.
+  P&L is hypothetical: one unit staked on every recommended bet at its listed
+  ask, so a market re-recommended on several days counts as several bets.
+- `uv run rainmaker snapshot`: upsert today's metrics row into
+  `tracking_snapshot`. This is what the dashboard reads.
+- `uv run rainmaker backfill --city <X>`: fit a calibration cell from history
+  (NCEI actuals vs Open-Meteo historical forecasts).
 
 ## Daily report runbook
 
@@ -11,16 +42,13 @@ what to bet, you place the bet on Polymarket yourself.
 uv run rainmaker run
 ```
 
-Optional flags: `--reports-dir <dir>` (default `reports/`) and `--db <path>`
-(default `rainmaker.db`). The command discovers every live US-city temperature
-market, forecasts each one, ranks the outcomes by edge, prints the report, and
-writes it to disk.
+Optional flags: `--reports-dir <dir>` (default `reports/`) and `--db <path>`.
 
 ### What you get
 
 - Terminal output and `reports/<date>.md`: the human report.
-- `reports/<date>.json`: the same report, machine-readable (for automation).
-- `rainmaker.db`: every run is recorded, plus any fitted calibration.
+- `reports/<date>.json`: the same report, machine-readable.
+- The datastore: every run is recorded, plus calibration and outcomes.
 
 ### How to read it
 
@@ -39,19 +67,19 @@ confidence floor (`CONFIDENCE_FLOOR`, currently 0.90) and at least
 `MIN_SOURCES` forecast sources. Ranking is by edge, never by confidence alone:
 a 95% outcome priced at 0.97 loses money; an 80% outcome at 0.55 is a good bet.
 The per-market tables below the summary show every bucket if you want the full
-picture, including high-edge but lower-confidence outcomes the gates exclude.
+picture.
 
 ### Placing the bet
 
 For each recommended bet, open that market on Polymarket and buy YES up to the
-listed ask. The bot never trades; order placement is manual in 1.0 (automated
-trading is MVP 3.0).
+listed ask. The bot never trades; order placement is manual (automated trading
+is MVP 3.0).
 
 ## Timing
 
 Day-of markets are nearly resolved (the mode bucket is already priced near 1.00),
 so edge is usually near zero. Real edge tends to appear one to three days before
-settlement, when the forecast distribution is still wide. Running daily catches
+settlement, when the forecast distribution is still wide. The daily run catches
 those windows.
 
 ## Calibration
@@ -63,12 +91,23 @@ and widens the spread to stay conservative. To fit a correction from history:
 uv run rainmaker backfill --city "Los Angeles"
 ```
 
-This pairs NOAA NCEI actuals with historical forecasts, fits a per-(station,
-variable, lead) bias and spread-scale, and stores it in `rainmaker.db`. The next
-run applies it and labels the forecast `(calibrated)`.
+The next run applies it and labels the forecast `(calibrated)`. Cells are
+per-(station, variable, lead time); the default fits lead 1.
 
-## Future automation
+## The dashboard
 
-`reports/<date>.json` is the integration point. The CLI is deterministic and
-safe to run on a schedule (cron, CI). A future version can read the JSON and
-place orders through Polymarket's CLOB API; that is out of scope for 1.0.
+`dashboard/` is a read-only Next.js app showing today's recommended bets and the
+latest tracking snapshot (P&L, record, ROI, Brier, hit rate).
+
+Deploy: a Vercel project with root directory `dashboard/`, env vars
+`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (used server-side only), and
+Cloudflare Access in front of the hostname. The app has no auth code; access is
+gated at the edge. Local dev: copy `dashboard/.env.example` to
+`dashboard/.env.local`, fill it in, then `npm run dev` in `dashboard/`.
+
+## Automation status
+
+The daily cron is the automation for 1.0/2.0. `reports/<date>.json` and the
+Supabase tables (`predictions`, `prices`, `outcomes`, `tracking_snapshot`) are
+the integration points. Order placement stays manual; automated trading via the
+CLOB API is MVP 3.0.
