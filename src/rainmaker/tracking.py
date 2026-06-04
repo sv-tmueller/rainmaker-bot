@@ -94,8 +94,8 @@ def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
     grouped per (station, variable, lead). DISTINCT collapses the per-bucket
     prediction rows, which share one dist_params. This relies on _record_predictions
     writing an identical dist_params string for every bucket row of one (run, market);
-    if that changes, replace DISTINCT with a subquery. Rows with an unknown city or
-    no usable mu/sigma are skipped.
+    if that changes, replace DISTINCT with a subquery. Rows with an unknown city,
+    unparsable dist_params, a null actual, or no usable mu/sigma are skipped.
     """
     rows = conn.execute(
         "SELECT DISTINCT p.run_id AS run_id, p.market_id AS market_id, "
@@ -106,14 +106,17 @@ def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
         "JOIN outcomes o ON o.market_id = p.market_id "
         "JOIN markets m ON m.id = p.market_id "
         "JOIN runs r ON r.id = p.run_id "
-        "WHERE p.dist_params IS NOT NULL"
+        "WHERE p.dist_params IS NOT NULL AND o.actual_value IS NOT NULL"
     ).fetchall()
     groups: dict[tuple[str, str, str, int], list[CalibrationPair]] = defaultdict(list)
     for r in (dict(row) for row in rows):
         station = STATIONS.get(r["city"])
         if station is None:
             continue
-        params = json.loads(r["dist_params"])
+        try:
+            params = json.loads(r["dist_params"])
+        except json.JSONDecodeError:
+            continue  # unparsable dist_params: skip, never fail the snapshot
         mu, sigma = params.get("mu"), params.get("sigma")
         if mu is None or sigma is None or sigma <= 0:
             continue

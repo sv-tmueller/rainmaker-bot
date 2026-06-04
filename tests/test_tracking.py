@@ -166,3 +166,46 @@ def test_write_snapshot_writes_live_accuracy_rows():
     assert row is not None
     assert row["station"] == "KLGA"
     assert row["mae_f"] == pytest.approx(3.0)
+
+
+def test_compute_live_accuracy_skips_bad_rows():
+    from rainmaker.tracking import compute_live_accuracy
+
+    conn = connect(":memory:")
+    _setup_live(conn)
+    # a second market with unparsable dist_params
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        ("m2", "NYC", "TMAX", "2026-05-31"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, dist_params, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "m2", "70-71°F", 0.5, "not json", 0.1, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("m2", 71.0, "t"),
+    )
+    # a third market settled with a null actual
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        ("m3", "NYC", "TMAX", "2026-05-31"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, dist_params, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "m3", "70-71°F", 0.5, json.dumps({"mu": 70.0, "sigma": 2.0}), 0.1, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("m3", None, "t"),
+    )
+    conn.commit()
+    rows = compute_live_accuracy(conn)
+    conn.close()
+    # both bad rows are skipped; only the good m1 sample remains
+    assert len(rows) == 1
+    assert rows[0]["accuracy"].n == 1
