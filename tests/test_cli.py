@@ -125,6 +125,21 @@ def test_backfill_fits_and_saves_calibration(monkeypatch, tmp_path, capsys):
     assert saved == cal
 
 
+def test_track_command_reports_pnl_and_calibration(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        cli,
+        "compute_pnl",
+        lambda conn: {"n_bets": 2, "wins": 1, "losses": 1, "total_pnl": 0.3, "roi": 0.42},
+    )
+    monkeypatch.setattr(
+        cli, "compute_calibration", lambda conn: {"n": 2, "brier": 0.127, "hit_rate": 0.5}
+    )
+    cli.main(["track", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+    assert "P&L: 2 bets, 1-1" in out
+    assert "Brier 0.127" in out
+
+
 def test_settle_command_reports_summary(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "run_settlement", lambda conn, client, today, settled_at: (2, 1))
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
