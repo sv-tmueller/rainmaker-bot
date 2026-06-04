@@ -10,7 +10,12 @@ into a calibrated probability for each market outcome, compares that probability
 to the market price, and produces a daily report of bets ranked by edge
 (expected value). A human reviews the report and places bets manually.
 
-Status: Phase 3 complete: the pipeline produces a daily edge-ranked report and persists every run to SQLite. Phase 4 (historical backfill + calibration) is next.
+Status: MVP 1.0 advisory is live for 11 US cities (phases 0-4 done, plus the
+Phase 5 city expansion; the precipitation and TMIN slices remain). MVP 2.0 is
+code-complete: a daily GitHub Actions run persists to Supabase Postgres, settles
+past markets against NOAA actuals, and writes a daily P&L/calibration snapshot;
+the read-only dashboard lives in `dashboard/` (the Vercel + Cloudflare Access
+deploy is an operator step). MVP 3.0 (automated trading) has not started.
 
 ## Working principles
 
@@ -59,15 +64,17 @@ These are easy to get wrong and they break the whole premise:
 
 ## Roadmap (do not pull later phases forward)
 
-- MVP 1.0: advisory (current). Highest-effort foundation: the data has to be
-  near-perfect.
-- MVP 2.0: tracking. Settle markets against NOAA actuals, log P&L, report
-  calibration over time. Likely the point we move SQLite to Supabase Postgres
-  and add a web dashboard.
-- MVP 3.0: automated trading via Polymarket's CLOB API.
+- MVP 1.0: advisory. Done for the temperature pipeline (11 cities); the
+  remaining slices are precipitation and TMIN markets (each needs its own
+  Phase 0 resolution-rule capture first).
+- MVP 2.0: tracking. Done: Supabase Postgres store, daily scheduled runs,
+  NOAA-proxy settlement, P&L/calibration tracking, and the web dashboard.
+- MVP 3.0: automated trading via Polymarket's CLOB API. Not started.
 
-The MVP 1.0 schema is SQLite but is designed to port to Supabase Postgres later
-(JSON columns map to jsonb). Keep it portable; do not add SQLite-only features.
+The store is dual-backend: SQLite locally and in tests, Supabase Postgres when
+`DATABASE_URL` is set (the cloud run). Keep the shared SQL portable; do not add
+SQLite-only features. Changes to existing tables go through migrations in
+`store/migrate.py`; new tables go in the base schema.
 
 ## Phase order
 
@@ -82,20 +89,30 @@ spec for the full phase plan.
 Python 3.11+ managed with uv. Commands:
 
 - Install: `uv sync`
-- Run: `uv run rainmaker run` (Phase 1: NYC highest-temp; `--city`, `--variable`, `--date` optional)
+- Run: `uv run rainmaker run` (discovers all live US-city markets; `--reports-dir`, `--db`)
+- Settle: `uv run rainmaker settle` (record NOAA actuals for past markets)
+- Track: `uv run rainmaker track` (P&L + calibration summary over settled markets)
+- Snapshot: `uv run rainmaker snapshot` (upsert the daily metrics row the dashboard reads)
+- Backfill: `uv run rainmaker backfill --city <X>` (fit a calibration cell from history)
 - Test: `uv run pytest`
 - Lint: `uv run ruff check .`  Format: `uv run ruff format .`
 - Type check: `uv run mypy src`
 
-Runtime deps: httpx, pydantic. (numpy/scipy/pandas arrive with the Phase 2 probability engine.)
-API clients are tested against saved JSON fixtures in `tests/fixtures/`, never live endpoints.
+Every command uses local SQLite unless `DATABASE_URL` is set to a postgres DSN
+(the daily GitHub Actions workflow sets it from a repo secret). Runtime deps:
+httpx, pydantic, numpy, scipy, psycopg. The dashboard in `dashboard/` is
+Next.js; verify it with `npm run build` there. API clients are tested against
+saved JSON fixtures in `tests/fixtures/`, never live endpoints.
 
 ## Repo layout
 
 ```
 src/rainmaker/
-  config.py           station registry, Target, source config constants
-  cli.py              `rainmaker run` entry point
+  config.py           station registry (11 cities), Target, source config constants
+  cli.py              run/settle/track/snapshot/backfill entry points
+  backfill.py         NCEI actuals + historical forecasts -> calibration fit
+  settle.py           settle past markets against NOAA actuals (idempotent catch-up)
+  tracking.py         hypothetical P&L + calibration scoring, daily snapshot
   forecasts/
     base.py           ForecastSample, ForecastSet, ForecastSource protocol
     nws.py            NWS fetch + parse
@@ -103,20 +120,25 @@ src/rainmaker/
     aggregate.py      pool sources, coverage, freshness
   probability/
     distribution.py   pooled samples -> Gaussian (uncalibrated, sigma floor)
+    calibration.py    per-(station, variable, lead) bias/spread fit + apply
     outcomes.py       integrate Gaussian over buckets (continuity-corrected)
   ranking/
     edge.py           evaluate_market -> edge-ranked outcomes + gates
   report/
-    render.py         terminal + markdown/JSON report
+    render.py         terminal + markdown/JSON report, recommended-bets summary
   polymarket/
-    client.py         Gamma discovery (read-only)
-    markets.py        event JSON -> Market (target + buckets)
+    client.py         Gamma discovery (read-only, skips malformed markets)
+    markets.py        event JSON -> Market (target + buckets, ICAO guard)
   store/
-    db.py             SQLite schema + connection (Postgres-ready)
+    db.py             dual-backend store (SQLite default, Postgres via DSN)
+    migrate.py        forward schema migrations (schema_migrations)
     record.py         persist a run (runs/markets/prices/forecasts/predictions)
     query.py          read-back helpers
+dashboard/            read-only Next.js dashboard (Vercel, behind Cloudflare Access)
+.github/workflows/
+  daily-run.yml       daily cron: run -> settle -> snapshot against Supabase
 tests/
-  fixtures/           saved API responses for KLGA (NWS + Open-Meteo)
+  fixtures/           saved API responses (NWS, Open-Meteo, NCEI, Polymarket)
   test_*.py           unit and I/O tests (pytest-httpx for mocked HTTP)
 docs/
   architecture/       stack and policy decisions, data model, domain math
