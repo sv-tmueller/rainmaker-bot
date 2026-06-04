@@ -258,3 +258,9 @@ class _DummyClient:
 
     def __exit__(self, *a):
         return False
+
+
+def test_db_label_redacts_postgres_dsn():
+    assert cli._db_label("postgresql://user:secret@host:5432/db") == "postgres"
+    assert cli._db_label("postgres://user:secret@host/db") == "postgres"
+    assert cli._db_label("rainmaker.db") == "rainmaker.db"

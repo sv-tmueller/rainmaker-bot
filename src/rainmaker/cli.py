@@ -54,6 +54,11 @@ def _datastore(default: str) -> str:
     return os.environ.get("DATABASE_URL") or default
 
 
+def _db_label(db_path: str) -> str:
+    """Safe display name for the datastore: never echo DSN credentials."""
+    return "postgres" if db_path.startswith(("postgres://", "postgresql://")) else db_path
+
+
 def _forecast_for(target: Target, client: httpx.Client) -> ForecastSet:
     return aggregate(target, [NwsSource(client), OpenMeteoSource(client)])
 
@@ -117,7 +122,7 @@ def _run(reports_dir: str, db_path: str) -> None:
             status="ok",
             evaluated=evaluated,
         )
-        print(f"wrote {paths[0]} and {paths[1]}; recorded run to {db_path}")
+        print(f"wrote {paths[0]} and {paths[1]}; recorded run to {_db_label(db_path)}")
     finally:
         client.close()
         conn.close()
@@ -159,7 +164,7 @@ def _backfill(city: str, variable: str, days: int, lead: int, db_path: str) -> N
             print(
                 f"calibrated {cal.station} {cal.variable} lead={cal.lead_time}: "
                 f"bias={cal.bias:+.2f}F spread_scale={cal.spread_scale:.2f} "
-                f"mae={acc.mae_f:.2f}F n={cal.n_samples} -> {db_path}"
+                f"mae={acc.mae_f:.2f}F n={cal.n_samples} -> {_db_label(db_path)}"
             )
     finally:
         client.close()
@@ -181,7 +186,7 @@ def _settle(db_path: str) -> None:
     finally:
         client.close()
         conn.close()
-    print(f"settled {settled} market(s); {waiting} waiting on NCEI data -> {db_path}")
+    print(f"settled {settled} market(s); {waiting} waiting on NCEI data -> {_db_label(db_path)}")
 
 
 def _track(db_path: str) -> None:
@@ -214,7 +219,10 @@ def _snapshot(db_path: str) -> None:
     finally:
         conn.close()
     p = result["pnl"]
-    print(f"snapshot {on_date}: {p['n_bets']} bets, total {p['total_pnl']:+.2f}u -> {db_path}")
+    print(
+        f"snapshot {on_date}: {p['n_bets']} bets, total {p['total_pnl']:+.2f}u "
+        f"-> {_db_label(db_path)}"
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
