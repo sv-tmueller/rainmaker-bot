@@ -30,6 +30,7 @@ from rainmaker.settle import run_settlement
 from rainmaker.store.db import connect, init_schema
 from rainmaker.store.query import load_calibration
 from rainmaker.store.record import EvaluatedMarket, record_run, save_calibration
+from rainmaker.tracking import compute_calibration, compute_pnl
 
 SUPPORTED_VARIABLES = {"TMAX"}
 
@@ -159,6 +160,25 @@ def _settle(db_path: str) -> None:
     print(f"settled {settled} market(s); {waiting} waiting on NCEI data -> {db_path}")
 
 
+def _track(db_path: str) -> None:
+    if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        pnl = compute_pnl(conn)
+        cal = compute_calibration(conn)
+    finally:
+        conn.close()
+    print(
+        f"P&L: {pnl['n_bets']} bets, {pnl['wins']}-{pnl['losses']}, "
+        f"total {pnl['total_pnl']:+.2f}u, ROI {pnl['roi']:+.1%}"
+    )
+    brier = "n/a" if cal["brier"] is None else f"{cal['brier']:.3f}"
+    hit = "n/a" if cal["hit_rate"] is None else f"{cal['hit_rate']:.0%}"
+    print(f"calibration: Brier {brier}, recommended hit rate {hit} (n={cal['n']})")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="rainmaker")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -182,6 +202,9 @@ def main(argv: list[str] | None = None) -> None:
     settle = sub.add_parser("settle", help="settle past markets against NOAA actuals")
     settle.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
+    track = sub.add_parser("track", help="report P&L and calibration over settled markets")
+    track.add_argument("--db", default=DB_PATH, help="SQLite database path")
+
     args = parser.parse_args(argv)
 
     db = _datastore(args.db)
@@ -191,3 +214,5 @@ def main(argv: list[str] | None = None) -> None:
         _backfill(args.city, args.variable, args.days, args.lead, db)
     elif args.command == "settle":
         _settle(db)
+    elif args.command == "track":
+        _track(db)
