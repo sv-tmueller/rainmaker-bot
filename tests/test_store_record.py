@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from rainmaker.config import CONFIDENCE_FLOOR, MIN_SIGMA_F, MIN_SOURCES
+from rainmaker.config import CONFIDENCE_FLOOR, MIN_EDGE, MIN_SIGMA_F, MIN_SOURCES
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import parse_market
 from rainmaker.ranking.edge import evaluate_market
@@ -60,7 +60,12 @@ def _evaluated():
     market = _nyc_market()
     fs = _forecast_set(market.target)
     report = evaluate_market(
-        market, fs, floor=CONFIDENCE_FLOOR, min_sources=MIN_SOURCES, min_sigma=MIN_SIGMA_F
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_F,
+        min_edge=MIN_EDGE,
     )
     return market, fs, report
 

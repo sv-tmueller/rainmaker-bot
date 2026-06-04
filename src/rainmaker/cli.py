@@ -12,6 +12,7 @@ from rainmaker.backfill import run_backfill
 from rainmaker.config import (
     CONFIDENCE_FLOOR,
     DB_PATH,
+    MIN_EDGE,
     MIN_SIGMA_F,
     MIN_SOURCES,
     NWS_USER_AGENT,
@@ -98,6 +99,7 @@ def _run(reports_dir: str, db_path: str) -> None:
                 floor=CONFIDENCE_FLOOR,
                 min_sources=MIN_SOURCES,
                 min_sigma=MIN_SIGMA_F,
+                min_edge=MIN_EDGE,
                 calibration=calibration,
             )
             evaluated.append((market, forecast_set, report))

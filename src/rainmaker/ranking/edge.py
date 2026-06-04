@@ -44,6 +44,7 @@ def evaluate_market(
     floor: float,
     min_sources: int,
     min_sigma: float,
+    min_edge: float,
     calibration: Calibration | None = None,
 ) -> MarketReport:
     n_sources = sum(1 for c in forecast_set.coverage if c.ok)
@@ -74,10 +75,10 @@ def evaluate_market(
             continue
         p_win = bucket_probability(gaussian, bucket)
         edge = p_win - bucket.best_ask
-        # recommended gates: confidence floor + min sources + positive edge.
-        # A minimum-edge threshold (e.g. edge >= 0.05) is a natural Phase 4 tuning
-        # knob; the spec requires only floor + min-source for now.
-        recommended = p_win >= floor and n_sources >= min_sources and edge > 0
+        # recommended gates: confidence floor + min sources + minimum edge.
+        # The edge threshold keeps near-worthless bets (pay 0.99 to win 0.01)
+        # out of the recommendations.
+        recommended = p_win >= floor and n_sources >= min_sources and edge >= min_edge
         outcomes.append(
             RankedOutcome(
                 bucket_label=bucket.label,
