@@ -1,65 +1,116 @@
-import Image from "next/image";
+import { serverClient } from "../lib/supabase";
 
-export default function Home() {
+export const dynamic = "force-dynamic"; // always read live data, never prerender
+
+type Bet = { title: string; bucket: string; pWin: number; ask: number; edge: number };
+
+async function getData() {
+  const db = serverClient();
+
+  const { data: runs } = await db
+    .from("runs")
+    .select("id")
+    .order("started_at", { ascending: false })
+    .limit(1);
+  const runId = runs?.[0]?.id as string | undefined;
+
+  let bets: Bet[] = [];
+  if (runId) {
+    const [{ data: preds }, { data: prices }, { data: markets }] = await Promise.all([
+      db
+        .from("predictions")
+        .select("market_id, bucket, p_win, edge")
+        .eq("run_id", runId)
+        .eq("recommended", 1),
+      db.from("prices").select("market_id, outcome, price").eq("run_id", runId),
+      db.from("markets").select("id, title"),
+    ]);
+    const askOf = new Map(
+      (prices ?? []).map((p) => [`${p.market_id}|${p.outcome}`, p.price as number]),
+    );
+    const titleOf = new Map((markets ?? []).map((m) => [m.id, m.title as string]));
+    bets = (preds ?? [])
+      .map((p) => ({
+        title: titleOf.get(p.market_id) ?? p.market_id,
+        bucket: p.bucket as string,
+        pWin: p.p_win as number,
+        ask: askOf.get(`${p.market_id}|${p.bucket}`) ?? 0,
+        edge: p.edge as number,
+      }))
+      .sort((a, b) => b.edge - a.edge);
+  }
+
+  const { data: snaps } = await db
+    .from("tracking_snapshot")
+    .select("*")
+    .order("snapshot_date", { ascending: false })
+    .limit(1);
+  const snap = snaps?.[0] ?? null;
+
+  return { bets, snap };
+}
+
+function pct(x: number) {
+  return `${(x * 100).toFixed(0)}%`;
+}
+
+export default async function Page() {
+  const { bets, snap } = await getData();
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+    <main className="mx-auto max-w-3xl p-6 font-sans">
+      <h1 className="text-2xl font-bold">Rainmaker</h1>
+
+      <h2 className="mt-6 text-lg font-semibold">Recommended bets</h2>
+      {bets.length === 0 ? (
+        <p className="text-gray-500">No bets pass the gates right now.</p>
+      ) : (
+        <table className="mt-2 w-full text-sm">
+          <thead>
+            <tr className="text-left text-gray-500">
+              <th>Market</th>
+              <th>Bucket</th>
+              <th>P(win)</th>
+              <th>Ask</th>
+              <th>Edge</th>
+            </tr>
+          </thead>
+          <tbody>
+            {bets.map((b, i) => (
+              <tr key={i} className="border-t">
+                <td>{b.title}</td>
+                <td>{b.bucket}</td>
+                <td>{pct(b.pWin)}</td>
+                <td>{b.ask.toFixed(2)}</td>
+                <td>
+                  {b.edge >= 0 ? "+" : ""}
+                  {b.edge.toFixed(2)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h2 className="mt-6 text-lg font-semibold">Performance</h2>
+      {!snap || snap.n_bets === 0 ? (
+        <p className="text-gray-500">No settled results yet.</p>
+      ) : (
+        <ul className="mt-2 text-sm">
+          <li>
+            P&amp;L: {snap.total_pnl >= 0 ? "+" : ""}
+            {snap.total_pnl.toFixed(2)}u over {snap.n_bets} bets ({snap.wins}-{snap.losses}), ROI{" "}
+            {snap.roi >= 0 ? "+" : ""}
+            {pct(snap.roi)}
+          </li>
+          <li>
+            Calibration: Brier {snap.brier === null ? "n/a" : snap.brier.toFixed(3)}, hit rate{" "}
+            {snap.hit_rate === null ? "n/a" : pct(snap.hit_rate)} (n={snap.n_scored})
+          </li>
+        </ul>
+      )}
+      <p className="mt-6 text-xs text-gray-400">
+        {snap ? `snapshot ${snap.snapshot_date}` : "no snapshot yet"}
+      </p>
+    </main>
   );
 }
