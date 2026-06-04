@@ -163,8 +163,12 @@ def connect(dsn: str) -> Conn:
 
 
 def init_schema(conn: Conn) -> None:
-    """Create every table if absent. Idempotent. Backend-appropriate DDL."""
+    """Create every table if absent, then apply forward migrations. Idempotent."""
     for statement in _schema_for(conn.backend).split(";"):
         if statement.strip():
             conn.execute(statement)
     conn.commit()
+    # Imported here (not at module top) to avoid a db <-> migrate import cycle.
+    from rainmaker.store.migrate import apply_migrations
+
+    apply_migrations(conn)
