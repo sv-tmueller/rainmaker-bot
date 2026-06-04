@@ -137,3 +137,20 @@ def test_record_market_upsert_is_idempotent():
     assert count_rows(conn, "runs") == 2
     assert count_rows(conn, "prices") == 2 * len(market.buckets)  # appended per run
     conn.close()
+
+
+def test_record_predictions_stores_bucket():
+    conn = connect(":memory:")
+    init_schema(conn)
+    market, fs, report = _evaluated()
+    record_run(
+        conn,
+        run_id="run-1",
+        started_at="t0",
+        finished_at="t1",
+        status="ok",
+        evaluated=[(market, fs, report)],
+    )
+    rows = conn.execute("SELECT bucket FROM predictions WHERE run_id = ?", ("run-1",)).fetchall()
+    conn.close()
+    assert {r["bucket"] for r in rows} == {o.bucket_label for o in report.outcomes}
