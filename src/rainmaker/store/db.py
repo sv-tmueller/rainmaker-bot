@@ -88,6 +88,19 @@ CREATE TABLE IF NOT EXISTS calibration (
     updated_at   TEXT,
     PRIMARY KEY (station, variable, lead_time)
 );
+
+CREATE TABLE IF NOT EXISTS tracking_snapshot (
+    snapshot_date TEXT PRIMARY KEY,
+    n_bets        INTEGER,
+    wins          INTEGER,
+    losses        INTEGER,
+    total_pnl     REAL,
+    roi           REAL,
+    brier         REAL,
+    hit_rate      REAL,
+    n_scored      INTEGER,
+    created_at    TEXT
+);
 """
 
 # The SQLite schema with two backend differences:
