@@ -25,7 +25,8 @@ Issue: #42
 
 Append to `tests/test_calibration.py` (its existing imports already include
 `pytest` and `CalibrationPair`; extend the `rainmaker.probability.calibration`
-import with `Accuracy, compute_accuracy`):
+import with `compute_accuracy` only - the tests never name `Accuracy`, so
+importing it would trip ruff's unused-import check):
 
 ```python
 def test_compute_accuracy_mae_and_bias():
