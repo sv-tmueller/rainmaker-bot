@@ -96,6 +96,17 @@ def test_evaluate_market_emits_recommended_no_bet():
     assert no.recommended is True  # selling it clears the floor and the edge gate
 
 
+def test_no_bet_emitted_even_when_yes_ask_absent():
+    # A bucket with no YES ask but a NO ask (a bids-only YES book) still has a
+    # fillable NO bet; it must not be dropped with the excluded YES side.
+    market = _market([_bucket("80-81°F", "range", lo=80, hi=81, best_ask=None, no_ask=0.70)])
+    fs = _forecast_set([69, 70, 71])
+    report = evaluate_market(market, fs, floor=0.90, min_sources=2, min_sigma=1.5, min_edge=0.05)
+    assert report.excluded_no_ask == ["80-81°F"]  # YES has no ask
+    assert [o.side for o in report.outcomes] == ["NO"]  # but the NO bet survives
+    assert report.outcomes[0].recommended is True
+
+
 def test_no_bet_skipped_without_no_ask():
     market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.40)])  # no_ask None
     fs = _forecast_set([69, 70, 71, 72])

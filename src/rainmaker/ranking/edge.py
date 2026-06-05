@@ -71,27 +71,27 @@ def evaluate_market(
     outcomes: list[RankedOutcome] = []
     excluded: list[str] = []
     for bucket in market.buckets:
-        if bucket.best_ask is None or bucket.best_ask <= 0:
-            excluded.append(bucket.label)
-            continue
         p_win = bucket_probability(gaussian, bucket)
-        edge = p_win - bucket.best_ask
-        # recommended gates: confidence floor + min sources + minimum edge.
-        # The edge threshold keeps near-worthless bets (pay 0.99 to win 0.01)
-        # out of the recommendations.
-        recommended = p_win >= floor and n_sources >= min_sources and edge >= min_edge
-        outcomes.append(
-            RankedOutcome(
-                bucket_label=bucket.label,
-                side="YES",
-                p_win=p_win,
-                best_ask=bucket.best_ask,
-                edge=edge,
-                recommended=recommended,
+        # YES side: priced off the YES ask. recommended gates are confidence floor
+        # + min sources + minimum edge. The edge threshold keeps near-worthless
+        # bets (pay 0.99 to win 0.01) out of the recommendations.
+        if bucket.best_ask is not None and bucket.best_ask > 0:
+            edge = p_win - bucket.best_ask
+            recommended = p_win >= floor and n_sources >= min_sources and edge >= min_edge
+            outcomes.append(
+                RankedOutcome(
+                    bucket_label=bucket.label,
+                    side="YES",
+                    p_win=p_win,
+                    best_ask=bucket.best_ask,
+                    edge=edge,
+                    recommended=recommended,
+                )
             )
-        )
-        # NO side: bet the bucket does not settle. Priced at no_ask = 1 - yes_bid;
-        # absent (no resting NO offer) when there is no YES bid to take.
+        else:
+            excluded.append(bucket.label)
+        # NO side is independent of the YES ask: it is priced off the YES bid
+        # (no_ask = 1 - yes_bid), absent only when there is no YES bid to take.
         if bucket.no_ask is not None and 0 < bucket.no_ask < 1:
             p_no = 1 - p_win
             edge_no = p_no - bucket.no_ask

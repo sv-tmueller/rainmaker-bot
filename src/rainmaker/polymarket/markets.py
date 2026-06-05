@@ -57,7 +57,6 @@ class Bucket(BaseModel):
     # the YES bid (buying NO == selling YES). None when there is no YES bid to take.
     no_token_id: str = ""
     no_ask: float | None = None
-    no_bid: float | None = None
 
 
 def parse_bucket(market: dict[str, Any]) -> Bucket:
@@ -79,7 +78,6 @@ def parse_bucket(market: dict[str, Any]) -> Bucket:
         yes_price=yes_price,
         no_token_id=token_ids[1],
         no_ask=None if best_bid is None else 1 - best_bid,
-        no_bid=None if best_ask is None else 1 - best_ask,
     )
 
 
