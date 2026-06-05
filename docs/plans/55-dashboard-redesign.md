@@ -24,19 +24,23 @@
   - Task 10 done (071a246): page.tsx rewritten to compose all six components.
   - Whole-branch quality review (covers Tasks 4-10): no high-confidence bugs;
     types/tokens/SVG-math/spec-conformance all check out.
-  - Task 11 partial: env check shows dashboard/.env.local absent; empty-state
-    render verified against a stubbed page (HTTP 200, all four empty strings,
-    KPI dashes, no error overlay), stub reverted, tree clean.
+  - Task 11 done: empty-state render verified against a stubbed page (HTTP 200,
+    all four empty strings, KPI dashes, no error overlay); live visual pass
+    against production Supabase passed (header/run-health, 4 edge-sorted bets
+    with working Polymarket links, accuracy pivot, KPI dashes because the latest
+    snapshot has nBets=0). Track-record panel is empty by design: only one
+    snapshot exists so PnlChart draws nothing (<2 points, spec line 109) and no
+    bets have settled. Self-resolves as daily snapshots accumulate.
+  - Task 12 Step 1: live page matches the approved spec; operator chose to keep
+    it as-is, no impeccable/ui-ux-pro-max changes.
   - Task 12 Step 2 gates green: npm run build exit 0, pytest 131 passed/1
     skipped, ruff clean.
 - Deviations already folded into the spec and this plan's code blocks:
   predictions.confidence is never recorded (NULL by design in store/record.py),
   so the Conf column is gone everywhere; Supabase reads are bounded because the
   JS client caps results at 1000 rows by default.
-- Remaining, both blocked on dashboard/.env.local (operator credentials):
-  Task 11 Step 4 (live visual pass) and Task 12 Step 1 (impeccable +
-  ui-ux-pro-max polish against the live page). Then Task 12 Steps 3-4:
-  push and mark PR #56 ready.
+- Remaining: only Task 12 Step 4, marking PR #56 ready, which is the operator's
+  call (they chose to keep it draft for now). All commits are pushed.
 
 **Context for the implementer:**
 
