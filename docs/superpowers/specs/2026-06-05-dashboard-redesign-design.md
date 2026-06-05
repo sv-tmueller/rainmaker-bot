@@ -39,7 +39,7 @@ Max width about 1200px, four zones top to bottom.
    the Polymarket event page when slug is present, opens in a new tab), Bucket
    (deg F with deg C conversion, current parse_bucket_label mirror kept),
    Forecast mu (deg F with deg C), P(win), Ask, Edge (green, bold). Then
-   muted: sigma, confidence, n sources for that market in this run.
+   muted: sigma and n sources for that market in this run (predictions.confidence is never recorded, so it is not shown).
 4. Bottom row, two panels.
    - Left, about 60 percent: forecast accuracy pivot. City rows, one column
      per distinct lead time present in the data (today 1d/2d/3d). Cell: live
@@ -72,14 +72,15 @@ parallel where independent:
 
 - Latest run: id, started_at, coverage (JSON: n_markets, ok_sources).
 - Bets: predictions (recommended = 1) for the latest run, now also reading
-  sigma and n_sources from dist_params (already recorded per prediction) and
-  confidence; prices for ask; markets for title and slug.
+  sigma and n_sources from dist_params (already recorded per prediction);
+  prices for ask; markets for title and slug (bounded to the ids on the page).
 - Snapshot history: all tracking_snapshot rows ordered by snapshot_date
   ascending. Latest row feeds the KPI strip, the series feeds the chart.
 - Accuracy: forecast_accuracy as today, pivoted to city x lead in code.
 - Settled bets: the same join tracking.compute_pnl uses (predictions x prices
   x outcomes x markets), last 10 by settled_at. Per-bet P&L mirrors
   compute_pnl: buy one share at ask, won gives 1 - ask, lost gives -ask.
+  Outcomes are read newest-first with a fixed limit so reads stay bounded as history grows.
 
 No new tables, no writes, no schema changes.
 

@@ -205,7 +205,6 @@ export type Bet = {
   mu: number | null;
   sigma: number | null;
   nSources: number | null;
-  confidence: number | null;
   pWin: number;
   ask: number;
   edge: number;
@@ -266,13 +265,55 @@ function wonBucket(label: string, actual: number): boolean | null {
 export async function getDashboardData() {
   const db = serverClient();
 
-  const [runsQ, marketsQ, snapsQ, accQ, outcomesQ] = await Promise.all([
+  // Wave 1: bounded independent reads.
+  // outcomes: newest-first, capped at 30. The settled list shows 10 bets; 30
+  // recently-settled markets is plenty and keeps reads bounded as history grows.
+  const [runsQ, snapsQ, accQ, outcomesQ] = await Promise.all([
     db.from("runs").select("id, started_at, coverage").order("started_at", { ascending: false }).limit(1),
-    db.from("markets").select("id, title, slug, settlement_date"),
     db.from("tracking_snapshot").select("*").order("snapshot_date", { ascending: true }),
     db.from("forecast_accuracy").select("city, lead_time, kind, n, mae_f, bias_f").order("city").order("lead_time"),
-    db.from("outcomes").select("market_id, actual_value, settled_at"),
+    db.from("outcomes").select("market_id, actual_value, settled_at").order("settled_at", { ascending: false }).limit(30),
   ]);
+
+  const runRow = runsQ.data?.[0];
+  // settledIds from the bounded outcomes result, already sorted desc by settled_at.
+  const settledIds = (outcomesQ.data ?? []).map((o) => o.market_id);
+
+  // Wave 2: predictions and prices that depend on runRow and settledIds.
+  const [latestPreds, latestPrices, settledPreds, settledPrices] = await Promise.all([
+    runRow
+      ? db
+          .from("predictions")
+          .select("market_id, bucket, p_win, edge, dist_params")
+          .eq("run_id", runRow.id)
+          .eq("recommended", 1)
+      : Promise.resolve({ data: null }),
+    runRow
+      ? db.from("prices").select("market_id, outcome, price").eq("run_id", runRow.id)
+      : Promise.resolve({ data: null }),
+    settledIds.length > 0
+      ? db
+          .from("predictions")
+          .select("market_id, run_id, bucket, p_win")
+          .eq("recommended", 1)
+          .not("bucket", "is", null)
+          .in("market_id", settledIds)
+      : Promise.resolve({ data: null }),
+    settledIds.length > 0
+      ? db.from("prices").select("run_id, market_id, outcome, price").in("market_id", settledIds)
+      : Promise.resolve({ data: null }),
+  ]);
+
+  // Wave 3: markets bounded to only the ids needed on this page.
+  const latestPredIds = (latestPreds.data ?? []).map((p) => p.market_id);
+  const neededIds = [...new Set([...latestPredIds, ...settledIds])];
+  const marketsQ =
+    neededIds.length > 0
+      ? await db
+          .from("markets")
+          .select("id, title, slug, settlement_date")
+          .in("id", neededIds)
+      : { data: [] };
 
   const titleOf = new Map((marketsQ.data ?? []).map((m) => [m.id, m.title as string]));
   const slugOf = new Map((marketsQ.data ?? []).map((m) => [m.id, (m.slug as string | null) ?? null]));
@@ -280,8 +321,8 @@ export async function getDashboardData() {
     (marketsQ.data ?? []).map((m) => [m.id, (m.settlement_date as string | null) ?? null]),
   );
 
+  // Assemble run health.
   let run: RunInfo | null = null;
-  const runRow = runsQ.data?.[0];
   if (runRow) {
     let okSources: string[] | null = null;
     let nMarkets: number | null = null;
@@ -295,46 +336,36 @@ export async function getDashboardData() {
     run = { startedAt: runRow.started_at as string, okSources, nMarkets };
   }
 
-  let bets: Bet[] = [];
-  if (runRow) {
-    const [{ data: preds }, { data: prices }] = await Promise.all([
-      db
-        .from("predictions")
-        .select("market_id, bucket, p_win, edge, confidence, dist_params")
-        .eq("run_id", runRow.id)
-        .eq("recommended", 1),
-      db.from("prices").select("market_id, outcome, price").eq("run_id", runRow.id),
-    ]);
-    const askOf = new Map((prices ?? []).map((p) => [`${p.market_id}|${p.outcome}`, p.price as number]));
-    bets = (preds ?? [])
-      .map((p) => {
-        let mu: number | null = null;
-        let sigma: number | null = null;
-        let nSources: number | null = null;
-        try {
-          const d = JSON.parse(p.dist_params as string);
-          if (typeof d?.mu === "number") mu = d.mu;
-          if (typeof d?.sigma === "number") sigma = d.sigma;
-          if (typeof d?.n_sources === "number") nSources = d.n_sources;
-        } catch {
-          // no parsable dist_params -> blank forecast cells
-        }
-        return {
-          title: titleOf.get(p.market_id) ?? (p.market_id as string),
-          slug: slugOf.get(p.market_id) ?? null,
-          bucket: p.bucket as string,
-          mu,
-          sigma,
-          nSources,
-          confidence: (p.confidence as number | null) ?? null,
-          pWin: p.p_win as number,
-          ask: askOf.get(`${p.market_id}|${p.bucket}`) ?? 0,
-          edge: p.edge as number,
-        };
-      })
-      .sort((a, b) => b.edge - a.edge);
-  }
+  // Assemble bets for the latest run.
+  const askOf = new Map((latestPrices.data ?? []).map((p) => [`${p.market_id}|${p.outcome}`, p.price as number]));
+  const bets: Bet[] = (latestPreds.data ?? [])
+    .map((p) => {
+      let mu: number | null = null;
+      let sigma: number | null = null;
+      let nSources: number | null = null;
+      try {
+        const d = JSON.parse(p.dist_params as string);
+        if (typeof d?.mu === "number") mu = d.mu;
+        if (typeof d?.sigma === "number") sigma = d.sigma;
+        if (typeof d?.n_sources === "number") nSources = d.n_sources;
+      } catch {
+        // no parsable dist_params -> blank forecast cells
+      }
+      return {
+        title: titleOf.get(p.market_id) ?? (p.market_id as string),
+        slug: slugOf.get(p.market_id) ?? null,
+        bucket: p.bucket as string,
+        mu,
+        sigma,
+        nSources,
+        pWin: p.p_win as number,
+        ask: askOf.get(`${p.market_id}|${p.bucket}`) ?? 0,
+        edge: p.edge as number,
+      };
+    })
+    .sort((a, b) => b.edge - a.edge);
 
+  // Assemble snapshots.
   const snapshots: Snapshot[] = (snapsQ.data ?? []).map((s) => ({
     date: s.snapshot_date as string,
     nBets: s.n_bets as number,
@@ -347,6 +378,7 @@ export async function getDashboardData() {
     nScored: s.n_scored as number,
   }));
 
+  // Assemble accuracy pivot.
   // TMAX-only today; add variable to the key when TMIN accuracy lands.
   const accMap = new Map<string, AccRow>();
   const leadSet = new Set<number>();
@@ -367,31 +399,17 @@ export async function getDashboardData() {
     rows: [...accMap.values()].sort((a, b) => a.city.localeCompare(b.city)),
   };
 
+  // Assemble settled bets.
   // Mirrors tracking.compute_pnl: each recommended prediction with a price on a
   // settled market is one one-unit bet; re-recommendations are separate bets.
   let settled: SettledBet[] = [];
   const outcomes = outcomesQ.data ?? [];
   if (outcomes.length > 0) {
-    // Bound the .in() filters: the list shows 10 bets, so the 30 most recently
-    // settled markets are plenty and the query URL stays short as outcomes grow.
-    const settledIds = [...outcomes]
-      .sort((a, b) => ((a.settled_at as string) < (b.settled_at as string) ? 1 : -1))
-      .slice(0, 30)
-      .map((o) => o.market_id);
-    const [{ data: betPreds }, { data: betPrices }] = await Promise.all([
-      db
-        .from("predictions")
-        .select("market_id, run_id, bucket, p_win")
-        .eq("recommended", 1)
-        .not("bucket", "is", null)
-        .in("market_id", settledIds),
-      db.from("prices").select("run_id, market_id, outcome, price").in("market_id", settledIds),
-    ]);
     const priceOf = new Map(
-      (betPrices ?? []).map((p) => [`${p.run_id}|${p.market_id}|${p.outcome}`, p.price as number]),
+      (settledPrices.data ?? []).map((p) => [`${p.run_id}|${p.market_id}|${p.outcome}`, p.price as number]),
     );
     const outcomeOf = new Map(outcomes.map((o) => [o.market_id, o]));
-    settled = (betPreds ?? [])
+    settled = (settledPreds.data ?? [])
       .flatMap((p) => {
         const o = outcomeOf.get(p.market_id);
         const ask = priceOf.get(`${p.run_id}|${p.market_id}|${p.bucket}`);
@@ -409,7 +427,11 @@ export async function getDashboardData() {
           },
         ];
       })
-      .sort((a, b) => (a.settledAt < b.settledAt ? 1 : -1))
+      // Stable sort: newest settled first; within one date, alphabetical by title.
+      .sort((a, b) => {
+        if (a.settledAt !== b.settledAt) return a.settledAt < b.settledAt ? 1 : -1;
+        return a.title.localeCompare(b.title);
+      })
       .slice(0, 10)
       .map(({ settledAt: _settledAt, ...rest }) => rest);
   }
@@ -580,7 +602,7 @@ git commit -m "feat: KPI strip for the dashboard"
 
 - [ ] **Step 1: Create `dashboard/components/BetsTable.tsx`**
 
-Decision columns prominent; sigma, confidence, source count muted (`text-faint`). Edge is always positive on recommended rows (the gates require it), so it is always green.
+Decision columns prominent; sigma and source count muted (`text-faint`). Edge is always positive on recommended rows (the gates require it), so it is always green.
 
 ```tsx
 import type { Bet } from "../lib/data";
@@ -606,7 +628,6 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
               <th className="text-right font-medium">Ask</th>
               <th className="text-right font-medium">Edge</th>
               <th className="pl-7 text-right font-medium">σ</th>
-              <th className="text-right font-medium">Conf</th>
               <th className="text-right font-medium">Src</th>
             </tr>
           </thead>
@@ -642,9 +663,6 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
                 <td className="text-right font-semibold text-pos">{signed(b.edge)}</td>
                 <td className="pl-7 text-right text-faint">
                   {b.sigma === null ? "" : b.sigma.toFixed(1)}
-                </td>
-                <td className="text-right text-faint">
-                  {b.confidence === null ? "" : b.confidence.toFixed(2)}
                 </td>
                 <td className="text-right text-faint">{b.nSources ?? ""}</td>
               </tr>
