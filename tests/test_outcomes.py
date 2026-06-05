@@ -2,7 +2,7 @@ import pytest
 
 from rainmaker.polymarket.markets import Bucket
 from rainmaker.probability.distribution import Gaussian
-from rainmaker.probability.outcomes import bucket_probability
+from rainmaker.probability.outcomes import bucket_probability, settles
 
 
 def _bucket(kind, lo=None, hi=None, threshold=None) -> Bucket:
@@ -55,3 +55,26 @@ def test_mode_bucket_has_highest_probability():
     probs = {(b.kind, b.lo, b.hi, b.threshold): bucket_probability(g, b) for b in buckets}
     mode_key = max(probs, key=probs.get)
     assert mode_key == ("range", 70, 71, None)
+
+
+def test_settles_range_inclusive_both_ends():
+    assert settles("range", 70, 71, None, 70.0)
+    assert settles("range", 70, 71, None, 71.4)  # rounds to 71
+    assert not settles("range", 70, 71, None, 71.6)  # rounds to 72
+
+
+def test_settles_below_and_above_thresholds():
+    assert settles("below", None, None, 59, 59.0)
+    assert settles("below", None, None, 59, 58.9)
+    assert not settles("below", None, None, 59, 59.6)  # rounds to 60
+    assert settles("above", None, None, 78, 78.0)
+    assert not settles("above", None, None, 78, 77.4)  # rounds to 77
+
+
+def test_settles_uses_half_to_even_rounding():
+    # Python round() is banker's rounding: 70.5 -> 70 (not 71), 72.5 -> 72.
+    assert settles("range", 70, 71, None, 70.5)  # 70.5 -> 70, in [70, 71]
+    # half-up would round 70.5 to 71 and win here; half-to-even gives 70 and loses.
+    assert not settles("range", 71, 72, None, 70.5)
+    assert settles("range", 72, 73, None, 72.5)  # 72.5 -> 72, in [72, 73]
+
