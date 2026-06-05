@@ -8,6 +8,25 @@
 
 **Tech Stack:** Next 16.2.7 (App Router, server components only), Tailwind v4, @supabase/supabase-js, Geist Sans / Geist Mono (already loaded in `layout.tsx`).
 
+**Execution status (checkpoint 2026-06-05, session stopped at weekly limit):**
+
+- Done via subagent-driven-development (implementer + spec review + quality review per task):
+  - Task 1 done (de65250), reviews passed.
+  - Task 2 done (a88a9f5), reviews passed.
+  - Task 3 done (583b16e), quality review found real issues, fixed in b70fce0
+    (bounded reads: outcomes newest-first limit 30, markets .in() on needed ids,
+    three-wave structure; stable settled sort; dropped the dead confidence
+    column) plus doc cleanup in 1e5907d. Re-review approved, regression-free.
+  - Task 4 done (dede749): spec review passed (file byte-identical to this
+    plan's block). OPEN: its code quality review was skipped at session stop;
+    run it or fold it into the final whole-branch review.
+- Deviations already folded into the spec and this plan's code blocks:
+  predictions.confidence is never recorded (NULL by design in store/record.py),
+  so the Conf column is gone everywhere; Supabase reads are bounded because the
+  JS client caps results at 1000 rows by default.
+- Next session: resume at Task 5 (KpiStrip). Then Tasks 6-12. Task 11 needs
+  dashboard/.env.local (ask the operator if absent). Task 12 marks PR #56 ready.
+
 **Context for the implementer:**
 
 - Branch `feat/55-dashboard-redesign` exists with the spec committed; draft PR #56 is open. Work on this branch.
