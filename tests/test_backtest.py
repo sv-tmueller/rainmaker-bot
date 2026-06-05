@@ -88,7 +88,11 @@ def test_aggregate_rolls_up_metrics():
     assert res.modal_hit_rate == pytest.approx(0.5)
     assert res.mean_modal_p == pytest.approx(0.55)
     assert res.mean_brier == pytest.approx(0.35)
-    assert res.coverage == {0.5: pytest.approx(0.5), 0.8: pytest.approx(1.0), 0.9: pytest.approx(1.0)}
+    assert res.coverage == {
+        0.5: pytest.approx(0.5),
+        0.8: pytest.approx(1.0),
+        0.9: pytest.approx(1.0),
+    }
 
 
 def test_aggregate_empty_raises():

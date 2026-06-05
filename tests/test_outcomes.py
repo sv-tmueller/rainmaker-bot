@@ -77,4 +77,3 @@ def test_settles_uses_half_to_even_rounding():
     # half-up would round 70.5 to 71 and win here; half-to-even gives 70 and loses.
     assert not settles("range", 71, 72, None, 70.5)
     assert settles("range", 72, 73, None, 72.5)  # 72.5 -> 72, in [72, 73]
-

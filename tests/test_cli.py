@@ -242,6 +242,41 @@ def test_settle_command_reports_summary(monkeypatch, tmp_path, capsys):
     assert "settled 2 market(s); 1 waiting" in out
 
 
+def test_backtest_command_writes_report(monkeypatch, tmp_path, capsys):
+    from rainmaker.backtest import BacktestResult, ReliabilityBin
+
+    result = BacktestResult(
+        n=100,
+        modal_hit_rate=0.55,
+        mean_modal_p=0.50,
+        mean_brier=0.20,
+        coverage={0.5: 0.5, 0.8: 0.8, 0.9: 0.9},
+        reliability=[
+            ReliabilityBin(lo=0.5, hi=0.6, predicted_mean=0.55, observed_freq=0.6, count=20)
+        ],
+    )
+    monkeypatch.setattr(cli, "backtest_synthetic", lambda *a, **k: result)
+    monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
+    monkeypatch.setattr(cli, "backtest_real", lambda *a, **k: None)
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 5))
+
+    cli.main(["backtest", "--city", "NYC", "--days", "365", "--reports-dir", str(tmp_path)])
+
+    out = capsys.readouterr().out
+    assert "Forecast backtest" in out and "NYC" in out
+    written = {p.name for p in tmp_path.iterdir()}
+    assert {"backtest-2026-06-05.md", "backtest-2026-06-05.json"} <= written
+
+
+def test_backtest_exits_when_no_data(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "backtest_synthetic", lambda *a, **k: None)
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["backtest", "--city", "NYC", "--no-real", "--reports-dir", str(tmp_path)])
+    assert exc.value.code == 1
+
+
 def test_datastore_prefers_database_url(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x/y")
     assert cli._datastore("local.db") == "postgresql://x/y"
