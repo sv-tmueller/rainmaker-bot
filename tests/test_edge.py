@@ -1,5 +1,7 @@
 from datetime import date
 
+import pytest
+
 from rainmaker.config import build_target
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import Bucket, Market
@@ -7,7 +9,7 @@ from rainmaker.probability.calibration import Calibration
 from rainmaker.ranking.edge import MarketReport, evaluate_market
 
 
-def _bucket(label, kind, *, lo=None, hi=None, threshold=None, best_ask=None) -> Bucket:
+def _bucket(label, kind, *, lo=None, hi=None, threshold=None, best_ask=None, no_ask=None) -> Bucket:
     return Bucket(
         label=label,
         kind=kind,
@@ -18,6 +20,7 @@ def _bucket(label, kind, *, lo=None, hi=None, threshold=None, best_ask=None) -> 
         best_ask=best_ask,
         best_bid=None,
         yes_price=0.0,
+        no_ask=no_ask,
     )
 
 
@@ -75,6 +78,29 @@ def test_evaluate_market_ranks_by_edge_and_flags_recommended():
     top = report.outcomes[0]
     assert top.edge > 0
     assert top.recommended is True
+
+
+def test_evaluate_market_emits_recommended_no_bet():
+    # The market overprices an unlikely bucket; our forecast says it almost never
+    # settles, so selling it (NO) is the good bet while buying it (YES) is not.
+    market = _market([_bucket("80-81°F", "range", lo=80, hi=81, best_ask=0.30, no_ask=0.70)])
+    fs = _forecast_set([69, 70, 71])  # mean ~70, far from 80-81
+    report = evaluate_market(market, fs, floor=0.90, min_sources=2, min_sigma=1.5, min_edge=0.05)
+    sides = {o.side: o for o in report.outcomes}
+    assert set(sides) == {"YES", "NO"}
+    yes, no = sides["YES"], sides["NO"]
+    assert no.p_win == pytest.approx(1 - yes.p_win)
+    assert no.best_ask == 0.70
+    assert no.edge == pytest.approx(no.p_win - 0.70)
+    assert yes.recommended is False  # buying the longshot loses
+    assert no.recommended is True  # selling it clears the floor and the edge gate
+
+
+def test_no_bet_skipped_without_no_ask():
+    market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.40)])  # no_ask None
+    fs = _forecast_set([69, 70, 71, 72])
+    report = evaluate_market(market, fs, floor=0.45, min_sources=2, min_sigma=1.5, min_edge=0.0)
+    assert [o.side for o in report.outcomes] == ["YES"]
 
 
 def test_recommended_requires_confidence_floor():

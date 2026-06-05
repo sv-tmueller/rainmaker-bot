@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -14,8 +14,9 @@ class RankedOutcome(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     bucket_label: str
+    side: Literal["YES", "NO"] = "YES"
     p_win: float
-    best_ask: float
+    best_ask: float  # price paid: the YES ask for a YES bet, the NO ask for a NO bet
     edge: float
     recommended: bool
 
@@ -82,12 +83,29 @@ def evaluate_market(
         outcomes.append(
             RankedOutcome(
                 bucket_label=bucket.label,
+                side="YES",
                 p_win=p_win,
                 best_ask=bucket.best_ask,
                 edge=edge,
                 recommended=recommended,
             )
         )
+        # NO side: bet the bucket does not settle. Priced at no_ask = 1 - yes_bid;
+        # absent (no resting NO offer) when there is no YES bid to take.
+        if bucket.no_ask is not None and 0 < bucket.no_ask < 1:
+            p_no = 1 - p_win
+            edge_no = p_no - bucket.no_ask
+            recommended_no = p_no >= floor and n_sources >= min_sources and edge_no >= min_edge
+            outcomes.append(
+                RankedOutcome(
+                    bucket_label=bucket.label,
+                    side="NO",
+                    p_win=p_no,
+                    best_ask=bucket.no_ask,
+                    edge=edge_no,
+                    recommended=recommended_no,
+                )
+            )
     outcomes.sort(key=lambda o: o.edge, reverse=True)
     return MarketReport(
         **common,
