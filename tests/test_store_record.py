@@ -87,7 +87,9 @@ def test_record_run_persists_all_tables():
     )
     assert count_rows(conn, "runs") == 1
     assert count_rows(conn, "markets") == 1
-    assert count_rows(conn, "prices") == len(market.buckets)
+    # one YES price per bucket, plus a NO price where the bucket has a NO ask
+    expected_prices = sum(1 + (1 if b.no_ask is not None else 0) for b in market.buckets)
+    assert count_rows(conn, "prices") == expected_prices
     assert count_rows(conn, "forecasts") == 2  # grouped by (source, model): nws + gfs_seamless
     assert count_rows(conn, "predictions") == len(report.outcomes)
     conn.close()
@@ -143,7 +145,8 @@ def test_record_market_upsert_is_idempotent():
     )
     assert count_rows(conn, "markets") == 1  # upserted, not duplicated
     assert count_rows(conn, "runs") == 2
-    assert count_rows(conn, "prices") == 2 * len(market.buckets)  # appended per run
+    expected_prices = sum(1 + (1 if b.no_ask is not None else 0) for b in market.buckets)
+    assert count_rows(conn, "prices") == 2 * expected_prices  # appended per run
     conn.close()
 
 

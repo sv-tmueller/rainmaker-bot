@@ -10,6 +10,8 @@ from rainmaker.store.db import Conn
 
 _MIGRATIONS: list[tuple[str, list[str]]] = [
     ("0001_predictions_bucket", ["ALTER TABLE predictions ADD COLUMN bucket TEXT"]),
+    ("0002_predictions_side", ["ALTER TABLE predictions ADD COLUMN side TEXT"]),
+    ("0003_prices_side", ["ALTER TABLE prices ADD COLUMN side TEXT"]),
 ]
 
 

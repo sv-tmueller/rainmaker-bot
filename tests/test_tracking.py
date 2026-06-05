@@ -55,6 +55,53 @@ def test_compute_calibration_brier_and_hit_rate():
     assert cal["hit_rate"] == pytest.approx(0.5)
 
 
+def _setup_no_bet(conn, actual: float):
+    init_schema(conn)
+    conn.execute("INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)", ("r1", "t", "ok"))
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        ("m1", "NYC", "TMAX", "2026-05-30"),
+    )
+    # A NO bet on 80-81: sold at no_ask 0.70 (our P(no) 0.95).
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, side, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "m1", "80-81°F", "NO", 0.70, 0.30, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, side, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "m1", "80-81°F", "NO", 0.95, 0.25, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("m1", actual, "t"),
+    )
+    conn.commit()
+
+
+def test_no_bet_wins_when_bucket_does_not_settle():
+    conn = connect(":memory:")
+    _setup_no_bet(conn, actual=71.0)  # 71 is not in 80-81 -> NO wins
+    pnl = compute_pnl(conn)
+    cal = compute_calibration(conn)
+    conn.close()
+    assert (pnl["wins"], pnl["losses"]) == (1, 0)
+    assert pnl["total_pnl"] == pytest.approx(1 - 0.70)  # NO won pays 1 - no_ask
+    assert cal["hit_rate"] == pytest.approx(1.0)
+    assert cal["n"] == 0 and cal["brier"] is None  # no YES rows to score
+
+
+def test_no_bet_loses_when_bucket_settles():
+    conn = connect(":memory:")
+    _setup_no_bet(conn, actual=80.0)  # 80 is in 80-81 -> NO loses
+    pnl = compute_pnl(conn)
+    conn.close()
+    assert (pnl["wins"], pnl["losses"]) == (0, 1)
+    assert pnl["total_pnl"] == pytest.approx(-0.70)  # NO lost -no_ask
+
+
 def test_compute_pnl_empty_when_nothing_settled():
     conn = connect(":memory:")
     init_schema(conn)

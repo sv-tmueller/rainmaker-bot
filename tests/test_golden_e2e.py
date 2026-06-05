@@ -57,11 +57,17 @@ def test_golden_pipeline_on_fixture_market():
 
     # All 11 buckets had an ask in the fixture, so none are excluded.
     assert report.excluded_no_ask == []
-    assert len(report.outcomes) == 11
-    # P(win) over the full partition sums to ~1.
-    assert abs(sum(o.p_win for o in report.outcomes) - 1.0) < 1e-6
+    # One YES outcome per bucket, plus a NO outcome where the bucket has a NO ask.
+    n_no = sum(1 for b in market.buckets if b.no_ask is not None)
+    assert n_no > 0  # the feature is exercised
+    yes_outcomes = [o for o in report.outcomes if o.side == "YES"]
+    no_outcomes = [o for o in report.outcomes if o.side == "NO"]
+    assert len(yes_outcomes) == 11
+    assert len(no_outcomes) == n_no
+    # P(win) over the full YES partition sums to ~1.
+    assert abs(sum(o.p_win for o in yes_outcomes) - 1.0) < 1e-6
     # The mode bucket 70-71 is priced ~0.999 in the fixture, so no positive-edge
-    # recommendation survives: an efficient market yields nothing.
+    # recommendation survives: an efficient market yields nothing, on either side.
     assert all(not o.recommended for o in report.outcomes)
     # Ranking is sorted by edge descending.
     edges = [o.edge for o in report.outcomes]

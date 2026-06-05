@@ -16,10 +16,29 @@ def test_migration_adds_predictions_bucket_column():
     assert row["bucket"] == "70-71°F"
 
 
+def test_migration_adds_side_columns():
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO predictions (run_id, bucket, side, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (None, "70-71°F", "NO", 0.9, 0.1, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, side, price, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (None, None, "70-71°F", "NO", 0.7, "t"),
+    )
+    conn.commit()
+    assert conn.execute("SELECT side FROM predictions").fetchone()["side"] == "NO"
+    assert conn.execute("SELECT side FROM prices").fetchone()["side"] == "NO"
+    conn.close()
+
+
 def test_apply_migrations_is_idempotent():
     conn = connect(":memory:")
     init_schema(conn)
     apply_migrations(conn)  # second pass must not error
     n = conn.execute("SELECT count(*) AS n FROM schema_migrations").fetchone()["n"]
     conn.close()
-    assert n == 1
+    assert n == 3
