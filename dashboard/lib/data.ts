@@ -4,6 +4,7 @@ export type Bet = {
   title: string;
   slug: string | null;
   bucket: string;
+  side: "YES" | "NO";
   mu: number | null;
   sigma: number | null;
   nSources: number | null;
@@ -38,6 +39,7 @@ export type Accuracy = { leads: number[]; rows: AccRow[] };
 export type SettledBet = {
   date: string;
   title: string;
+  side: "YES" | "NO";
   pWin: number;
   won: boolean;
   pnl: number;
@@ -86,23 +88,26 @@ export async function getDashboardData() {
     runRow
       ? db
           .from("predictions")
-          .select("market_id, bucket, p_win, edge, dist_params")
+          .select("market_id, bucket, side, p_win, edge, dist_params")
           .eq("run_id", runRow.id)
           .eq("recommended", 1)
       : Promise.resolve({ data: null }),
     runRow
-      ? db.from("prices").select("market_id, outcome, price").eq("run_id", runRow.id)
+      ? db.from("prices").select("market_id, outcome, side, price").eq("run_id", runRow.id)
       : Promise.resolve({ data: null }),
     settledIds.length > 0
       ? db
           .from("predictions")
-          .select("market_id, run_id, bucket, p_win")
+          .select("market_id, run_id, bucket, side, p_win")
           .eq("recommended", 1)
           .not("bucket", "is", null)
           .in("market_id", settledIds)
       : Promise.resolve({ data: null }),
     settledIds.length > 0
-      ? db.from("prices").select("run_id, market_id, outcome, price").in("market_id", settledIds)
+      ? db
+          .from("prices")
+          .select("run_id, market_id, outcome, side, price")
+          .in("market_id", settledIds)
       : Promise.resolve({ data: null }),
   ]);
 
@@ -138,8 +143,14 @@ export async function getDashboardData() {
     run = { startedAt: runRow.started_at as string, okSources, nMarkets };
   }
 
-  // Assemble bets for the latest run.
-  const askOf = new Map((latestPrices.data ?? []).map((p) => [`${p.market_id}|${p.outcome}`, p.price as number]));
+  // Assemble bets for the latest run. Price is keyed by side; legacy rows are YES.
+  const sideOf = (s: unknown): "YES" | "NO" => (s === "NO" ? "NO" : "YES");
+  const askOf = new Map(
+    (latestPrices.data ?? []).map((p) => [
+      `${p.market_id}|${p.outcome}|${sideOf(p.side)}`,
+      p.price as number,
+    ]),
+  );
   const bets: Bet[] = (latestPreds.data ?? [])
     .map((p) => {
       let mu: number | null = null;
@@ -153,15 +164,17 @@ export async function getDashboardData() {
       } catch {
         // no parsable dist_params -> blank forecast cells
       }
+      const side = sideOf(p.side);
       return {
         title: titleOf.get(p.market_id) ?? (p.market_id as string),
         slug: slugOf.get(p.market_id) ?? null,
         bucket: p.bucket as string,
+        side,
         mu,
         sigma,
         nSources,
         pWin: p.p_win as number,
-        ask: askOf.get(`${p.market_id}|${p.bucket}`) ?? 0,
+        ask: askOf.get(`${p.market_id}|${p.bucket}|${side}`) ?? 0,
         edge: p.edge as number,
       };
     })
@@ -208,21 +221,28 @@ export async function getDashboardData() {
   const outcomes = outcomesQ.data ?? [];
   if (outcomes.length > 0) {
     const priceOf = new Map(
-      (settledPrices.data ?? []).map((p) => [`${p.run_id}|${p.market_id}|${p.outcome}`, p.price as number]),
+      (settledPrices.data ?? []).map((p) => [
+        `${p.run_id}|${p.market_id}|${p.outcome}|${sideOf(p.side)}`,
+        p.price as number,
+      ]),
     );
     const outcomeOf = new Map(outcomes.map((o) => [o.market_id, o]));
     settled = (settledPreds.data ?? [])
       .flatMap((p) => {
         const o = outcomeOf.get(p.market_id);
-        const ask = priceOf.get(`${p.run_id}|${p.market_id}|${p.bucket}`);
+        const side = sideOf(p.side);
+        const ask = priceOf.get(`${p.run_id}|${p.market_id}|${p.bucket}|${side}`);
         if (!o || ask === undefined) return [];
-        const won = wonBucket(p.bucket as string, o.actual_value as number);
-        if (won === null) return [];
+        const settledIn = wonBucket(p.bucket as string, o.actual_value as number);
+        if (settledIn === null) return [];
+        // A NO bet wins when the bucket does not settle.
+        const won = side === "NO" ? !settledIn : settledIn;
         return [
           {
             settledAt: o.settled_at as string,
             date: (settleDateOf.get(p.market_id) ?? (o.settled_at as string)).slice(0, 10),
             title: titleOf.get(p.market_id) ?? (p.market_id as string),
+            side,
             pWin: p.p_win as number,
             won,
             pnl: won ? 1 - ask : -ask,
