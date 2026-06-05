@@ -72,8 +72,8 @@ parallel where independent:
 
 - Latest run: id, started_at, coverage (JSON: n_markets, ok_sources).
 - Bets: predictions (recommended = 1) for the latest run, now also reading
-  sigma from dist_params and confidence; prices for ask; markets for title and
-  slug; forecasts grouped by market_id for distinct source counts.
+  sigma and n_sources from dist_params (already recorded per prediction) and
+  confidence; prices for ask; markets for title and slug.
 - Snapshot history: all tracking_snapshot rows ordered by snapshot_date
   ascending. Latest row feeds the KPI strip, the series feeds the chart.
 - Accuracy: forecast_accuracy as today, pivoted to city x lead in code.
