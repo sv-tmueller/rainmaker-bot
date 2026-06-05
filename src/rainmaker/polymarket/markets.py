@@ -53,6 +53,11 @@ class Bucket(BaseModel):
     best_ask: float | None
     best_bid: float | None
     yes_price: float
+    # NO side. Gamma exposes only the YES book, so the NO ask is the complement of
+    # the YES bid (buying NO == selling YES). None when there is no YES bid to take.
+    no_token_id: str = ""
+    no_ask: float | None = None
+    no_bid: float | None = None
 
 
 def parse_bucket(market: dict[str, Any]) -> Bucket:
@@ -60,6 +65,8 @@ def parse_bucket(market: dict[str, Any]) -> Bucket:
     kind, lo, hi, threshold = parse_bucket_label(label)
     token_ids = json.loads(market["clobTokenIds"])
     yes_price = float(json.loads(market["outcomePrices"])[0])
+    best_ask = market.get("bestAsk")
+    best_bid = market.get("bestBid")
     return Bucket(
         label=label,
         kind=kind,
@@ -67,9 +74,12 @@ def parse_bucket(market: dict[str, Any]) -> Bucket:
         hi=hi,
         threshold=threshold,
         yes_token_id=token_ids[0],
-        best_ask=market.get("bestAsk"),
-        best_bid=market.get("bestBid"),
+        best_ask=best_ask,
+        best_bid=best_bid,
         yes_price=yes_price,
+        no_token_id=token_ids[1],
+        no_ask=None if best_bid is None else 1 - best_bid,
+        no_bid=None if best_ask is None else 1 - best_ask,
     )
 
 
