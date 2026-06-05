@@ -27,7 +27,8 @@ def render_terminal(report: Report) -> str:
     lines: list[str] = [
         f"Rainmaker report {report.run_date.isoformat()}",
         "",
-        "P(win)=our probability  ask=YES price paid  edge=P(win)-ask  (all 0-1)  REC=passes gates",
+        "P(win)=our probability  ask=price paid  edge=P(win)-ask  "
+        "side YES=buy bucket, NO=sell bucket  (all 0-1)  REC=passes gates",
         "",
     ]
     bets = _recommended_pairs(report)
@@ -35,7 +36,7 @@ def render_terminal(report: Report) -> str:
     if bets:
         for m, o in bets:
             lines.append(
-                f"  {m.title}  {o.bucket_label}  "
+                f"  {m.title}  {o.bucket_label} {o.side}  "
                 f"P(win)={o.p_win:.2f} ask={o.best_ask:.2f} edge={o.edge:+.2f}"
             )
     else:
@@ -51,11 +52,11 @@ def render_terminal(report: Report) -> str:
         if not m.outcomes:
             lines.append("  no tradeable outcomes (insufficient forecast data)")
         else:
-            lines.append(f"  {'bucket':16} {'P(win)':>7} {'ask':>6} {'edge':>7}  rec")
+            lines.append(f"  {'bucket':16} {'side':4} {'P(win)':>7} {'ask':>6} {'edge':>7}  rec")
             for o in m.outcomes:
                 marker = "REC" if o.recommended else ""
                 line = (
-                    f"  {o.bucket_label:16} {o.p_win:>7.2f}"
+                    f"  {o.bucket_label:16} {o.side:4} {o.p_win:>7.2f}"
                     f" {o.best_ask:>6.2f} {o.edge:>+7.2f}  {marker}"
                 )
                 lines.append(line)
@@ -69,19 +70,20 @@ def render_markdown(report: Report) -> str:
     lines: list[str] = [
         f"# Rainmaker report {report.run_date.isoformat()}",
         "",
-        "_P(win) = our probability  ask = YES price paid"
-        "  edge = P(win)-ask  (all 0-1)  rec = passes gates_",
+        "_P(win) = our probability  ask = price paid"
+        "  edge = P(win)-ask  side YES = buy bucket, NO = sell bucket"
+        "  (all 0-1)  rec = passes gates_",
         "",
     ]
     bets = _recommended_pairs(report)
     lines.append("## Recommended bets (ranked by edge)")
     lines.append("")
     if bets:
-        lines.append("| market | bucket | P(win) | ask | edge |")
-        lines.append("|--------|--------|--------|-----|------|")
+        lines.append("| market | bucket | side | P(win) | ask | edge |")
+        lines.append("|--------|--------|------|--------|-----|------|")
         for m, o in bets:
             lines.append(
-                f"| {m.title} | {o.bucket_label} | {o.p_win:.2f}"
+                f"| {m.title} | {o.bucket_label} | {o.side} | {o.p_win:.2f}"
                 f" | {o.best_ask:.2f} | {o.edge:+.2f} |"
             )
     else:
@@ -101,12 +103,12 @@ def render_markdown(report: Report) -> str:
         lines.append(f"- coverage: {_coverage_str(m)}")
         lines.append("")
         if m.outcomes:
-            lines.append("| bucket | P(win) | ask | edge | rec |")
-            lines.append("|--------|--------|-----|------|-----|")
+            lines.append("| bucket | side | P(win) | ask | edge | rec |")
+            lines.append("|--------|------|--------|-----|------|-----|")
             for o in m.outcomes:
                 rec = "yes" if o.recommended else ""
                 lines.append(
-                    f"| {o.bucket_label} | {o.p_win:.2f}"
+                    f"| {o.bucket_label} | {o.side} | {o.p_win:.2f}"
                     f" | {o.best_ask:.2f} | {o.edge:+.2f} | {rec} |"
                 )
         else:
