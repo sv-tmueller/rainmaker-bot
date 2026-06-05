@@ -95,6 +95,8 @@ Python 3.11+ managed with uv. Commands:
 - Snapshot: `uv run rainmaker snapshot` (upsert the daily metrics row the dashboard reads)
 - Backfill: `uv run rainmaker backfill --city <X>` (fit a calibration cell and
   backtest accuracy from history; `--city all` covers every city)
+- Backtest: `uv run rainmaker backtest` (forecast calibration and win-rate over
+  history; synthetic ladder plus a real closed-market reality check, no P/L)
 - Test: `uv run pytest`
 - Lint: `uv run ruff check .`  Format: `uv run ruff format .`
 - Type check: `uv run mypy src`
@@ -110,8 +112,9 @@ saved JSON fixtures in `tests/fixtures/`, never live endpoints.
 ```
 src/rainmaker/
   config.py           station registry (11 cities), Target, source config constants
-  cli.py              run/settle/track/snapshot/backfill entry points
+  cli.py              run/settle/track/snapshot/backfill/backtest entry points
   backfill.py         NCEI actuals + historical forecasts -> calibration fit
+  backtest.py         forecast calibration + win-rate over history (no P/L)
   settle.py           settle past markets against NOAA actuals (idempotent catch-up)
   tracking.py         hypothetical P&L + calibration scoring, daily snapshot
   forecasts/

@@ -10,6 +10,7 @@ import httpx
 from pydantic import ValidationError
 
 from rainmaker.backfill import run_backfill
+from rainmaker.backtest import BacktestResult, backtest_real, backtest_synthetic, render_report
 from rainmaker.config import (
     CONFIDENCE_FLOOR,
     DB_PATH,
@@ -25,7 +26,7 @@ from rainmaker.forecasts.aggregate import aggregate
 from rainmaker.forecasts.base import ForecastSet
 from rainmaker.forecasts.nws import NwsSource
 from rainmaker.forecasts.openmeteo import OpenMeteoSource
-from rainmaker.polymarket.client import discover_markets
+from rainmaker.polymarket.client import discover_markets, fetch_closed_weather_events
 from rainmaker.ranking.edge import evaluate_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
 from rainmaker.settle import run_settlement
@@ -173,6 +174,48 @@ def _backfill(city: str, variable: str, days: int, lead: int, db_path: str) -> N
         raise SystemExit(1)
 
 
+def _backtest(
+    city: str, days: int, width: int, span: int, reports_dir: str, include_real: bool
+) -> None:
+    cities = sorted(STATIONS) if city == "all" else [city]
+    end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
+    start = end - timedelta(days=days)
+    client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=60.0)
+    synthetic: dict[str, BacktestResult] = {}
+    real = None
+    try:
+        for name in cities:
+            try:
+                res = backtest_synthetic(
+                    STATIONS[name], "TMAX", start, end, client, width=width, span=span
+                )
+            except httpx.HTTPError as exc:
+                print(f"{name}: backtest failed: {exc}", file=sys.stderr)
+                continue
+            if res is not None:
+                synthetic[name] = res
+        if include_real:
+            try:
+                events = fetch_closed_weather_events(client)
+                real = backtest_real(events, client, on_or_after=start)
+            except httpx.HTTPError as exc:
+                print(f"real-market check failed: {exc}", file=sys.stderr)
+    finally:
+        client.close()
+    if not synthetic:
+        print("no backtest data over the requested window", file=sys.stderr)
+        raise SystemExit(1)
+
+    md, payload = render_report(synthetic, real)
+    print(md)
+    out = Path(reports_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = _today().isoformat()
+    (out / f"backtest-{stamp}.md").write_text(md)
+    (out / f"backtest-{stamp}.json").write_text(json.dumps(payload, indent=2))
+    print(f"wrote backtest-{stamp}.md and backtest-{stamp}.json to {reports_dir}")
+
+
 def _settle(db_path: str) -> None:
     today = _today()
     settled_at = _now_iso()
@@ -247,6 +290,19 @@ def main(argv: list[str] | None = None) -> None:
     )
     backfill.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
+    bt = sub.add_parser("backtest", help="backtest forecast calibration and win-rate over history")
+    bt.add_argument("--city", default="all", help="city key from the station registry, or 'all'")
+    bt.add_argument("--days", type=int, default=730, help="history window length in days")
+    bt.add_argument("--width", type=int, default=2, help="synthetic bucket width in degrees F")
+    bt.add_argument("--span", type=int, default=10, help="degrees F covered each side of center")
+    bt.add_argument("--reports-dir", default=REPORTS_DIR, help="directory for the backtest report")
+    bt.add_argument(
+        "--real",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="include the real closed-market reality check",
+    )
+
     settle = sub.add_parser("settle", help="settle past markets against NOAA actuals")
     settle.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
@@ -257,6 +313,10 @@ def main(argv: list[str] | None = None) -> None:
     snapshot.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
     args = parser.parse_args(argv)
+
+    if args.command == "backtest":
+        _backtest(args.city, args.days, args.width, args.span, args.reports_dir, args.real)
+        return
 
     db = _datastore(args.db)
     if args.command == "run":

@@ -13,21 +13,13 @@ from typing import Any
 from rainmaker.config import STATIONS
 from rainmaker.polymarket.markets import parse_bucket_label
 from rainmaker.probability.calibration import CalibrationPair, compute_accuracy
+from rainmaker.probability.outcomes import settles
 from rainmaker.store.db import Conn
 from rainmaker.store.record import save_accuracy
 
 
 def _won(bucket_label: str, actual_value: float) -> bool:
-    kind, lo, hi, threshold = parse_bucket_label(bucket_label)
-    v = round(actual_value)
-    if kind == "below":
-        assert threshold is not None
-        return v <= threshold
-    if kind == "above":
-        assert threshold is not None
-        return v >= threshold
-    assert lo is not None and hi is not None
-    return lo <= v <= hi
+    return settles(*parse_bucket_label(bucket_label), actual_value)
 
 
 def _settled_rows(conn: Conn) -> list[dict[str, Any]]:
