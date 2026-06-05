@@ -19,7 +19,7 @@ card grids, no marketing copy, no decoration that competes with the data.
 - P&L over time is charted with a hand-rolled server-rendered SVG. No chart
   library, no new dependency.
 - Per-market detail is dense inline: decision columns prominent, trust
-  diagnostics (sigma, confidence, source count) in the same row but muted.
+  diagnostics (sigma, source count) in the same row but muted.
 - Three content additions: Polymarket link per bet (markets.slug), run health
   line in the header (runs.coverage), recent settled bets list (outcomes join).
 - The page stays fully server-rendered. No client JS anywhere.

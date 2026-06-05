@@ -189,8 +189,8 @@ Implementation found `n_sources` already recorded in `dist_params`, so no foreca
 with:
 
 ```
-  sigma and n_sources from dist_params (already recorded per prediction) and
-  confidence; prices for ask; markets for title and slug.
+  sigma and n_sources from dist_params (already recorded per prediction);
+  prices for ask; markets for title and slug (bounded to the ids on the page).
 ```
 
 - [ ] **Step 2: Create `dashboard/lib/data.ts`**
