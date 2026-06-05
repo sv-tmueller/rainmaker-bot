@@ -16,6 +16,7 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
             <tr className="text-left text-[10px] uppercase tracking-[0.08em] text-faint">
               <th className="py-1 font-medium">Market</th>
               <th className="font-medium">Bucket</th>
+              <th className="font-medium">Side</th>
               <th className="text-right font-medium">Forecast</th>
               <th className="text-right font-medium">P(win)</th>
               <th className="text-right font-medium">Ask</th>
@@ -42,6 +43,9 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
                   )}
                 </td>
                 <td className="text-foreground/80">{withCelsius(b.bucket)}</td>
+                <td className={b.side === "NO" ? "font-semibold text-warm" : "text-faint"}>
+                  {b.side}
+                </td>
                 <td className="text-right">
                   {b.mu === null ? (
                     ""

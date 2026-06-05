@@ -22,14 +22,22 @@ def _won(bucket_label: str, actual_value: float) -> bool:
     return settles(*parse_bucket_label(bucket_label), actual_value)
 
 
+def _bet_won(row: dict[str, Any]) -> bool:
+    """A YES bet wins when the bucket settles; a NO bet wins when it does not."""
+    settled = _won(row["bucket"], row["actual_value"])
+    return (not settled) if (row.get("side") or "YES") == "NO" else settled
+
+
 def _settled_rows(conn: Conn) -> list[dict[str, Any]]:
+    # Match the price to the prediction's side; legacy rows with a null side are YES.
     rows = conn.execute(
-        "SELECT p.bucket AS bucket, p.p_win AS p_win, p.recommended AS recommended, "
-        "pr.price AS ask, o.actual_value AS actual_value "
+        "SELECT p.bucket AS bucket, p.side AS side, p.p_win AS p_win, "
+        "p.recommended AS recommended, pr.price AS ask, o.actual_value AS actual_value "
         "FROM predictions p "
         "JOIN outcomes o ON o.market_id = p.market_id "
         "JOIN prices pr ON pr.run_id = p.run_id AND pr.market_id = p.market_id "
         "AND pr.outcome = p.bucket "
+        "AND COALESCE(pr.side, 'YES') = COALESCE(p.side, 'YES') "
         "WHERE p.bucket IS NOT NULL AND pr.price IS NOT NULL"
     ).fetchall()
     return [dict(r) for r in rows]
@@ -47,7 +55,7 @@ def compute_pnl(conn: Conn) -> dict[str, Any]:
         n += 1
         ask = r["ask"]
         total_staked += ask
-        if _won(r["bucket"], r["actual_value"]):
+        if _bet_won(r):
             wins += 1
             total_pnl += 1 - ask
         else:
@@ -63,20 +71,28 @@ def compute_pnl(conn: Conn) -> dict[str, Any]:
 
 
 def compute_calibration(conn: Conn) -> dict[str, Any]:
-    """Brier score over all settled bucket-predictions, plus recommended hit rate."""
+    """Brier over the settled YES bucket-predictions, plus recommended hit rate."""
     rows = _settled_rows(conn)
     if not rows:
         return {"n": 0, "brier": None, "hit_rate": None}
-    brier = sum(
-        (r["p_win"] - (1.0 if _won(r["bucket"], r["actual_value"]) else 0.0)) ** 2 for r in rows
-    ) / len(rows)
-    recommended = [r for r in rows if r["recommended"]]
-    hit_rate = (
-        sum(1 for r in recommended if _won(r["bucket"], r["actual_value"])) / len(recommended)
-        if recommended
+    # Brier measures forecast calibration over the YES bucket-predictions; each NO
+    # row's contribution is identical to its YES twin, so including it would only
+    # double n. Hit rate is over recommended bets of either side.
+    yes_rows = [r for r in rows if (r.get("side") or "YES") == "YES"]
+    brier = (
+        sum(
+            (r["p_win"] - (1.0 if _won(r["bucket"], r["actual_value"]) else 0.0)) ** 2
+            for r in yes_rows
+        )
+        / len(yes_rows)
+        if yes_rows
         else None
     )
-    return {"n": len(rows), "brier": brier, "hit_rate": hit_rate}
+    recommended = [r for r in rows if r["recommended"]]
+    hit_rate = (
+        sum(1 for r in recommended if _bet_won(r)) / len(recommended) if recommended else None
+    )
+    return {"n": len(yes_rows), "brier": brier, "hit_rate": hit_rate}
 
 
 def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:

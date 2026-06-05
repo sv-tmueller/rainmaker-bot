@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -14,8 +14,9 @@ class RankedOutcome(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     bucket_label: str
+    side: Literal["YES", "NO"] = "YES"
     p_win: float
-    best_ask: float
+    best_ask: float  # price paid: the YES ask for a YES bet, the NO ask for a NO bet
     edge: float
     recommended: bool
 
@@ -70,24 +71,41 @@ def evaluate_market(
     outcomes: list[RankedOutcome] = []
     excluded: list[str] = []
     for bucket in market.buckets:
-        if bucket.best_ask is None or bucket.best_ask <= 0:
-            excluded.append(bucket.label)
-            continue
         p_win = bucket_probability(gaussian, bucket)
-        edge = p_win - bucket.best_ask
-        # recommended gates: confidence floor + min sources + minimum edge.
-        # The edge threshold keeps near-worthless bets (pay 0.99 to win 0.01)
-        # out of the recommendations.
-        recommended = p_win >= floor and n_sources >= min_sources and edge >= min_edge
-        outcomes.append(
-            RankedOutcome(
-                bucket_label=bucket.label,
-                p_win=p_win,
-                best_ask=bucket.best_ask,
-                edge=edge,
-                recommended=recommended,
+        # YES side: priced off the YES ask. recommended gates are confidence floor
+        # + min sources + minimum edge. The edge threshold keeps near-worthless
+        # bets (pay 0.99 to win 0.01) out of the recommendations.
+        if bucket.best_ask is not None and bucket.best_ask > 0:
+            edge = p_win - bucket.best_ask
+            recommended = p_win >= floor and n_sources >= min_sources and edge >= min_edge
+            outcomes.append(
+                RankedOutcome(
+                    bucket_label=bucket.label,
+                    side="YES",
+                    p_win=p_win,
+                    best_ask=bucket.best_ask,
+                    edge=edge,
+                    recommended=recommended,
+                )
             )
-        )
+        else:
+            excluded.append(bucket.label)
+        # NO side is independent of the YES ask: it is priced off the YES bid
+        # (no_ask = 1 - yes_bid), absent only when there is no YES bid to take.
+        if bucket.no_ask is not None and 0 < bucket.no_ask < 1:
+            p_no = 1 - p_win
+            edge_no = p_no - bucket.no_ask
+            recommended_no = p_no >= floor and n_sources >= min_sources and edge_no >= min_edge
+            outcomes.append(
+                RankedOutcome(
+                    bucket_label=bucket.label,
+                    side="NO",
+                    p_win=p_no,
+                    best_ask=bucket.no_ask,
+                    edge=edge_no,
+                    recommended=recommended_no,
+                )
+            )
     outcomes.sort(key=lambda o: o.edge, reverse=True)
     return MarketReport(
         **common,

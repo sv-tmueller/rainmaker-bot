@@ -48,6 +48,18 @@ def test_parse_bucket_below():
     )
 
 
+def test_parse_bucket_derives_no_side():
+    markets = _nyc_event()["markets"]
+    below = parse_bucket(markets[0])
+    # NO ask = 1 - YES bid (buying NO == selling YES).
+    assert below.no_ask == pytest.approx(1 - 0.001)
+    assert below.no_token_id == json.loads(markets[0]["clobTokenIds"])[1]
+    # A null YES bid means no resting NO offer to take, so no NO ask.
+    above = parse_bucket(markets[10])
+    assert above.best_bid is None
+    assert above.no_ask is None
+
+
 def test_parse_bucket_range_and_above():
     markets = _nyc_event()["markets"]
     rng = parse_bucket(markets[6])

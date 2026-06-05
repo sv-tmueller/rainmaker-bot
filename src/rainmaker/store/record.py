@@ -79,12 +79,19 @@ def _record_market(conn: Conn, market: Market, captured_at: str) -> None:
 
 
 def _record_prices(conn: Conn, run_id: str, market: Market, captured_at: str) -> None:
+    insert = (
+        "INSERT INTO prices (run_id, market_id, outcome, side, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
     for b in market.buckets:
         conn.execute(
-            "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (run_id, market.id, b.label, b.best_ask, b.yes_price, captured_at),
+            insert, (run_id, market.id, b.label, "YES", b.best_ask, b.yes_price, captured_at)
         )
+        if b.no_ask is not None:
+            conn.execute(
+                insert,
+                (run_id, market.id, b.label, "NO", b.no_ask, 1 - b.yes_price, captured_at),
+            )
 
 
 def _record_forecasts(
@@ -119,14 +126,15 @@ def _record_predictions(
     for o in report.outcomes:
         conn.execute(
             "INSERT INTO predictions "
-            "(run_id, market_id, bucket, p_win, confidence, dist_params, edge, "
+            "(run_id, market_id, bucket, side, p_win, confidence, dist_params, edge, "
             "recommended, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             # confidence stays NULL: no calibrated confidence metric is recorded here.
             (
                 run_id,
                 market_id,
                 o.bucket_label,
+                o.side,
                 o.p_win,
                 None,
                 dist_params,

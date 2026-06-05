@@ -57,7 +57,7 @@ def test_render_markdown_has_table_and_settlement_date():
     report = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
     md = render_markdown(report)
     assert md.startswith("# Rainmaker report 2026-05-31")
-    assert "| bucket | P(win) | ask | edge | rec |" in md
+    assert "| bucket | side | P(win) | ask | edge | rec |" in md
     assert "2026-05-31" in md
 
 
@@ -103,6 +103,37 @@ def test_render_leads_with_recommended_bets_summary():
     assert md.index("Recommended bets") < md.index("## Highest temperature in NYC")
     # the one recommended bet is listed in the summary
     assert "70-71°F" in md
+
+
+def test_render_shows_side_for_no_bet():
+    rep = MarketReport(
+        market_id="m4",
+        title="Highest temperature in NYC on May 31?",
+        station="KLGA",
+        variable="TMAX",
+        settlement_date=date(2026, 5, 31),
+        mu=70.5,
+        sigma=2.0,
+        n_sources=2,
+        calibrated=True,
+        coverage=[SourceCoverage(source="nws", ok=True, n_samples=1)],
+        outcomes=[
+            RankedOutcome(
+                bucket_label="80-81°F",
+                side="NO",
+                p_win=0.95,
+                best_ask=0.70,
+                edge=0.25,
+                recommended=True,
+            )
+        ],
+        excluded_no_ask=[],
+    )
+    report = Report(run_date=date(2026, 5, 31), markets=[rep])
+    text = render_terminal(report)
+    md = render_markdown(report)
+    assert "80-81°F NO" in text  # the summary line names the side
+    assert "| NO |" in md  # the per-market table has a side column
 
 
 def test_render_summary_says_none_when_no_recommendations():
