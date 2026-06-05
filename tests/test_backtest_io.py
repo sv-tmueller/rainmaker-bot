@@ -7,8 +7,9 @@ from typing import Any
 import httpx
 
 from rainmaker.backfill import HISTORICAL_FORECAST_URL, NCEI_URL
-from rainmaker.backtest import backtest_synthetic, standard_buckets
+from rainmaker.backtest import backtest_real, backtest_synthetic, standard_buckets
 from rainmaker.config import STATIONS
+from rainmaker.polymarket.client import GAMMA_EVENTS_URL, fetch_closed_weather_events
 
 FIXTURES = Path(__file__).parent / "fixtures"
 KLGA = STATIONS["NYC"]
@@ -22,8 +23,14 @@ def _hist_fixture() -> dict[str, Any]:
     return json.loads((FIXTURES / "openmeteo_hist_multimodel_klga.json").read_text())
 
 
+def _closed_events() -> list[dict[str, Any]]:
+    return json.loads((FIXTURES / "polymarket_closed_weather_events.json").read_text())
+
+
 def test_backtest_synthetic_scores_the_overlapping_window(httpx_mock):
-    httpx_mock.add_response(url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture())
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+    )
     httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
     with httpx.Client() as client:
         result = backtest_synthetic(KLGA, "TMAX", date(2026, 3, 1), date(2026, 3, 5), client)
@@ -41,8 +48,37 @@ def test_backtest_synthetic_scores_the_overlapping_window(httpx_mock):
 
 
 def test_backtest_synthetic_returns_none_without_overlap(httpx_mock):
-    httpx_mock.add_response(url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture())
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+    )
     httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=[])  # no actuals
     with httpx.Client() as client:
         result = backtest_synthetic(KLGA, "TMAX", date(2026, 3, 1), date(2026, 3, 5), client)
+    assert result is None
+
+
+def test_fetch_closed_weather_events_queries_closed_true(httpx_mock):
+    httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[])
+    with httpx.Client() as client:
+        fetch_closed_weather_events(client)
+    assert httpx_mock.get_requests()[0].url.params["closed"] == "true"
+
+
+def test_backtest_real_scores_closed_markets_and_filters(httpx_mock):
+    # backtest_real fetches forecasts + actuals once for the KLGA group.
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+    )
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    with httpx.Client() as client:
+        result = backtest_real(_closed_events(), client, on_or_after=date(2026, 3, 1))
+    # The Feb NYC market is date-filtered; London is skipped (not in the registry);
+    # the two March NYC markets score.
+    assert result is not None
+    assert result.n == 2
+
+
+def test_backtest_real_returns_none_when_all_filtered(httpx_mock):
+    with httpx.Client() as client:
+        result = backtest_real(_closed_events(), client, on_or_after=date(2027, 1, 1))
     assert result is None
