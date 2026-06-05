@@ -108,10 +108,53 @@ To refresh the cloud database without handling the DSN locally, trigger the
 latest tracking snapshot (P&L, record, ROI, Brier, hit rate).
 
 Deploy: a Vercel project with root directory `dashboard/`, env vars
-`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (used server-side only), and
-Cloudflare Access in front of the hostname. The app has no auth code; access is
-gated at the edge. Local dev: copy `dashboard/.env.example` to
-`dashboard/.env.local`, fill it in, then `npm run dev` in `dashboard/`.
+`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (used server-side only). The app
+has no auth code; access is gated at the edge by Cloudflare Access. Local dev:
+copy `dashboard/.env.example` to `dashboard/.env.local`, fill it in, then
+`npm run dev` in `dashboard/`.
+
+### Access hardening
+
+The dashboard exposes the bot's recommended bets and performance, so it must not
+be publicly reachable. Two doors have to be closed: the custom hostname (gated by
+Cloudflare Access) and the auto-generated `*.vercel.app` URL (gated by Vercel
+Deployment Protection, because it skips Cloudflare entirely). The hostname is
+`rainmaker.strueller.de`. Mirror the operator's existing Access-fronted Vercel
+project for the policy and protection settings.
+
+1. Custom domain. Vercel project -> Settings -> Domains -> add
+   `rainmaker.strueller.de`. In Cloudflare DNS add the CNAME Vercel shows, proxy
+   ON (orange cloud), and set SSL/TLS mode to Full (strict). If Vercel's
+   certificate issuance stalls while the record is proxied, set the record to
+   DNS only (grey cloud) until the cert is issued, then turn the proxy back on.
+   If the zone already forwards to another site (a Redirect Rule, Page Rule, or
+   Bulk Redirect), scope it to exclude this hostname, or the request is 301'd
+   away before it reaches Vercel or Access.
+2. Cloudflare Access. Zero Trust -> Access -> Applications -> Add a self-hosted
+   app for `rainmaker.strueller.de`, reusing the existing Allow policy. Access
+   applications match by hostname, so an app on another host does not cover this
+   one; create a new app and attach the same policy.
+3. Close the vercel.app bypass. The auto-generated `*.vercel.app` deployment URLs
+   do not pass through Cloudflare, so they are an unauthenticated side door, and
+   they leak (Vercel posts preview URLs on PRs). Vercel project -> Settings ->
+   Deployment Protection -> enable Vercel Authentication (mirror the other
+   project) so all deployment URLs require login.
+
+Verify:
+
+```sh
+# Custom host: Cloudflare Access login for this hostname.
+curl -sI https://rainmaker.strueller.de
+#   -> 302 to <team>.cloudflareaccess.com/.../login/rainmaker.strueller.de
+
+# Preview deployments: gated by Vercel Authentication.
+curl -sI https://rainmaker-bot-git-<branch>-<team>.vercel.app
+#   -> 401 (Vercel SSO). The production alias rainmaker-bot.vercel.app instead
+#      301-redirects to the custom host, which is gated, so that path is fine too.
+```
+
+Done when the custom hostname prompts for Cloudflare Access login and no
+`*.vercel.app` URL serves the dashboard unauthenticated.
 
 ## Automation status
 
