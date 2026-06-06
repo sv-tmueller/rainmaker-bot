@@ -204,6 +204,7 @@ MIN_SIGMA_F = 1.5
 CONFIDENCE_FLOOR = 0.90
 MIN_SOURCES = 2
 MIN_EDGE = 0.05
+PRECIP_VAR_FLOOR = 0.01  # in^2: variance floor for the monthly-total gamma (~0.1in std)
 REPORTS_DIR = "reports"
 DB_PATH = "rainmaker.db"
 
