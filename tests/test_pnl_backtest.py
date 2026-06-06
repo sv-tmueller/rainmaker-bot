@@ -134,6 +134,18 @@ def test_market_at_lead_prices_buckets_from_mids():
     assert out.id == market.id and out.target == market.target
 
 
+def test_market_at_lead_applies_spread_haircut_to_both_sides():
+    market = _market([_bucket("36-37°F", "range", lo=36, hi=37, yes_token_id="c0")])
+    out = market_at_lead(market, {"36-37°F": 0.20}, spread=0.04)
+    b = out.buckets[0]
+    assert b.best_ask == pytest.approx(0.22)  # mid 0.20 + spread/2
+    assert b.no_ask == pytest.approx(0.82)  # (1 - 0.20) + spread/2
+    # spread defaults to 0 -> raw mid, unchanged behavior
+    out0 = market_at_lead(market, {"36-37°F": 0.20})
+    assert out0.buckets[0].best_ask == pytest.approx(0.20)
+    assert out0.buckets[0].no_ask == pytest.approx(0.80)
+
+
 # Phase C1
 
 

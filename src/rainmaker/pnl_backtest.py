@@ -70,6 +70,7 @@ class PnlBacktestResult(BaseModel):
     floor: float
     min_sources: int
     min_edge: float
+    spread: float = 0.0
     per_lead: list[LeadPnl]
     overall: LeadPnl
 
@@ -83,18 +84,26 @@ def forecast_set_from_samples(target: Target, samples: list[ForecastSample]) -> 
     )
 
 
-def market_at_lead(market: Market, mids: dict[str, float | None]) -> Market:
+def market_at_lead(market: Market, mids: dict[str, float | None], *, spread: float = 0.0) -> Market:
     """Reprice a market's buckets from per-bucket mids keyed by bucket label.
 
-    A bucket's YES ask becomes the mid and its NO ask the complement (1 - mid).
-    A missing or None mid leaves both sides unpriced so evaluate_market drops it.
+    A bucket's YES ask is the mid and its NO ask the complement (1 - mid). With a
+    positive `spread` the ask paid is the mid plus half the spread on each side
+    (ask = mid + spread/2, capped at 1), the symmetric-book approximation of the
+    cost actually paid; spread=0 is the raw mid. A missing or None mid leaves both
+    sides unpriced so evaluate_market drops it.
     """
+    half = spread / 2
     buckets = []
     for bucket in market.buckets:
         mid = mids.get(bucket.label)
-        buckets.append(
-            bucket.model_copy(update={"best_ask": mid, "no_ask": None if mid is None else 1 - mid})
-        )
+        if mid is None:
+            best_ask: float | None = None
+            no_ask: float | None = None
+        else:
+            best_ask = min(mid + half, 1.0)
+            no_ask = min((1 - mid) + half, 1.0)
+        buckets.append(bucket.model_copy(update={"best_ask": best_ask, "no_ask": no_ask}))
     return market.model_copy(update={"buckets": buckets})
 
 
@@ -116,6 +125,7 @@ def replay_market(
     min_sources: int,
     min_sigma: float,
     min_edge: float,
+    spread: float = 0.0,
 ) -> list[Bet]:
     """One best-edge bet per lead, settled against the actual.
 
@@ -137,7 +147,7 @@ def replay_market(
             for bucket in market.buckets
         }
         report = evaluate_market(
-            market_at_lead(market, mids),
+            market_at_lead(market, mids, spread=spread),
             forecast_set,
             floor=floor,
             min_sources=min_sources,
@@ -203,8 +213,14 @@ def render_pnl_report(result: PnlBacktestResult) -> tuple[str, dict[str, Any]]:
         "# Betting P/L backtest",
         "",
         f"Hypothetical P/L over {result.n_markets} closed market(s) at a flat "
-        "one-unit stake, replayed at several forecast leads. The price is the "
-        "token mid (mid-based, mildly optimistic versus the ask actually paid).",
+        "one-unit stake, replayed at several forecast leads. "
+        + (
+            f"The ask paid is the token mid plus a {result.spread:.2f} spread "
+            "haircut (ask = mid + spread/2)."
+            if result.spread > 0
+            else "The price is the token mid (mid-based, mildly optimistic versus "
+            "the ask actually paid)."
+        ),
         "",
         f"min_sources is relaxed to {result.min_sources}: the archive is one "
         "source, so recommended here is a superset of the live two-source gate. "
@@ -253,6 +269,7 @@ def backtest_pnl(
     min_sigma: float = MIN_SIGMA_F,
     min_edge: float = MIN_EDGE,
     city: str | None = None,
+    spread: float = 0.0,
 ) -> PnlBacktestResult | None:
     """Replay closed markets at their historical CLOB price and score the P/L.
 
@@ -308,6 +325,7 @@ def backtest_pnl(
                     min_sources=min_sources,
                     min_sigma=min_sigma,
                     min_edge=min_edge,
+                    spread=spread,
                 )
             )
 
@@ -319,6 +337,7 @@ def backtest_pnl(
         floor=floor,
         min_sources=min_sources,
         min_edge=min_edge,
+        spread=spread,
         per_lead=per_lead,
         overall=overall,
     )
