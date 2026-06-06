@@ -1,0 +1,63 @@
+{
+  "id": "531291",
+  "slug": "precipitation-in-nyc-in-june",
+  "title": "Precipitation in NYC in June?",
+  "endDate": "2026-06-30T00:00:00Z",
+  "description": "This market will resolve according to the total precipitation in inches in Central Park, New York City between June 1 and June 30, 2026, 11:59PM ET according to the National Oceanic and Atmospheric Administration (NOAA).\n\nIf the reported value falls exactly between two brackets, then this market will resolve to the higher range bracket.\n\nThe resolution source for this market will be NOAA, specifically the figure for June 2026 when the \"Monthly summarized data\" for \"Central Park NY\" is selected with the variable set to \"Precipitation\" at the https://www.weather.gov/wrh/climate?wfo=okx link once that figure is finalized for the whole month of June 2026.\n\nThe resolution source for this market measures precipitation to 2 decimal places (e.g., 1.54), thus, this is the level of precision that will be used when resolving this market. Any revisions to precipitation recorded after data is finalized for this market's timeframe will not be considered for this market's resolution.",
+  "markets": [
+    {
+      "question": "Will NYC have less than 2 inches of precipitation in June?",
+      "groupItemTitle": "<2\"",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.41\", \"0.59\"]",
+      "bestAsk": 0.49,
+      "bestBid": 0.33,
+      "clobTokenIds": "[\"112973921885698763449502672889685120574837000595144538241710586429600412920907\", \"44040783249415662198944040136216543012248343188391693156191485769104146230541\"]"
+    },
+    {
+      "question": "Will NYC have between 3 and 4 inches of precipitation in June?",
+      "groupItemTitle": "3-4\"",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.19\", \"0.81\"]",
+      "bestAsk": 0.27,
+      "bestBid": 0.11,
+      "clobTokenIds": "[\"77082243164284831970767248419247330376651625774288648814825350597096405615271\", \"15497007368476078840659845615968171430198017973762457001362379614093235047735\"]"
+    },
+    {
+      "question": "Will NYC have between 5 and 6 inches of precipitation in June?",
+      "groupItemTitle": "5-6\"",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.27\", \"0.73\"]",
+      "bestAsk": 0.47,
+      "bestBid": 0.07,
+      "clobTokenIds": "[\"99750144825102063993265578439610682587516579771936677116133724843101043796311\", \"64416187343085607870284421165897338034673979236456548458799692365301290167529\"]"
+    },
+    {
+      "question": "Will NYC have between 2 and 3 inches of precipitation in June?",
+      "groupItemTitle": "2-3\"",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.21\", \"0.79\"]",
+      "bestAsk": 0.29,
+      "bestBid": 0.13,
+      "clobTokenIds": "[\"15458387623082890347292789225690651208767777761654508286675367788262071278001\", \"79200280903820613838202877607551191917159403479788646321465789633252333837479\"]"
+    },
+    {
+      "question": "Will NYC have between 4 and 5 inches of precipitation in June?",
+      "groupItemTitle": "4-5\"",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.195\", \"0.805\"]",
+      "bestAsk": 0.26,
+      "bestBid": 0.13,
+      "clobTokenIds": "[\"30674175594842576250229964720496020041490008393547739779013972702608990092793\", \"57748862480252647168630345305752205197158136234581831205145310108934343143777\"]"
+    },
+    {
+      "question": "Will NYC have more than 6 inches of precipitation in June?",
+      "groupItemTitle": ">6\"",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.28\", \"0.72\"]",
+      "bestAsk": 0.49,
+      "bestBid": 0.07,
+      "clobTokenIds": "[\"91940926429429995776059777680988645068479319347109528276874202682693271185881\", \"100549838196265475262841200778557821055349674681171760705552346772634654279031\"]"
+    }
+  ]
+}
