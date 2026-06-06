@@ -4,6 +4,8 @@ from pydantic import BaseModel
 
 from rainmaker.ranking.edge import MarketReport, RankedOutcome
 
+RecommendedPair = tuple[MarketReport, RankedOutcome]
+
 
 class Report(BaseModel):
     run_date: date
@@ -16,11 +18,27 @@ def _coverage_str(report: MarketReport) -> str:
     )
 
 
-def _recommended_pairs(report: Report) -> list[tuple[MarketReport, RankedOutcome]]:
+def _recommended_pairs(report: Report) -> list[RecommendedPair]:
     """Every gate-passing outcome across all markets, best edge first."""
     pairs = [(m, o) for m in report.markets for o in m.outcomes if o.recommended]
     pairs.sort(key=lambda mo: mo[1].edge, reverse=True)
     return pairs
+
+
+def _recommended_by_city(report: Report) -> list[tuple[str, list[RecommendedPair]]]:
+    """Recommended outcomes grouped by city. Cities are ordered by their best edge
+    and bets within a city by edge (both descending), so the strongest call leads."""
+    groups: dict[str, list[RecommendedPair]] = {}
+    for m, o in _recommended_pairs(report):  # already edge-sorted desc
+        groups.setdefault(m.city, []).append((m, o))
+    return sorted(groups.items(), key=lambda kv: kv[1][0][1].edge, reverse=True)
+
+
+def _bet_label(m: MarketReport) -> str:
+    """The market descriptor for a per-bet summary line, with the city dropped (it
+    is redundant under the city header). Falls back to the full title if absent."""
+    needle = f" in {m.city}"
+    return m.title.replace(needle, "", 1) if needle in m.title else m.title
 
 
 def render_terminal(report: Report) -> str:
@@ -31,14 +49,16 @@ def render_terminal(report: Report) -> str:
         "side YES=buy bucket, NO=sell bucket  (all 0-1)  REC=passes gates",
         "",
     ]
-    bets = _recommended_pairs(report)
-    lines.append("Recommended bets (ranked by edge):")
-    if bets:
-        for m, o in bets:
-            lines.append(
-                f"  {m.title}  {o.bucket_label} {o.side}  "
-                f"P(win)={o.p_win:.2f} ask={o.best_ask:.2f} edge={o.edge:+.2f}"
-            )
+    lines.append("Recommended bets (grouped by city, best edge first):")
+    grouped = _recommended_by_city(report)
+    if grouped:
+        for city, city_pairs in grouped:
+            lines.append(f"  {city}")
+            for m, o in city_pairs:
+                lines.append(
+                    f"    {_bet_label(m)}  {o.bucket_label} {o.side}  "
+                    f"P(win)={o.p_win:.2f} ask={o.best_ask:.2f} edge={o.edge:+.2f}"
+                )
     else:
         lines.append("  No bets pass the gates today.")
     lines.append("")
@@ -78,20 +98,24 @@ def render_markdown(report: Report) -> str:
         "  (all 0-1)  rec = passes gates_",
         "",
     ]
-    bets = _recommended_pairs(report)
-    lines.append("## Recommended bets (ranked by edge)")
+    lines.append("## Recommended bets (grouped by city, best edge first)")
     lines.append("")
-    if bets:
-        lines.append("| market | bucket | side | P(win) | ask | edge |")
-        lines.append("|--------|--------|------|--------|-----|------|")
-        for m, o in bets:
-            lines.append(
-                f"| {m.title} | {o.bucket_label} | {o.side} | {o.p_win:.2f}"
-                f" | {o.best_ask:.2f} | {o.edge:+.2f} |"
-            )
+    grouped = _recommended_by_city(report)
+    if grouped:
+        for city, city_pairs in grouped:
+            lines.append(f"### {city}")
+            lines.append("")
+            lines.append("| market | bucket | side | P(win) | ask | edge |")
+            lines.append("|--------|--------|------|--------|-----|------|")
+            for m, o in city_pairs:
+                lines.append(
+                    f"| {_bet_label(m)} | {o.bucket_label} | {o.side} | {o.p_win:.2f}"
+                    f" | {o.best_ask:.2f} | {o.edge:+.2f} |"
+                )
+            lines.append("")
     else:
         lines.append("_No bets pass the gates today._")
-    lines.append("")
+        lines.append("")
     for m in report.markets:
         lines.append(f"## {m.title}")
         lines.append("")
