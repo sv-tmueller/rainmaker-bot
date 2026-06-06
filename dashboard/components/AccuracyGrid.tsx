@@ -30,9 +30,7 @@ export function AccuracyGrid({ accuracy }: { accuracy: Accuracy }) {
     <section className="rounded border border-line bg-panel px-4 py-4">
       <div className="text-[10px] uppercase tracking-[0.1em] text-muted">
         Forecast accuracy{" "}
-        <span className="normal-case tracking-normal text-faint">
-          · live MAE, bias, n · bt = backtest
-        </span>
+        <span className="normal-case tracking-normal text-faint">· degrees off vs actual, by lead</span>
       </div>
       {accuracy.rows.length === 0 ? (
         <p className="mt-3 text-sm text-muted">No accuracy data yet.</p>
@@ -60,6 +58,12 @@ export function AccuracyGrid({ accuracy }: { accuracy: Accuracy }) {
           </tbody>
         </table>
       )}
+      <p className="mt-3 text-[11px] leading-relaxed text-faint">
+        Columns are forecast lead in days (0d = same-day, 1d = one day ahead). Each cell:
+        MAE in °F (average miss), bias (<span className="text-warm">+ warm</span> /{" "}
+        <span className="text-cool">− cool</span>), and n cases from live runs. bt = the
+        2-year backtest baseline (its MAE and n). – = not enough data yet.
+      </p>
     </section>
   );
 }
