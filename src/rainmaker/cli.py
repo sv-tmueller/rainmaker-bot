@@ -35,7 +35,7 @@ from rainmaker.store.query import load_calibration
 from rainmaker.store.record import EvaluatedMarket, record_run, save_accuracy, save_calibration
 from rainmaker.tracking import compute_calibration, compute_pnl, write_snapshot
 
-SUPPORTED_VARIABLES = {"TMAX"}
+SUPPORTED_VARIABLES = {"TMAX", "TMIN"}
 
 
 def _today() -> date:
