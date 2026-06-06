@@ -1,12 +1,19 @@
+import json
+import math
 from datetime import date
+from pathlib import Path
 
 import pytest
 
-from rainmaker.config import build_target
+from rainmaker.config import CONFIDENCE_FLOOR, MIN_EDGE, MIN_SOURCES, PRECIP_VAR_FLOOR, build_target
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
+from rainmaker.forecasts.precip import PrecipForecastSet
 from rainmaker.polymarket.markets import Bucket, Market
+from rainmaker.polymarket.precip_markets import parse_precip_event
 from rainmaker.probability.calibration import Calibration
-from rainmaker.ranking.edge import MarketReport, evaluate_market
+from rainmaker.ranking.edge import MarketReport, evaluate_market, evaluate_precip_market
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _bucket(label, kind, *, lo=None, hi=None, threshold=None, best_ask=None, no_ask=None) -> Bucket:
@@ -207,3 +214,50 @@ def test_recommended_passes_min_edge():
     o = report.outcomes[0]
     assert o.edge >= 0.05
     assert o.recommended is True
+
+
+def _precip_market():
+    return parse_precip_event(
+        json.loads((FIXTURES / "polymarket_precip_monthly_nyc.json").read_text())
+    )
+
+
+def _precip_forecast_set(target, *, mean=2.5, var=0.6):
+    return PrecipForecastSet(
+        target=target,
+        mean=mean,
+        var=var,
+        coverage=[
+            SourceCoverage(source="open-meteo", ok=True, n_samples=40),
+            SourceCoverage(source="nws", ok=True, n_samples=3),
+        ],
+        n_observed_days=5,
+        n_forecast_days=7,
+        n_clim_days=18,
+    )
+
+
+def test_evaluate_precip_market_ranks_brackets():
+    market = _precip_market()
+    fs = _precip_forecast_set(market.target)
+    report = evaluate_precip_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_edge=MIN_EDGE,
+        var_floor=PRECIP_VAR_FLOOR,
+    )
+    assert isinstance(report, MarketReport)
+    assert report.variable == "PRCP"
+    assert report.station == "Central Park NY"
+    assert report.settlement_date == date(2026, 6, 30)
+    assert report.calibrated is False
+    assert report.n_sources == 2
+    assert report.mu == pytest.approx(2.5)
+    assert report.sigma == pytest.approx(math.sqrt(0.6))
+    yes = [o for o in report.outcomes if o.side == "YES"]
+    assert len(yes) == 6  # one YES per inch bracket
+    assert abs(sum(o.p_win for o in yes) - 1.0) < 1e-6  # partition sums to one
+    edges = [o.edge for o in report.outcomes]
+    assert edges == sorted(edges, reverse=True)  # ranked by edge desc

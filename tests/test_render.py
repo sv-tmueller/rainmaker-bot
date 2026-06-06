@@ -136,6 +136,33 @@ def test_render_shows_side_for_no_bet():
     assert "| NO |" in md  # the per-market table has a side column
 
 
+def test_render_uses_inch_unit_for_precip():
+    rep = MarketReport(
+        market_id="p1",
+        title="Precipitation in NYC in June?",
+        station="Central Park NY",
+        variable="PRCP",
+        settlement_date=date(2026, 6, 30),
+        mu=3.06,
+        sigma=2.0,
+        n_sources=2,
+        calibrated=False,
+        coverage=[SourceCoverage(source="open-meteo", ok=True, n_samples=40)],
+        outcomes=[
+            RankedOutcome(
+                bucket_label='2-3"', p_win=0.40, best_ask=0.29, edge=0.11, recommended=False
+            )
+        ],
+        excluded_no_ask=[],
+    )
+    report = Report(run_date=date(2026, 6, 6), markets=[rep])
+    text = render_terminal(report)
+    md = render_markdown(report)
+    assert "mu=3.06in sigma=2.00in" in text
+    assert "mu=3.06in sigma=2.00in" in md
+    assert "Central Park NY" in text
+
+
 def test_render_summary_says_none_when_no_recommendations():
     no_rec = MarketReport(
         market_id="m3",

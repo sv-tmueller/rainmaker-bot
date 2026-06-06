@@ -1,13 +1,18 @@
+import math
 from datetime import date
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from rainmaker.forecasts.base import ForecastSet, SourceCoverage
+from rainmaker.forecasts.precip import PrecipForecastSet
 from rainmaker.polymarket.markets import Market
+from rainmaker.polymarket.precip_markets import PrecipMonthlyMarket
 from rainmaker.probability.calibration import Calibration, apply_calibration
 from rainmaker.probability.distribution import fit_gaussian
 from rainmaker.probability.outcomes import bucket_probability
+from rainmaker.probability.precip_distribution import fit_gamma
+from rainmaker.probability.precip_outcomes import bracket_probability
 
 
 class RankedOutcome(BaseModel):
@@ -112,6 +117,72 @@ def evaluate_market(
         calibrated=calibrated,
         mu=gaussian.mu,
         sigma=gaussian.sigma,
+        outcomes=outcomes,
+        excluded_no_ask=excluded,
+    )
+
+
+def evaluate_precip_market(
+    market: PrecipMonthlyMarket,
+    forecast_set: PrecipForecastSet,
+    *,
+    floor: float,
+    min_sources: int,
+    min_edge: float,
+    var_floor: float,
+) -> MarketReport:
+    """Edge-rank a monthly precipitation market via the gamma over inch brackets.
+
+    The parallel of evaluate_market for the precip path: same YES/NO gates
+    (confidence floor, min sources, min edge), same MarketReport, but the
+    distribution is a method-of-moments gamma and calibration is not applied."""
+    n_sources = sum(1 for c in forecast_set.coverage if c.ok)
+    gamma = fit_gamma(forecast_set.mean, forecast_set.var, floor=var_floor)
+    outcomes: list[RankedOutcome] = []
+    excluded: list[str] = []
+    for bracket in market.buckets:
+        p_win = bracket_probability(gamma, bracket)
+        if bracket.best_ask is not None and bracket.best_ask > 0:
+            edge = p_win - bracket.best_ask
+            recommended = p_win >= floor and n_sources >= min_sources and edge >= min_edge
+            outcomes.append(
+                RankedOutcome(
+                    bucket_label=bracket.label,
+                    side="YES",
+                    p_win=p_win,
+                    best_ask=bracket.best_ask,
+                    edge=edge,
+                    recommended=recommended,
+                )
+            )
+        else:
+            excluded.append(bracket.label)
+        if bracket.no_ask is not None and 0 < bracket.no_ask < 1:
+            p_no = 1 - p_win
+            edge_no = p_no - bracket.no_ask
+            recommended_no = p_no >= floor and n_sources >= min_sources and edge_no >= min_edge
+            outcomes.append(
+                RankedOutcome(
+                    bucket_label=bracket.label,
+                    side="NO",
+                    p_win=p_no,
+                    best_ask=bracket.no_ask,
+                    edge=edge_no,
+                    recommended=recommended_no,
+                )
+            )
+    outcomes.sort(key=lambda o: o.edge, reverse=True)
+    return MarketReport(
+        market_id=market.id,
+        title=market.title,
+        station=market.target.station.resolution_name,
+        variable=market.target.variable,
+        settlement_date=market.target.settlement_date,
+        mu=forecast_set.mean,
+        sigma=math.sqrt(forecast_set.var),
+        n_sources=n_sources,
+        calibrated=False,
+        coverage=forecast_set.coverage,
         outcomes=outcomes,
         excluded_no_ask=excluded,
     )

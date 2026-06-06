@@ -1,0 +1,35 @@
+{
+  "latitude": 40.78858,
+  "longitude": -73.9661,
+  "generationtime_ms": 1.92,
+  "utc_offset_seconds": -14400,
+  "timezone": "America/New_York",
+  "timezone_abbreviation": "GMT-4",
+  "elevation": 44.0,
+  "daily_units": {
+    "time": "iso8601",
+    "precipitation_sum": "inch",
+    "precipitation_sum_member01": "inch",
+    "precipitation_sum_member02": "inch",
+    "precipitation_sum_member03": "inch",
+    "precipitation_sum_member04": "inch",
+    "precipitation_sum_member05": "inch"
+  },
+  "daily": {
+    "time": [
+      "2026-06-06",
+      "2026-06-07",
+      "2026-06-08",
+      "2026-06-09",
+      "2026-06-10",
+      "2026-06-11",
+      "2026-06-12"
+    ],
+    "precipitation_sum": [0.071, 0.012, 0.0, 0.0, 0.094, 0.118, 0.039],
+    "precipitation_sum_member01": [0.110, 0.000, 0.0, 0.0, 0.205, 0.000, 0.012],
+    "precipitation_sum_member02": [0.024, 0.063, 0.0, 0.0, 0.000, 0.331, 0.087],
+    "precipitation_sum_member03": [0.008, 0.000, 0.0, 0.0, 0.047, 0.142, 0.020],
+    "precipitation_sum_member04": [0.156, 0.020, 0.0, 0.0, 0.118, 0.000, 0.055],
+    "precipitation_sum_member05": [0.000, 0.000, 0.0, 0.0, 0.012, 0.276, 0.031]
+  }
+}

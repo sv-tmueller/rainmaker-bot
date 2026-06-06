@@ -2,6 +2,7 @@ import re
 from datetime import date
 
 import httpx
+import pytest
 
 from rainmaker.backfill import NCEI_URL
 from rainmaker.settle import run_settlement
@@ -95,5 +96,44 @@ def test_run_settlement_skips_unknown_city():
     _market(conn, "m1", "Atlantis", "TMAX", "2026-05-30")
     with httpx.Client() as client:
         settled, waiting = run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
+    conn.close()
+    assert (settled, waiting) == (0, 0)
+
+
+def test_run_settlement_settles_precip_via_gsom(httpx_mock):
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "p1", "NYC", "PRCP", "2026-06-30")
+    httpx_mock.add_response(
+        url=re.compile(re.escape(NCEI_URL)),
+        json=[{"DATE": "2026-06", "STATION": "USW00094728", "PRCP": "4.10"}],
+    )
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 7, 3), "2026-07-03T00:00:00Z")
+    row = conn.execute("SELECT actual_value FROM outcomes WHERE market_id = ?", ("p1",)).fetchone()
+    conn.close()
+    assert (settled, waiting) == (1, 0)
+    assert row["actual_value"] == pytest.approx(4.10)
+
+
+def test_run_settlement_precip_waits_when_unpublished(httpx_mock):
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "p1", "NYC", "PRCP", "2026-06-30")
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=[])
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 7, 3), "2026-07-03T00:00:00Z")
+    n = conn.execute("SELECT count(*) AS n FROM outcomes").fetchone()["n"]
+    conn.close()
+    assert (settled, waiting) == (0, 1)
+    assert n == 0
+
+
+def test_run_settlement_skips_unknown_precip_city():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "p1", "Atlantis", "PRCP", "2026-06-30")
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 7, 3), "2026-07-03T00:00:00Z")
     conn.close()
     assert (settled, waiting) == (0, 0)
