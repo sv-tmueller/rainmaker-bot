@@ -68,3 +68,26 @@ YES-on-favorites (high p_yes, overconfident). A regime-aware floor (a lower bar
 for NO bets, or for the low-p_yes regime) would capture bets like SF 64-65 NO
 without admitting overconfident YES favorites. Hold this until #59 Part 2 can
 score it against real P/L.
+
+## Update 2026-06-06: P/L evidence reopens this (#58)
+
+#59 Part 2 shipped (`rainmaker backtest-pnl`), so the floor can now be scored
+against historical P/L. A sweep over a 45-day universe, replaying the gates at
+leads 0-2, points the other way from the decision above:
+
+| Floor | Bets | Win% | Total P/L | ROI |
+| ---: | ---: | ---: | ---: | ---: |
+| 0.90 | 231 | 90% | +25.97u | +14.3% |
+| 0.80 | 313 | 89% | +50.17u | +21.8% |
+| 0.70 | 344 | 85% | +54.97u | +23.0% |
+| 0.60 | 363 | 80% | +49.02u | +20.2% |
+
+Relaxing to ~0.75-0.80 nearly doubles total P/L and lifts ROI from +14% to ~+22%
+with win rate holding ~89%, which is the original #58 hypothesis backed by P/L
+rather than the reliability curve.
+
+This is not yet acted on. The backtest prices at the token mid, not the ask, and
+the bets the lower floors add are mostly thin longshot markets with wide spreads,
+so the mid-vs-ask optimism inflates exactly those bets. Before changing the
+floor: tighten `pnl_backtest` to price at the actual ask, re-run the sweep, then
+decide (relax to ~0.80, or the regime-aware floor above). Tracked on #58.
