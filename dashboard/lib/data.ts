@@ -2,6 +2,7 @@ import { serverClient } from "./supabase";
 
 export type Bet = {
   title: string;
+  city: string;
   slug: string | null;
   bucket: string;
   side: "YES" | "NO";
@@ -118,7 +119,7 @@ export async function getDashboardData() {
     neededIds.length > 0
       ? db
           .from("markets")
-          .select("id, title, slug, settlement_date")
+          .select("id, title, slug, settlement_date, city")
           .in("id", neededIds)
       : Promise.resolve({ data: [] }),
     settledRunIds.length > 0
@@ -131,6 +132,7 @@ export async function getDashboardData() {
   ]);
 
   const titleOf = new Map((marketsQ.data ?? []).map((m) => [m.id, m.title as string]));
+  const cityOf = new Map((marketsQ.data ?? []).map((m) => [m.id, (m.city as string | null) ?? ""]));
   const slugOf = new Map((marketsQ.data ?? []).map((m) => [m.id, (m.slug as string | null) ?? null]));
   const settleDateOf = new Map(
     (marketsQ.data ?? []).map((m) => [m.id, (m.settlement_date as string | null) ?? null]),
@@ -175,6 +177,7 @@ export async function getDashboardData() {
       const side = sideOf(p.side);
       return {
         title: titleOf.get(p.market_id) ?? (p.market_id as string),
+        city: cityOf.get(p.market_id) ?? "",
         slug: slugOf.get(p.market_id) ?? null,
         bucket: p.bucket as string,
         side,
