@@ -123,9 +123,7 @@ def test_open_meteo_source_pools_multimodel_and_ensemble(httpx_mock):
 
 
 def test_open_meteo_source_pools_min_for_tmin(httpx_mock):
-    httpx_mock.add_response(
-        url=re.compile(re.escape(FORECAST_URL)), json=_multimodel_min_fixture()
-    )
+    httpx_mock.add_response(url=re.compile(re.escape(FORECAST_URL)), json=_multimodel_min_fixture())
     for _ in range(3):
         httpx_mock.add_response(
             url=re.compile(re.escape(ENSEMBLE_URL)), json=_ensemble_min_fixture()
