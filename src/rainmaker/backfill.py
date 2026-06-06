@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from rainmaker.config import OPENMETEO_MODELS, Station
+from rainmaker.forecasts.base import ForecastSample
 from rainmaker.forecasts.openmeteo import _daily_field
 from rainmaker.probability.calibration import (
     Accuracy,
@@ -62,11 +63,10 @@ def fetch_actuals(
     }
 
 
-def fetch_historical_forecasts(
-    station: Station, start: date, end: date, client: httpx.Client, variable: str = "TMAX"
-) -> dict[date, Gaussian]:
-    """Per-date Gaussian from the multi-model spread. Raises on HTTP error."""
-    field = _daily_field(variable)
+def _fetch_archive_daily(
+    station: Station, start: date, end: date, client: httpx.Client, field: str
+) -> dict[str, Any]:
+    """Raw daily multi-model archive block for the window. Raises on HTTP error."""
     resp = client.get(
         HISTORICAL_FORECAST_URL,
         params={
@@ -81,7 +81,16 @@ def fetch_historical_forecasts(
         },
     )
     resp.raise_for_status()
-    daily = resp.json()["daily"]
+    daily: dict[str, Any] = resp.json()["daily"]
+    return daily
+
+
+def fetch_historical_forecasts(
+    station: Station, start: date, end: date, client: httpx.Client, variable: str = "TMAX"
+) -> dict[date, Gaussian]:
+    """Per-date Gaussian from the multi-model spread. Raises on HTTP error."""
+    field = _daily_field(variable)
+    daily = _fetch_archive_daily(station, start, end, client, field)
     model_keys = [f"{field}_{m}" for m in OPENMETEO_MODELS]
     out: dict[date, Gaussian] = {}
     for i, iso in enumerate(daily["time"]):
@@ -91,6 +100,43 @@ def fetch_historical_forecasts(
         out[date.fromisoformat(iso)] = Gaussian(
             mu=statistics.fmean(values), sigma=max(statistics.stdev(values), 1e-6)
         )
+    return out
+
+
+def fetch_historical_samples(
+    station: Station, start: date, end: date, client: httpx.Client
+) -> dict[date, list[ForecastSample]]:
+    """Per-date Open-Meteo archive samples, one per model. Raises on HTTP error.
+
+    The P/L backtest pools these into a ForecastSet so it can reuse the live
+    edge-ranking path. The archive is a single source at roughly lead 1, so every
+    sample is tagged source="open-meteo" with a nominal lead of 1.
+    """
+    field = _daily_field("TMAX")
+    daily = _fetch_archive_daily(station, start, end, client, field)
+    out: dict[date, list[ForecastSample]] = {}
+    for i, iso in enumerate(daily["time"]):
+        target_date = date.fromisoformat(iso)
+        samples: list[ForecastSample] = []
+        for model in OPENMETEO_MODELS:
+            values = daily.get(f"{field}_{model}")
+            if not values or values[i] is None:
+                continue
+            samples.append(
+                ForecastSample(
+                    source="open-meteo",
+                    model=model,
+                    member=None,
+                    station=station.icao,
+                    variable="TMAX",
+                    target_date=target_date,
+                    lead_time_days=1,
+                    value_f=float(values[i]),
+                    issued_at=None,
+                )
+            )
+        if samples:
+            out[target_date] = samples
     return out
 
 
