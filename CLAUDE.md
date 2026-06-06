@@ -116,7 +116,7 @@ saved JSON fixtures in `tests/fixtures/`, never live endpoints.
 src/rainmaker/
   config.py           station registry (11 cities), Target, source config constants
   cli.py              run/settle/track/snapshot/backfill/backtest/backtest-pnl entry points
-  backfill.py         NCEI actuals + historical forecasts -> calibration fit
+  backfill.py         NCEI actuals + historical forecasts -> calibration fit; GSOM monthly precip
   backtest.py         forecast calibration + win-rate over history (no P/L)
   pnl_backtest.py     replay closed markets at historical CLOB prices -> betting P/L
   settle.py           settle past markets against NOAA actuals (idempotent catch-up)
@@ -125,18 +125,22 @@ src/rainmaker/
     base.py           ForecastSample, ForecastSet, ForecastSource protocol
     nws.py            NWS fetch + parse
     openmeteo.py      Open-Meteo multi-model and ensemble fetch + parse
+    precip.py         precip sourcing (Open-Meteo + NWS QPF + climatology) -> monthly-total moments
     aggregate.py      pool sources, coverage, freshness
   probability/
     distribution.py   pooled samples -> Gaussian (uncalibrated, sigma floor)
+    precip_distribution.py  monthly total -> gamma by method of moments (var floor)
     calibration.py    per-(station, variable, lead) bias/spread fit + apply
     outcomes.py       integrate Gaussian over buckets (continuity-corrected)
+    precip_outcomes.py  integrate the gamma over inch brackets + precip_settles
   ranking/
-    edge.py           evaluate_market -> edge-ranked outcomes + gates
+    edge.py           evaluate_market / evaluate_precip_market -> edge-ranked outcomes + gates
   report/
     render.py         terminal + markdown/JSON report, recommended-bets summary
   polymarket/
-    client.py         Gamma discovery (read-only, skips malformed markets)
+    client.py         Gamma discovery (read-only): temperature + monthly precip markets
     markets.py        event JSON -> Market (target + buckets, ICAO guard)
+    precip_markets.py monthly-precip event JSON -> PrecipMonthlyMarket (inch brackets)
     prices.py         CLOB price-history client (read-only) + snap to a timestamp
   store/
     db.py             dual-backend store (SQLite default, Postgres via DSN)
