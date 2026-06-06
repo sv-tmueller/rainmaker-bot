@@ -12,7 +12,7 @@ to the market price, and produces a daily report of bets ranked by edge
 
 Status: MVP 1.0 advisory is live for 11 US cities (phases 0-4 done, plus the
 Phase 5 city expansion; the precipitation and TMIN slices remain). MVP 2.0 is
-code-complete: a daily GitHub Actions run persists to Supabase Postgres, settles
+code-complete: a scheduled GitHub Actions run (every 3h) persists to Supabase Postgres, settles
 past markets against NOAA actuals, and writes a daily P&L/calibration snapshot;
 the read-only dashboard lives in `dashboard/` (the Vercel + Cloudflare Access
 deploy is an operator step). MVP 3.0 (automated trading) has not started.
@@ -105,7 +105,7 @@ Python 3.11+ managed with uv. Commands:
 - Type check: `uv run mypy src`
 
 Every command uses local SQLite unless `DATABASE_URL` is set to a postgres DSN
-(the daily GitHub Actions workflow sets it from a repo secret). Runtime deps:
+(the scheduled GitHub Actions workflow sets it from a repo secret). Runtime deps:
 httpx, pydantic, numpy, scipy, psycopg. The dashboard in `dashboard/` is
 Next.js; verify it with `npm run build` there. API clients are tested against
 saved JSON fixtures in `tests/fixtures/`, never live endpoints.
@@ -149,7 +149,7 @@ src/rainmaker/
     query.py          read-back helpers
 dashboard/            read-only Next.js dashboard (Vercel, behind Cloudflare Access)
 .github/workflows/
-  daily-run.yml       daily cron: run -> settle -> snapshot against Supabase
+  daily-run.yml       scheduled cron (every 3h): run -> settle -> snapshot against Supabase
 tests/
   fixtures/           saved API responses (NWS, Open-Meteo, NCEI, Polymarket)
   test_*.py           unit and I/O tests (pytest-httpx for mocked HTTP)
