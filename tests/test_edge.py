@@ -131,6 +131,26 @@ def test_recommended_requires_confidence_floor():
     assert o.recommended is False  # fails the confidence floor
 
 
+def test_default_floor_relaxed_to_080_recommends_high_080s():
+    # Locks the #58 relaxation: a bet whose p_win lands in [0.80, 0.90) with edge
+    # over the bar is recommended at the default floor but not at the old 0.90.
+    assert CONFIDENCE_FLOOR == 0.80
+    market = _market([_bucket("72°F or below", "below", threshold=72, best_ask=0.70)])
+    fs = _forecast_set([70, 71, 72])  # mean 71, sigma floored to 1.5 -> p_win ~0.84
+
+    def yes(floor: float):
+        report = evaluate_market(
+            market, fs, floor=floor, min_sources=2, min_sigma=1.5, min_edge=0.05
+        )
+        return next(o for o in report.outcomes if o.side == "YES")
+
+    o = yes(CONFIDENCE_FLOOR)
+    assert 0.80 <= o.p_win < 0.90
+    assert o.edge >= 0.05
+    assert o.recommended is True  # clears the relaxed 0.80 floor
+    assert yes(0.90).recommended is False  # would have been blocked at 0.90
+
+
 def test_recommended_requires_min_sources():
     market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.05)])
     fs = _forecast_set([70, 70, 71, 71], ok_sources=("nws",))  # only 1 source

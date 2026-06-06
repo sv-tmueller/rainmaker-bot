@@ -264,7 +264,9 @@ def _parse_leads(spec: str) -> tuple[int, ...]:
     return tuple(int(part) for part in spec.split(",") if part.strip() != "")
 
 
-def _backtest_pnl(city: str, days: int, leads: tuple[int, ...], reports_dir: str) -> None:
+def _backtest_pnl(
+    city: str, days: int, leads: tuple[int, ...], spread: float, reports_dir: str
+) -> None:
     end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
     start = end - timedelta(days=days)
     client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=60.0)
@@ -275,7 +277,12 @@ def _backtest_pnl(city: str, days: int, leads: tuple[int, ...], reports_dir: str
             print(f"Polymarket unavailable, aborting: {exc}", file=sys.stderr)
             raise SystemExit(1) from exc
         result = backtest_pnl(
-            events, client, on_or_after=start, leads=leads, city=None if city == "all" else city
+            events,
+            client,
+            on_or_after=start,
+            leads=leads,
+            city=None if city == "all" else city,
+            spread=spread,
         )
     finally:
         client.close()
@@ -387,6 +394,12 @@ def main(argv: list[str] | None = None) -> None:
     btp.add_argument("--days", type=int, default=730, help="history window length in days")
     btp.add_argument("--leads", default="0,1,2,3", help="comma-separated forecast leads in days")
     btp.add_argument(
+        "--spread",
+        type=float,
+        default=0.0,
+        help="bid/ask spread charged as an ask haircut (ask = mid + spread/2)",
+    )
+    btp.add_argument(
         "--reports-dir", default=REPORTS_DIR, help="directory for the P/L backtest report"
     )
 
@@ -405,7 +418,7 @@ def main(argv: list[str] | None = None) -> None:
         _backtest(args.city, args.days, args.width, args.span, args.reports_dir, args.real)
         return
     if args.command == "backtest-pnl":
-        _backtest_pnl(args.city, args.days, _parse_leads(args.leads), args.reports_dir)
+        _backtest_pnl(args.city, args.days, _parse_leads(args.leads), args.spread, args.reports_dir)
         return
 
     db = _datastore(args.db)

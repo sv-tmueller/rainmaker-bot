@@ -201,7 +201,9 @@ FRESHNESS_LIMIT_HOURS = 24
 
 # Probability engine + ranking thresholds (uncalibrated; tune in Phase 4)
 MIN_SIGMA_F = 1.5
-CONFIDENCE_FLOOR = 0.90
+# 0.80, relaxed from 0.90: the spread-adjusted P/L backtest showed the higher
+# floor suppressed profitable bets (see docs/architecture/recommendation-gate.md, #58).
+CONFIDENCE_FLOOR = 0.80
 MIN_SOURCES = 2
 MIN_EDGE = 0.05
 PRECIP_VAR_FLOOR = 0.01  # in^2: variance floor for the monthly-total gamma (~0.1in std)
