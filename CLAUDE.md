@@ -10,8 +10,9 @@ into a calibrated probability for each market outcome, compares that probability
 to the market price, and produces a daily report of bets ranked by edge
 (expected value). A human reviews the report and places bets manually.
 
-Status: MVP 1.0 advisory is live for 11 US cities (phases 0-4 done, plus the
-Phase 5 city expansion; the precipitation and TMIN slices remain). MVP 2.0 is
+Status: MVP 1.0 advisory is live for 11 US cities (phases 0-4 done, the Phase 5
+city expansion, the TMIN slice, and the monthly-precipitation slice; only the
+daily-precipitation form remains). MVP 2.0 is
 code-complete: a scheduled GitHub Actions run (every 3h) persists to Supabase Postgres, settles
 past markets against NOAA actuals, and writes a daily P&L/calibration snapshot;
 the read-only dashboard lives in `dashboard/` (the Vercel + Cloudflare Access
@@ -64,9 +65,9 @@ These are easy to get wrong and they break the whole premise:
 
 ## Roadmap (do not pull later phases forward)
 
-- MVP 1.0: advisory. Done for the temperature pipeline (11 cities); the
-  remaining slices are precipitation and TMIN markets (each needs its own
-  Phase 0 resolution-rule capture first).
+- MVP 1.0: advisory. Done for temperature (11 cities, TMAX and TMIN) and the
+  monthly-precipitation slice. Only the daily-binary precipitation form remains
+  (its Phase 0 rules are captured; the daily form is just unbuilt).
 - MVP 2.0: tracking. Done: Supabase Postgres store, daily scheduled runs,
   NOAA-proxy settlement, P&L/calibration tracking, and the web dashboard.
 - MVP 3.0: automated trading via Polymarket's CLOB API. Not started.
