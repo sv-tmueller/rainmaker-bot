@@ -35,15 +35,15 @@ def _market(variable: str) -> Market:
     )
 
 
-def _forecast_set() -> ForecastSet:
-    target = build_target("NYC", "TMAX", date(2026, 5, 31))
+def _forecast_set(variable: str = "TMAX") -> ForecastSet:
+    target = build_target("NYC", variable, date(2026, 5, 31))
     samples = [
         ForecastSample(
             source="nws",
             model="m",
             member=None,
             station="KLGA",
-            variable="TMAX",
+            variable=variable,
             target_date=date(2026, 5, 31),
             lead_time_days=1,
             value_f=v,
@@ -82,7 +82,26 @@ def test_run_builds_report_and_writes_files(monkeypatch, tmp_path, capsys):
     conn.close()
 
 
-def test_run_skips_unsupported_variable(monkeypatch, tmp_path, capsys):
+def test_run_processes_tmin_market(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMIN")])
+    monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set("TMIN"))
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 5, 31))
+    db = tmp_path / "t.db"
+
+    cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(db)])
+
+    out = capsys.readouterr().out
+    assert "70-71°F" in out
+    assert "KLGA" in out
+
+    conn = connect(str(db))
+    assert count_rows(conn, "predictions") == 1  # one bucket -> one prediction
+    conn.close()
+
+
+def test_run_skips_when_variable_unsupported(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "SUPPORTED_VARIABLES", {"TMAX"})
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMIN")])
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
 

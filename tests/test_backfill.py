@@ -117,3 +117,37 @@ def test_fetch_actuals_reads_tmin_when_asked(httpx_mock):
     with httpx.Client() as client:
         actuals = fetch_actuals("X", date(2026, 3, 1), date(2026, 3, 1), client, "TMIN")
     assert actuals == {date(2026, 3, 1): 29.0}
+
+
+_HIST_MIN = {
+    "daily": {
+        "time": ["2026-03-01", "2026-03-02"],
+        "temperature_2m_min_gfs_seamless": [40.0, 32.0],
+        "temperature_2m_min_ecmwf_ifs025": [38.0, 30.0],
+    }
+}
+
+
+def test_fetch_historical_forecasts_requests_min_field_for_tmin(httpx_mock):
+    httpx_mock.add_response(url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_HIST_MIN)
+    with httpx.Client() as client:
+        forecasts = fetch_historical_forecasts(
+            KLGA, date(2026, 3, 1), date(2026, 3, 2), client, "TMIN"
+        )
+    assert "daily=temperature_2m_min" in str(httpx_mock.get_requests()[0].url)
+    # The min model keys were parsed: 40/38 -> mean 39 on the first date.
+    assert forecasts[date(2026, 3, 1)].mu == pytest.approx(39.0)
+
+
+def test_run_backfill_tmin_pairs_min_forecast_with_tmin_actual(httpx_mock):
+    rows = [
+        {"DATE": "2026-03-01", "STATION": KLGA.ghcnd_id, "TMIN": "39"},
+        {"DATE": "2026-03-02", "STATION": KLGA.ghcnd_id, "TMIN": "31"},
+    ]
+    httpx_mock.add_response(url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_HIST_MIN)
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=rows)
+    with httpx.Client() as client:
+        cal, acc = run_backfill(KLGA, "TMIN", 1, date(2026, 3, 1), date(2026, 3, 2), client)
+    assert cal.variable == "TMIN"
+    assert cal.n_samples == 2
+    assert acc.n == 2

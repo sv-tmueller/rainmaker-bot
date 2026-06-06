@@ -15,10 +15,14 @@ FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 
 
+_DAILY_FIELD = {"TMAX": "temperature_2m_max", "TMIN": "temperature_2m_min"}
+
+
 def _daily_field(variable: str) -> str:
-    if variable != "TMAX":
-        raise NotImplementedError("Phase 1 supports TMAX only")
-    return "temperature_2m_max"
+    try:
+        return _DAILY_FIELD[variable]
+    except KeyError:
+        raise NotImplementedError(f"unsupported variable {variable}") from None
 
 
 def _check_fahrenheit(data: dict[str, Any], field: str) -> None:

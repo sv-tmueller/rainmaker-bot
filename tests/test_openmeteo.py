@@ -12,6 +12,7 @@ from rainmaker.forecasts.openmeteo import (
     ENSEMBLE_URL,
     FORECAST_URL,
     OpenMeteoSource,
+    _common_params,
     parse_ensemble,
     parse_multimodel,
 )
@@ -25,6 +26,14 @@ def _multimodel_fixture() -> dict[str, Any]:
 
 def _ensemble_fixture() -> dict[str, Any]:
     return json.loads((FIXTURES / "openmeteo_ensemble_gfs_klga.json").read_text())
+
+
+def _multimodel_min_fixture() -> dict[str, Any]:
+    return json.loads((FIXTURES / "openmeteo_multimodel_min_klga.json").read_text())
+
+
+def _ensemble_min_fixture() -> dict[str, Any]:
+    return json.loads((FIXTURES / "openmeteo_ensemble_gfs_min_klga.json").read_text())
 
 
 def test_parse_multimodel_returns_one_sample_per_model():
@@ -46,6 +55,23 @@ def test_parse_multimodel_returns_one_sample_per_model():
         assert s.issued_at is None
 
 
+def test_parse_multimodel_returns_min_for_tmin():
+    target = build_target("NYC", "TMIN", date(2026, 5, 31))
+    samples = parse_multimodel(_multimodel_min_fixture(), target)
+    by_model = {s.model: s.value_f for s in samples}
+    assert by_model == {
+        "gfs_seamless": 54.6,
+        "ecmwf_ifs025": 57.3,
+        "icon_seamless": 54.9,
+        "gem_seamless": 55.1,
+        "meteofrance_seamless": 53.8,
+    }
+    for s in samples:
+        assert s.variable == "TMIN"
+        assert s.station == "KLGA"
+        assert s.lead_time_days == 1
+
+
 def test_parse_multimodel_empty_when_date_absent():
     target = build_target("NYC", "TMAX", date(2030, 1, 1))
     assert parse_multimodel(_multimodel_fixture(), target) == []
@@ -63,6 +89,17 @@ def test_parse_ensemble_returns_one_sample_per_member():
     assert m1.source == "open-meteo"
     assert m1.lead_time_days == 1
     assert m1.issued_at is None
+
+
+def test_parse_ensemble_returns_min_for_tmin():
+    target = build_target("NYC", "TMIN", date(2026, 5, 31))
+    samples = parse_ensemble(_ensemble_min_fixture(), target, "gfs_seamless")
+    assert len(samples) == 30
+    assert {s.member for s in samples} == set(range(1, 31))
+    m1 = next(s for s in samples if s.member == 1)
+    assert m1.value_f == 53.0
+    assert m1.model == "gfs_seamless_ens"
+    assert m1.variable == "TMIN"
 
 
 def test_parse_ensemble_empty_when_date_absent():
@@ -83,6 +120,31 @@ def test_open_meteo_source_pools_multimodel_and_ensemble(httpx_mock):
     ensemble = [s for s in samples if s.member is not None]
     assert len(multimodel) == 5
     assert len(ensemble) == 30 * 3  # OPENMETEO_ENSEMBLE_MODELS has 3 entries
+
+
+def test_open_meteo_source_pools_min_for_tmin(httpx_mock):
+    httpx_mock.add_response(url=re.compile(re.escape(FORECAST_URL)), json=_multimodel_min_fixture())
+    for _ in range(3):
+        httpx_mock.add_response(
+            url=re.compile(re.escape(ENSEMBLE_URL)), json=_ensemble_min_fixture()
+        )
+
+    target = build_target("NYC", "TMIN", date(2026, 5, 31))
+    with httpx.Client() as client:
+        samples = OpenMeteoSource(client).fetch(target)
+
+    assert all(s.variable == "TMIN" for s in samples)
+    assert len([s for s in samples if s.member is None]) == 5
+    assert len([s for s in samples if s.member is not None]) == 30 * 3
+
+
+def test_common_params_requests_min_field_for_tmin():
+    assert _common_params(build_target("NYC", "TMIN", date(2026, 5, 31)))["daily"] == (
+        "temperature_2m_min"
+    )
+    assert _common_params(build_target("NYC", "TMAX", date(2026, 5, 31)))["daily"] == (
+        "temperature_2m_max"
+    )
 
 
 def test_parse_multimodel_rejects_non_fahrenheit():

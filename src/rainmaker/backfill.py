@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from rainmaker.config import OPENMETEO_MODELS, Station
+from rainmaker.forecasts.openmeteo import _daily_field
 from rainmaker.probability.calibration import (
     Accuracy,
     Calibration,
@@ -62,15 +63,16 @@ def fetch_actuals(
 
 
 def fetch_historical_forecasts(
-    station: Station, start: date, end: date, client: httpx.Client
+    station: Station, start: date, end: date, client: httpx.Client, variable: str = "TMAX"
 ) -> dict[date, Gaussian]:
     """Per-date Gaussian from the multi-model spread. Raises on HTTP error."""
+    field = _daily_field(variable)
     resp = client.get(
         HISTORICAL_FORECAST_URL,
         params={
             "latitude": str(station.lat),
             "longitude": str(station.lon),
-            "daily": "temperature_2m_max",
+            "daily": field,
             "temperature_unit": "fahrenheit",
             "timezone": station.timezone,
             "start_date": start.isoformat(),
@@ -80,7 +82,7 @@ def fetch_historical_forecasts(
     )
     resp.raise_for_status()
     daily = resp.json()["daily"]
-    model_keys = [f"temperature_2m_max_{m}" for m in OPENMETEO_MODELS]
+    model_keys = [f"{field}_{m}" for m in OPENMETEO_MODELS]
     out: dict[date, Gaussian] = {}
     for i, iso in enumerate(daily["time"]):
         values = [daily[k][i] for k in model_keys if daily.get(k) and daily[k][i] is not None]
@@ -112,7 +114,7 @@ def run_backfill(
     client: httpx.Client,
 ) -> tuple[Calibration, Accuracy]:
     """Fetch history, build pairs, fit one calibration cell, measure accuracy."""
-    forecasts = fetch_historical_forecasts(station, start, end, client)
+    forecasts = fetch_historical_forecasts(station, start, end, client, variable)
     actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)
     pairs = build_pairs(forecasts, actuals)
     return fit_calibration(station.icao, variable, lead_time, pairs), compute_accuracy(pairs)

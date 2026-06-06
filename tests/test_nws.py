@@ -35,6 +35,25 @@ def test_parse_returns_empty_when_date_absent():
     assert parse(_forecast_fixture(), target) == []
 
 
+def test_parse_returns_overnight_low_for_target_date():
+    # The dawn-of-31 low is the "Tonight" night period that starts the evening of
+    # the 30th (isDaytime false, 52F), which is what a 2026-05-31 TMIN settles to.
+    target = build_target("NYC", "TMIN", date(2026, 5, 31))
+    samples = parse(_forecast_fixture(), target)
+    assert len(samples) == 1
+    s = samples[0]
+    assert s.variable == "TMIN"
+    assert s.station == "KLGA"
+    assert s.value_f == 52.0
+    assert s.lead_time_days == 1
+    assert s.issued_at == datetime(2026, 5, 30, 14, 23, 35, tzinfo=UTC)
+
+
+def test_parse_tmin_empty_when_night_before_absent():
+    target = build_target("NYC", "TMIN", date(2030, 1, 1))
+    assert parse(_forecast_fixture(), target) == []
+
+
 def test_fetch_calls_points_then_forecast_and_sets_user_agent(httpx_mock):
     points_body = {
         "properties": {"forecast": "https://api.weather.gov/gridpoints/OKX/37,46/forecast"}
@@ -52,6 +71,24 @@ def test_fetch_calls_points_then_forecast_and_sets_user_agent(httpx_mock):
     assert samples[0].value_f == 76.0
     requests = httpx_mock.get_requests()
     assert all(r.headers["User-Agent"] == "rainmaker-bot (test)" for r in requests)
+
+
+def test_fetch_returns_tmin(httpx_mock):
+    points_body = {
+        "properties": {"forecast": "https://api.weather.gov/gridpoints/OKX/37,46/forecast"}
+    }
+    httpx_mock.add_response(url="https://api.weather.gov/points/40.7792,-73.8803", json=points_body)
+    httpx_mock.add_response(
+        url="https://api.weather.gov/gridpoints/OKX/37,46/forecast",
+        json=_forecast_fixture(),
+    )
+    client = httpx.Client()
+    target = build_target("NYC", "TMIN", date(2026, 5, 31))
+    samples = NwsSource(client).fetch(target)
+    client.close()
+    assert len(samples) == 1
+    assert samples[0].value_f == 52.0
+    assert samples[0].variable == "TMIN"
 
 
 def test_fetch_raises_on_http_error(httpx_mock):
