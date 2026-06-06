@@ -46,6 +46,30 @@ class Bet(BaseModel):
     won: bool
 
 
+class LeadPnl(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    lead: int  # the forecast lead in days, or -1 for the all-leads total
+    n_bets: int
+    wins: int
+    losses: int
+    total_pnl: float
+    roi: float
+    win_rate: float
+    mean_edge: float
+
+
+class PnlBacktestResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    n_markets: int
+    floor: float
+    min_sources: int
+    min_edge: float
+    per_lead: list[LeadPnl]
+    overall: LeadPnl
+
+
 def forecast_set_from_samples(target: Target, samples: list[ForecastSample]) -> ForecastSet:
     """Pool archive samples into a single-source ForecastSet for evaluate_market."""
     return ForecastSet(
@@ -132,3 +156,27 @@ def replay_market(
             )
         )
     return bets
+
+
+def _metrics(lead: int, bets: list[Bet]) -> LeadPnl:
+    """Flat one-unit stake: a win returns 1 - ask, a loss costs the ask."""
+    n = len(bets)
+    wins = sum(1 for b in bets if b.won)
+    staked = sum(b.ask for b in bets)
+    total_pnl = sum((1 - b.ask) if b.won else -b.ask for b in bets)
+    return LeadPnl(
+        lead=lead,
+        n_bets=n,
+        wins=wins,
+        losses=n - wins,
+        total_pnl=total_pnl,
+        roi=total_pnl / staked if staked else 0.0,
+        win_rate=wins / n if n else 0.0,
+        mean_edge=sum(b.edge for b in bets) / n if n else 0.0,
+    )
+
+
+def score(bets: list[Bet], leads: Sequence[int]) -> tuple[list[LeadPnl], LeadPnl]:
+    """Per-lead and pooled P/L. Leads with no bets are reported as zeroed rows."""
+    per_lead = [_metrics(lead, [b for b in bets if b.lead == lead]) for lead in leads]
+    return per_lead, _metrics(-1, list(bets))

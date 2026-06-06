@@ -16,9 +16,11 @@ from rainmaker.config import MIN_SIGMA_F, OPENMETEO_MODELS, STATIONS, build_targ
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.pnl_backtest import (
     Bet,
+    LeadPnl,
     forecast_set_from_samples,
     market_at_lead,
     replay_market,
+    score,
 )
 from rainmaker.polymarket.markets import Bucket, Market
 from rainmaker.polymarket.prices import PricePoint
@@ -204,3 +206,45 @@ def test_replay_market_collapses_per_lead_and_settles():
     assert [b.won for b in bets[2:]] == [True, True]
     assert bets[0].ask == pytest.approx(0.80)  # no_ask = 1 - mid(0.20)
     assert bets[0].edge == pytest.approx(bets[0].p_win - 0.80)
+
+
+# Phase C2
+
+
+def _bet(lead: int, ask: float, edge: float, won: bool) -> Bet:
+    return Bet(lead=lead, bucket_label="x", side="NO", p_win=0.95, ask=ask, edge=edge, won=won)
+
+
+def test_score_aggregates_pnl_per_lead_and_overall():
+    bets = [
+        _bet(0, ask=0.80, edge=0.15, won=True),
+        _bet(0, ask=0.60, edge=0.10, won=False),
+        _bet(1, ask=0.50, edge=0.45, won=True),
+    ]
+    per_lead, overall = score(bets, leads=(0, 1, 2))
+    by_lead = {lp.lead: lp for lp in per_lead}
+    assert set(by_lead) == {0, 1, 2}
+
+    l0 = by_lead[0]  # one win (+0.20), one loss (-0.60) over 1.40 staked
+    assert (l0.n_bets, l0.wins, l0.losses) == (2, 1, 1)
+    assert l0.total_pnl == pytest.approx(-0.40)
+    assert l0.roi == pytest.approx(-0.40 / 1.40)
+    assert l0.win_rate == pytest.approx(0.5)
+    assert l0.mean_edge == pytest.approx(0.125)
+
+    l1 = by_lead[1]
+    assert (l1.n_bets, l1.wins) == (1, 1)
+    assert l1.total_pnl == pytest.approx(0.50)
+    assert l1.roi == pytest.approx(1.0)
+
+    l2 = by_lead[2]  # no bets at this lead -> zeroed, not dropped
+    assert (l2.n_bets, l2.wins, l2.losses) == (0, 0, 0)
+    assert (l2.total_pnl, l2.roi, l2.win_rate, l2.mean_edge) == (0.0, 0.0, 0.0, 0.0)
+
+    assert isinstance(overall, LeadPnl)
+    assert overall.lead == -1  # sentinel: all leads pooled
+    assert (overall.n_bets, overall.wins, overall.losses) == (3, 2, 1)
+    assert overall.total_pnl == pytest.approx(0.10)
+    assert overall.roi == pytest.approx(0.10 / 1.90)
+    assert overall.win_rate == pytest.approx(2 / 3)
+    assert overall.mean_edge == pytest.approx((0.15 + 0.10 + 0.45) / 3)
