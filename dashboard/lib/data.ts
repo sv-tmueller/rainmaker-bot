@@ -83,8 +83,10 @@ export async function getDashboardData() {
   // settledIds from the bounded outcomes result, already sorted desc by settled_at.
   const settledIds = (outcomesQ.data ?? []).map((o) => o.market_id);
 
-  // Wave 2: predictions and prices that depend on runRow and settledIds.
-  const [latestPreds, latestPrices, settledPreds, settledPrices] = await Promise.all([
+  // Wave 2: predictions and the latest run's prices, scoped by runRow and
+  // settledIds. Settled-market prices move to wave 3 so they can be bounded by
+  // the run ids that settledPreds actually references (#64).
+  const [latestPreds, latestPrices, settledPreds] = await Promise.all([
     runRow
       ? db
           .from("predictions")
@@ -103,24 +105,30 @@ export async function getDashboardData() {
           .not("bucket", "is", null)
           .in("market_id", settledIds)
       : Promise.resolve({ data: null }),
-    settledIds.length > 0
+  ]);
+
+  // Wave 3: markets and settled-market prices, both bounded to only what this
+  // page needs. settledPrices is scoped to the run ids present in settledPreds
+  // (not every run that ever priced these markets), so the read cannot silently
+  // truncate at Supabase's 1000-row cap and drop a settled bet (#64).
+  const latestPredIds = (latestPreds.data ?? []).map((p) => p.market_id);
+  const neededIds = [...new Set([...latestPredIds, ...settledIds])];
+  const settledRunIds = [...new Set((settledPreds.data ?? []).map((p) => p.run_id))];
+  const [marketsQ, settledPrices] = await Promise.all([
+    neededIds.length > 0
+      ? db
+          .from("markets")
+          .select("id, title, slug, settlement_date")
+          .in("id", neededIds)
+      : Promise.resolve({ data: [] }),
+    settledRunIds.length > 0
       ? db
           .from("prices")
           .select("run_id, market_id, outcome, side, price")
           .in("market_id", settledIds)
+          .in("run_id", settledRunIds)
       : Promise.resolve({ data: null }),
   ]);
-
-  // Wave 3: markets bounded to only the ids needed on this page.
-  const latestPredIds = (latestPreds.data ?? []).map((p) => p.market_id);
-  const neededIds = [...new Set([...latestPredIds, ...settledIds])];
-  const marketsQ =
-    neededIds.length > 0
-      ? await db
-          .from("markets")
-          .select("id, title, slug, settlement_date")
-          .in("id", neededIds)
-      : { data: [] };
 
   const titleOf = new Map((marketsQ.data ?? []).map((m) => [m.id, m.title as string]));
   const slugOf = new Map((marketsQ.data ?? []).map((m) => [m.id, (m.slug as string | null) ?? null]));
