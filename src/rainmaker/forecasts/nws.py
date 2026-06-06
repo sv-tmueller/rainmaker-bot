@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
@@ -11,15 +11,18 @@ NWS_BASE = "https://api.weather.gov"
 
 
 def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]:
-    if target.variable != "TMAX":
-        raise NotImplementedError("Phase 1 supports TMAX only")
     props = forecast_json["properties"]
     issued_at = datetime.fromisoformat(props["updateTime"])
-    issued_local = issued_at.astimezone(ZoneInfo(target.station.timezone)).date()
+    tz = ZoneInfo(target.station.timezone)
+    issued_local = issued_at.astimezone(tz).date()
+    # TMAX is the daytime high on the target day. TMIN is the overnight low that
+    # GHCND settles to, which NWS reports in the night period starting the evening
+    # before (isDaytime false, local start date == target - 1 day).
+    want_daytime = target.variable == "TMAX"
+    match_date = target.local_date if want_daytime else target.local_date - timedelta(days=1)
     for period in props["periods"]:
-        start = datetime.fromisoformat(period["startTime"])
-        start_local = start.astimezone(ZoneInfo(target.station.timezone))
-        if period["isDaytime"] and start_local.date() == target.local_date:
+        start_local = datetime.fromisoformat(period["startTime"]).astimezone(tz)
+        if period["isDaytime"] == want_daytime and start_local.date() == match_date:
             if period["temperatureUnit"] != "F":
                 raise ValueError(f"expected Fahrenheit, got {period['temperatureUnit']}")
             return [
@@ -28,7 +31,7 @@ def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]
                     model="nws",
                     member=None,
                     station=target.station.icao,
-                    variable="TMAX",
+                    variable=target.variable,
                     target_date=target.local_date,
                     lead_time_days=(target.local_date - issued_local).days,
                     value_f=float(period["temperature"]),
