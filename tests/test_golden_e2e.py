@@ -3,10 +3,19 @@ import json
 from datetime import date
 from pathlib import Path
 
-from rainmaker.config import CONFIDENCE_FLOOR, MIN_EDGE, MIN_SIGMA_F, MIN_SOURCES, build_target
+from rainmaker.config import (
+    CONFIDENCE_FLOOR,
+    MIN_EDGE,
+    MIN_SIGMA_F,
+    MIN_SOURCES,
+    PRECIP_VAR_FLOOR,
+    build_target,
+)
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
+from rainmaker.forecasts.precip import PrecipForecastSet
 from rainmaker.polymarket.markets import Bucket, Market, parse_market
-from rainmaker.ranking.edge import evaluate_market
+from rainmaker.polymarket.precip_markets import parse_precip_event
+from rainmaker.ranking.edge import evaluate_market, evaluate_precip_market
 from rainmaker.report.render import Report, render_markdown
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -159,3 +168,55 @@ def test_golden_pipeline_on_tmin_market():
     md = render_markdown(Report(run_date=date(2026, 5, 30), markets=[report]))
     assert "KMIA" in md
     assert "2026-05-31" in md
+
+
+def _nyc_precip_market():
+    event = json.loads((FIXTURES / "polymarket_precip_monthly_nyc.json").read_text())
+    return parse_precip_event(event)
+
+
+def _precip_forecast_set(target):
+    # A tight monthly total centered at 2.5in: the mode is the 2-3" bracket.
+    return PrecipForecastSet(
+        target=target,
+        mean=2.5,
+        var=0.6,
+        coverage=[
+            SourceCoverage(source="open-meteo", ok=True, n_samples=40),
+            SourceCoverage(source="nws", ok=True, n_samples=3),
+        ],
+        n_observed_days=5,
+        n_forecast_days=7,
+        n_clim_days=18,
+    )
+
+
+def test_golden_precip_pipeline_on_fixture_market():
+    market = _nyc_precip_market()
+    fs = _precip_forecast_set(market.target)
+    report = evaluate_precip_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_edge=MIN_EDGE,
+        var_floor=PRECIP_VAR_FLOOR,
+    )
+
+    # Every bracket has an ask in the fixture, so none are excluded.
+    assert report.excluded_no_ask == []
+    yes_outcomes = [o for o in report.outcomes if o.side == "YES"]
+    assert len(yes_outcomes) == 6
+    # The YES brackets partition the inch line, so P(win) sums to ~1.
+    assert abs(sum(o.p_win for o in yes_outcomes) - 1.0) < 1e-6
+    # The mode bracket 2-3" carries the most probability.
+    mode = max(yes_outcomes, key=lambda o: o.p_win)
+    assert mode.bucket_label == '2-3"'
+    # Ranking is sorted by edge descending.
+    edges = [o.edge for o in report.outcomes]
+    assert edges == sorted(edges, reverse=True)
+
+    md = render_markdown(Report(run_date=date(2026, 6, 6), markets=[report]))
+    assert "Central Park NY" in md  # the resolution station, not the temperature ICAO
+    assert "2026-06-30" in md  # the month's settlement date
+    assert "in (uncalibrated)" in md  # the inch unit label
