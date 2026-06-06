@@ -9,6 +9,7 @@ import pytest
 
 from rainmaker.backfill import (
     HISTORICAL_FORECAST_URL,
+    NCEI_URL,
     fetch_historical_forecasts,
     fetch_historical_samples,
 )
@@ -17,13 +18,14 @@ from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.pnl_backtest import (
     Bet,
     LeadPnl,
+    backtest_pnl,
     forecast_set_from_samples,
     market_at_lead,
     replay_market,
     score,
 )
 from rainmaker.polymarket.markets import Bucket, Market
-from rainmaker.polymarket.prices import PricePoint
+from rainmaker.polymarket.prices import CLOB_PRICES_URL, PricePoint
 from rainmaker.probability.distribution import fit_gaussian
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -248,3 +250,56 @@ def test_score_aggregates_pnl_per_lead_and_overall():
     assert overall.roi == pytest.approx(0.10 / 1.90)
     assert overall.win_rate == pytest.approx(2 / 3)
     assert overall.mean_edge == pytest.approx((0.15 + 0.10 + 0.45) / 3)
+
+
+# Phase C3
+
+
+def _actuals_fixture() -> list[dict[str, Any]]:
+    return json.loads((FIXTURES / "ncei_actuals_klga.json").read_text())
+
+
+def _closed_events() -> list[dict[str, Any]]:
+    return json.loads((FIXTURES / "polymarket_closed_weather_events.json").read_text())
+
+
+def _clob_history() -> dict[str, Any]:
+    return json.loads((FIXTURES / "clob_prices_history.json").read_text())
+
+
+def _clob_callback(request: httpx.Request) -> httpx.Response:
+    # The same flat 0.15 series for any requested token; the per-bucket forecast,
+    # not the price, decides which buckets clear the gates.
+    assert request.url.params["market"]  # keyed on the token, per the fixture pattern
+    return httpx.Response(200, json=_clob_history())
+
+
+def test_backtest_pnl_replays_closed_markets_end_to_end(httpx_mock):
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+    )
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    httpx_mock.add_callback(
+        _clob_callback, url=re.compile(re.escape(CLOB_PRICES_URL)), is_reusable=True
+    )
+    with httpx.Client() as client:
+        result = backtest_pnl(
+            _closed_events(), client, on_or_after=date(2026, 3, 1), leads=(0, 1, 2, 3)
+        )
+    assert result is not None
+    # The Feb market is date-filtered and London is dropped; two March markets remain.
+    assert result.n_markets == 2
+    by_lead = {lp.lead: lp for lp in result.per_lead}
+    assert set(by_lead) == {0, 1, 2, 3}
+    # Each March market sells the 38F+ bucket (NO) once per lead -> two bets a lead.
+    assert all(by_lead[lead].n_bets == 2 for lead in (0, 1, 2, 3))
+    assert result.overall.n_bets == 8
+    # Both actuals (34, 35) miss the 38F-or-higher bucket, so every NO bet wins.
+    assert result.overall.wins == 8
+    assert result.overall.total_pnl > 0
+
+
+def test_backtest_pnl_returns_none_when_all_filtered():
+    with httpx.Client() as client:
+        result = backtest_pnl(_closed_events(), client, on_or_after=date(2027, 1, 1))
+    assert result is None

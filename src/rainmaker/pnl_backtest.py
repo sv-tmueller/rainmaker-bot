@@ -15,17 +15,21 @@ Caveats baked in by design:
 - The price used is the token mid, mildly optimistic versus the ask actually paid.
 """
 
+from collections import defaultdict
 from collections.abc import Sequence
-from datetime import datetime
-from typing import Literal
+from datetime import date, datetime
+from typing import Any, Literal
 
+import httpx
 from pydantic import BaseModel, ConfigDict
 
-from rainmaker.config import Target
+from rainmaker.backfill import fetch_actuals, fetch_historical_samples
+from rainmaker.config import CONFIDENCE_FLOOR, MIN_EDGE, MIN_SIGMA_F, Target
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
-from rainmaker.polymarket.markets import Market, parse_bucket_label
-from rainmaker.polymarket.prices import PricePoint, snap_price
-from rainmaker.probability.outcomes import settles
+from rainmaker.polymarket.markets import Market, parse_bucket_label, parse_market
+from rainmaker.polymarket.prices import PricePoint, fetch_price_history, snap_price
+from rainmaker.probability.distribution import fit_gaussian
+from rainmaker.probability.outcomes import bucket_probability, settles
 from rainmaker.ranking.edge import RankedOutcome, evaluate_market
 
 # A lead's price is snapped from the series within this window of the target
@@ -180,3 +184,108 @@ def score(bets: list[Bet], leads: Sequence[int]) -> tuple[list[LeadPnl], LeadPnl
     """Per-lead and pooled P/L. Leads with no bets are reported as zeroed rows."""
     per_lead = [_metrics(lead, [b for b in bets if b.lead == lead]) for lead in leads]
     return per_lead, _metrics(-1, list(bets))
+
+
+def _parse_closed_markets(
+    events: list[dict[str, Any]], on_or_after: date, city: str | None
+) -> list[tuple[Market, datetime]]:
+    """Parsed TMAX markets settling on or after the cutoff, with their settlement time.
+
+    Mirrors backtest_real's parse and filter, keeping the raw endDate so the
+    replay can map a lead to a price timestamp. Non-US-city or unmapped markets
+    are skipped, as is anything outside the window or city filter.
+    """
+    out: list[tuple[Market, datetime]] = []
+    for ev in events:
+        try:
+            market = parse_market(ev)
+        except (ValueError, KeyError):
+            continue
+        if market.target.variable != "TMAX" or market.target.local_date < on_or_after:
+            continue
+        if city not in (None, "all") and market.target.station.city != city:
+            continue
+        out.append((market, datetime.fromisoformat(ev["endDate"])))
+    return out
+
+
+def backtest_pnl(
+    events: list[dict[str, Any]],
+    client: httpx.Client,
+    *,
+    on_or_after: date,
+    leads: Sequence[int] = (0, 1, 2, 3),
+    floor: float = CONFIDENCE_FLOOR,
+    min_sources: int = 1,
+    min_sigma: float = MIN_SIGMA_F,
+    min_edge: float = MIN_EDGE,
+    city: str | None = None,
+) -> PnlBacktestResult | None:
+    """Replay closed markets at their historical CLOB price and score the P/L.
+
+    Groups parsed markets by station, fetches the archive forecast and NOAA
+    actual once per group, then per market fetches the price series for the
+    buckets that could clear the confidence floor (on either side) and replays
+    each lead. Returns None when nothing scorable remains. min_sources defaults
+    to 1 because the archive is a single source; recommended here is therefore a
+    superset of the live two-source gate.
+    """
+    parsed = _parse_closed_markets(events, on_or_after, city)
+    if not parsed:
+        return None
+
+    by_station: dict[str, list[tuple[Market, datetime]]] = defaultdict(list)
+    for market, settlement_dt in parsed:
+        by_station[market.target.station.icao].append((market, settlement_dt))
+
+    max_lead = max(leads)
+    bets: list[Bet] = []
+    n_markets = 0
+    for group in by_station.values():
+        station = group[0][0].target.station
+        dates = [m.target.local_date for m, _ in group]
+        samples_by_date = fetch_historical_samples(station, min(dates), max(dates), client)
+        actuals = fetch_actuals(station.ghcnd_id, min(dates), max(dates), client, "TMAX")
+        for market, settlement_dt in group:
+            samples = samples_by_date.get(market.target.local_date)
+            actual = actuals.get(market.target.local_date)
+            if not samples or actual is None:
+                continue
+            n_markets += 1
+            forecast_set = forecast_set_from_samples(market.target, samples)
+            gaussian = fit_gaussian(samples, min_sigma=min_sigma)
+            start_ts = int(settlement_dt.timestamp()) - (max_lead + 1) * SECONDS_PER_DAY
+            end_ts = int(settlement_dt.timestamp()) + 3600
+            histories: dict[str, list[PricePoint]] = {}
+            for bucket in market.buckets:
+                p_win = bucket_probability(gaussian, bucket)
+                if p_win >= floor or (1 - p_win) >= floor:  # candidate on some side
+                    histories[bucket.yes_token_id] = fetch_price_history(
+                        bucket.yes_token_id, start_ts, end_ts, client
+                    )
+            bets.extend(
+                replay_market(
+                    market,
+                    forecast_set,
+                    actual,
+                    histories,
+                    settlement_dt,
+                    leads=leads,
+                    floor=floor,
+                    min_sources=min_sources,
+                    min_sigma=min_sigma,
+                    min_edge=min_edge,
+                )
+            )
+
+    if n_markets == 0:
+        return None
+    per_lead, overall = score(bets, leads)
+    return PnlBacktestResult(
+        n_markets=n_markets,
+        floor=floor,
+        min_sources=min_sources,
+        min_edge=min_edge,
+        per_lead=per_lead,
+        overall=overall,
+    )
