@@ -1,0 +1,72 @@
+{
+  "id": "531299",
+  "slug": "precipitation-in-seattle-in-june",
+  "title": "Precipitation in Seattle in June?",
+  "endDate": "2026-06-30T00:00:00Z",
+  "description": "This market will resolve according to the total precipitation in inches in Seattle between June 1 and June 30, 2026, 11:59PM ET according to the National Oceanic and Atmospheric Administration (NOAA).\n\nThe resolution source for this market will be NOAA, specifically the figure for June 2026 when the \"Monthly summarized data\" for \"Seattle City Area\" is selected with the variable set to \"Precipitation\" at the https://www.weather.gov/wrh/climate?wfo=sew link once that figure is finalized for the whole month of June 2026.\n\nIf the reported data falls exactly between two brackets, this market will resolve to the higher bracket.\n\nThe resolution source for this market measures precipitation to 2 decimal places (e.g., 1.54), thus, this is the level of precision that will be used when resolving this market. Any revisions to precipitation recorded after data is finalized for this market's timeframe will not be considered for this market's resolution.",
+  "markets": [
+    {
+      "question": "Will Seattle have between 0.5 and 1 inches of precipitation in June?",
+      "groupItemTitle": "0.5-1\"",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.265\", \"0.735\"]",
+      "bestAsk": 0.44,
+      "bestBid": 0.09,
+      "clobTokenIds": "[\"63953002978383315765537824237567888004813808101709926563719655438730449208554\", \"47932761901967651102029180239518621627329793738527570216775528948826094671087\"]"
+    },
+    {
+      "question": "Will Seattle have more than 3 inches of precipitation in June?",
+      "groupItemTitle": ">3\"",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.18\", \"0.82\"]",
+      "bestAsk": 0.28,
+      "bestBid": 0.08,
+      "clobTokenIds": "[\"38248970320853751461080186554261032370692544568623008459919089159954878730455\", \"14750614114930920737760801281000350933324479480960996494010837243313763745741\"]"
+    },
+    {
+      "question": "Will Seattle have less than 0.5 inches of precipitation in June?",
+      "groupItemTitle": "<0.5\"",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.275\", \"0.725\"]",
+      "bestAsk": 0.48,
+      "bestBid": 0.07,
+      "clobTokenIds": "[\"63837077886147359268263251561417901871118656789292194197077773216811833455240\", \"3545454692213624996851400257974636450335008407417400242179123030231293760484\"]"
+    },
+    {
+      "question": "Will Seattle have between 2 and 2.5 inches of precipitation in June?",
+      "groupItemTitle": "2-2.5\"",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.19\", \"0.81\"]",
+      "bestAsk": 0.3,
+      "bestBid": 0.08,
+      "clobTokenIds": "[\"67890979055090332892725118077495415441341036979648565513082915946962410846886\", \"74473639194345477903244569906596701529738621951486523017930528118520720126225\"]"
+    },
+    {
+      "question": "Will Seattle have between 2.5 and 3 inches of precipitation in June?",
+      "groupItemTitle": "2.5-3\"",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.18\", \"0.82\"]",
+      "bestAsk": 0.28,
+      "bestBid": 0.08,
+      "clobTokenIds": "[\"103732857975569454404598561791889021431473786965445857262930012458148640433485\", \"102876275497936141738404938902605324014782526769189501371007854689728900695972\"]"
+    },
+    {
+      "question": "Will Seattle have between 1 and 1.5 inches of precipitation in June?",
+      "groupItemTitle": "1-1.5\"",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.34\", \"0.66\"]",
+      "bestAsk": 0.44,
+      "bestBid": 0.24,
+      "clobTokenIds": "[\"63077936612815921402362750918791561481146484712010873412789926774064155044704\", \"72962426623411078367980063977847828658185392402243046881575668584204908582981\"]"
+    },
+    {
+      "question": "Will Seattle have between 1.5 and 2 inches of precipitation in June?",
+      "groupItemTitle": "1.5-2\"",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.175\", \"0.825\"]",
+      "bestAsk": 0.29,
+      "bestBid": 0.06,
+      "clobTokenIds": "[\"87670682576874285022257780385925188109856945105253348766882348782922763116475\", \"14307488004546580680362852673232021961438751307885609898500833945758935700662\"]"
+    }
+  ]
+}

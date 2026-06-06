@@ -1,7 +1,7 @@
 import zoneinfo
 from datetime import date
 
-from rainmaker.config import STATIONS, build_target
+from rainmaker.config import PRECIP_STATIONS, STATIONS, build_target
 
 
 def test_nyc_station_resolves_to_klga():
@@ -55,3 +55,34 @@ def test_trap_stations_resolve_to_the_right_airport():
     assert STATIONS["Dallas"].icao == "KDAL"  # Love Field, not DFW
     assert STATIONS["Houston"].icao == "KHOU"  # Hobby, not IAH
     assert STATIONS["Denver"].icao == "KBKF"  # Buckley SFB, not KDEN
+
+
+def test_precip_nyc_resolves_to_central_park():
+    s = PRECIP_STATIONS["NYC"]
+    assert s.ghcnd_id == "USW00094728"  # Central Park, confirmed GSOM anchor 3.06 in May 2026
+    assert s.resolution_name == "Central Park NY"  # the climate-tool label named in the rules
+    assert s.timezone == "America/New_York"
+
+
+def test_precip_seattle_resolves_to_city_area_not_seatac():
+    s = PRECIP_STATIONS["Seattle"]
+    # "Seattle City Area" (wfo=sew) threads to Sand Point WFO, NOT the SeaTac
+    # temperature station; confirmed by GSOM == ACIS monthly precip.
+    assert s.ghcnd_id == "USW00094290"
+    assert s.ghcnd_id != STATIONS["Seattle"].ghcnd_id  # not SeaTac USW00024233
+    assert s.resolution_name == "Seattle City Area"
+
+
+def test_precip_stations_present():
+    assert set(PRECIP_STATIONS) == {"NYC", "Seattle"}
+
+
+def test_every_precip_station_is_valid():
+    for key, s in PRECIP_STATIONS.items():
+        assert s.city == key
+        assert s.resolution_name
+        assert s.name
+        assert -90 <= s.lat <= 90
+        assert -180 <= s.lon <= 180
+        assert s.ghcnd_id.startswith("US")
+        zoneinfo.ZoneInfo(s.timezone)  # raises if the timezone is invalid

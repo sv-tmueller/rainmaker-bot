@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-Variable = Literal["TMAX", "TMIN"]
+Variable = Literal["TMAX", "TMIN", "PRCP"]
 
 
 class Station(BaseModel):
@@ -17,6 +17,26 @@ class Station(BaseModel):
     timezone: str
     wunderground_url: str
     ghcnd_id: str  # NOAA NCEI GHCND station id, for backfill actuals
+
+
+class PrecipStation(BaseModel):
+    """A monthly-precipitation settlement station.
+
+    Parallel to Station but keyed on the climate-tool label the market rules
+    name (resolution_name plays the guard role icao plays for temperature),
+    because precip markets settle on the NOAA/NWS monthly figure, not a
+    Wunderground daily reading.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    city: str
+    resolution_name: str  # exact climate-tool label named in the market rules
+    name: str
+    lat: float
+    lon: float
+    timezone: str
+    ghcnd_id: str  # NOAA NCEI GHCND station id, for GSOM monthly actuals
 
 
 class Target(BaseModel):
@@ -137,6 +157,32 @@ STATIONS: dict[str, Station] = {
         timezone="America/Denver",
         wunderground_url="https://www.wunderground.com/history/daily/us/co/aurora/KBKF",
         ghcnd_id="USW00023036",
+    ),
+}
+
+# Monthly precipitation settles on a different station than the temperature
+# markets: NYC on Central Park (not LaGuardia), Seattle on the "Seattle City
+# Area" threaded record at Sand Point WFO (not SeaTac). Both GHCND ids were
+# confirmed against NCEI GSOM PRCP: Central Park May 2026 = 3.06 in, and Sand
+# Point's GSOM monthly totals match the ACIS "Seattle City Area" figures.
+PRECIP_STATIONS: dict[str, PrecipStation] = {
+    "NYC": PrecipStation(
+        city="NYC",
+        resolution_name="Central Park NY",
+        name="Central Park",
+        lat=40.7790,
+        lon=-73.9692,
+        timezone="America/New_York",
+        ghcnd_id="USW00094728",
+    ),
+    "Seattle": PrecipStation(
+        city="Seattle",
+        resolution_name="Seattle City Area",
+        name="Seattle Sand Point WFO",
+        lat=47.6872,
+        lon=-122.2553,
+        timezone="America/Los_Angeles",
+        ghcnd_id="USW00094290",
     ),
 }
 

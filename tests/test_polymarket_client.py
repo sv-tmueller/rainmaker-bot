@@ -6,7 +6,12 @@ from typing import Any
 import httpx
 import pytest
 
-from rainmaker.polymarket.client import GAMMA_EVENTS_URL, discover_markets, fetch_weather_events
+from rainmaker.polymarket.client import (
+    GAMMA_EVENTS_URL,
+    discover_markets,
+    discover_precip_markets,
+    fetch_weather_events,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -54,3 +59,24 @@ def test_discover_skips_unparseable_and_drops_international(httpx_mock, capsys):
     assert sorted(m.target.station.icao for m in markets) == ["KDAL", "KLAX"]
     err = capsys.readouterr().err
     assert "900003" in err and "skip" in err.lower()
+
+
+def _precip_events_body() -> list[dict[str, Any]]:
+    nyc = json.loads((FIXTURES / "polymarket_precip_monthly_nyc.json").read_text())
+    sea = json.loads((FIXTURES / "polymarket_precip_monthly_seattle.json").read_text())
+    broken = dict(nyc)  # city is in the registry but the rules omit the station
+    broken["id"] = "999999"
+    broken["description"] = "no resolution station named here"
+    temp = {"title": "Highest temperature in NYC on June 3?", "markets": []}
+    return [nyc, sea, broken, temp]
+
+
+def test_discover_precip_markets_filters_and_skips_unparseable(httpx_mock, capsys):
+    httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=_precip_events_body())
+    with httpx.Client() as client:
+        markets = discover_precip_markets(client)
+    # NYC and Seattle parse; the broken precip event is skipped; the temperature
+    # event is filtered out (not a precip title).
+    assert sorted(m.id for m in markets) == ["531291", "531299"]
+    err = capsys.readouterr().err
+    assert "999999" in err and "skip" in err.lower()
