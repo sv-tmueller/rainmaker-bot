@@ -18,9 +18,11 @@ from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.pnl_backtest import (
     Bet,
     LeadPnl,
+    PnlBacktestResult,
     backtest_pnl,
     forecast_set_from_samples,
     market_at_lead,
+    render_pnl_report,
     replay_market,
     score,
 )
@@ -303,3 +305,61 @@ def test_backtest_pnl_returns_none_when_all_filtered():
     with httpx.Client() as client:
         result = backtest_pnl(_closed_events(), client, on_or_after=date(2027, 1, 1))
     assert result is None
+
+
+# Phase D1
+
+
+def _sample_result() -> PnlBacktestResult:
+    return PnlBacktestResult(
+        n_markets=2,
+        floor=0.90,
+        min_sources=1,
+        min_edge=0.05,
+        per_lead=[
+            LeadPnl(
+                lead=0,
+                n_bets=2,
+                wins=2,
+                losses=0,
+                total_pnl=0.30,
+                roi=0.176,
+                win_rate=1.0,
+                mean_edge=0.12,
+            ),
+            LeadPnl(
+                lead=1,
+                n_bets=2,
+                wins=1,
+                losses=1,
+                total_pnl=-0.10,
+                roi=-0.06,
+                win_rate=0.5,
+                mean_edge=0.10,
+            ),
+        ],
+        overall=LeadPnl(
+            lead=-1,
+            n_bets=4,
+            wins=3,
+            losses=1,
+            total_pnl=0.20,
+            roi=0.06,
+            win_rate=0.75,
+            mean_edge=0.11,
+        ),
+    )
+
+
+def test_render_pnl_report_table_and_disclosures():
+    md, payload = render_pnl_report(_sample_result())
+    assert "# Betting P/L backtest" in md
+    assert "| 0 |" in md and "| 1 |" in md  # per-lead rows
+    assert "| ALL |" in md  # pooled row
+    assert "2-0" in md  # lead 0 win-loss
+    # pricing and gate-relaxation disclosures
+    lowered = md.lower()
+    assert "mid" in lowered and "optimistic" in lowered
+    assert "min_sources" in lowered and "two-source" in lowered
+    # JSON payload round-trips the model
+    assert payload == _sample_result().model_dump(mode="json")

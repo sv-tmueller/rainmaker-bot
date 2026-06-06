@@ -186,6 +186,39 @@ def score(bets: list[Bet], leads: Sequence[int]) -> tuple[list[LeadPnl], LeadPnl
     return per_lead, _metrics(-1, list(bets))
 
 
+def _pct(x: float) -> str:
+    return f"{x * 100:.0f}%"
+
+
+def _row(label: str, lp: LeadPnl) -> str:
+    return (
+        f"| {label} | {lp.n_bets} | {lp.wins}-{lp.losses} | {_pct(lp.win_rate)} | "
+        f"{lp.total_pnl:+.2f}u | {lp.roi:+.1%} | {_pct(lp.mean_edge)} |"
+    )
+
+
+def render_pnl_report(result: PnlBacktestResult) -> tuple[str, dict[str, Any]]:
+    """Markdown report plus a JSON-able payload. Terminal prints the markdown."""
+    lines = [
+        "# Betting P/L backtest",
+        "",
+        f"Hypothetical P/L over {result.n_markets} closed market(s) at a flat "
+        "one-unit stake, replayed at several forecast leads. The price is the "
+        "token mid (mid-based, mildly optimistic versus the ask actually paid).",
+        "",
+        f"min_sources is relaxed to {result.min_sources}: the archive is one "
+        "source, so recommended here is a superset of the live two-source gate. "
+        f"Floor {_pct(result.floor)}, minimum edge {_pct(result.min_edge)}.",
+        "",
+        "| Lead | Bets | W-L | Win rate | Total P/L | ROI | Mean edge |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    lines += [_row(str(lp.lead), lp) for lp in result.per_lead]
+    lines.append(_row("ALL", result.overall))
+    md = "\n".join(lines) + "\n"
+    return md, result.model_dump(mode="json")
+
+
 def _parse_closed_markets(
     events: list[dict[str, Any]], on_or_after: date, city: str | None
 ) -> list[tuple[Market, datetime]]:
