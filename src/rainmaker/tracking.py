@@ -1,8 +1,10 @@
 """Score the bot against settled outcomes: hypothetical P&L and calibration.
 
-Computed on read from predictions + prices + outcomes. Each recommended
-prediction row is one one-unit bet (a market re-recommended across daily runs
-counts as separate bets). Tracking only covers rows with a bucket recorded.
+Computed on read from predictions + prices + outcomes. One one-unit bet per
+(market, run): the best-edge recommended side/bucket. Buckets on one market
+describe the same temperature, so correlated same-market bets collapse to one; a
+market re-recommended across daily runs still counts once per run. Tracking only
+covers rows with a bucket recorded.
 """
 
 import json
@@ -31,7 +33,8 @@ def _bet_won(row: dict[str, Any]) -> bool:
 def _settled_rows(conn: Conn) -> list[dict[str, Any]]:
     # Match the price to the prediction's side; legacy rows with a null side are YES.
     rows = conn.execute(
-        "SELECT p.bucket AS bucket, p.side AS side, p.p_win AS p_win, "
+        "SELECT p.market_id AS market_id, p.run_id AS run_id, p.bucket AS bucket, "
+        "p.side AS side, p.p_win AS p_win, p.edge AS edge, "
         "p.recommended AS recommended, pr.price AS ask, o.actual_value AS actual_value "
         "FROM predictions p "
         "JOIN outcomes o ON o.market_id = p.market_id "
@@ -43,15 +46,36 @@ def _settled_rows(conn: Conn) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def _edge_key(r: dict[str, Any]) -> tuple[float, float, str, str]:
+    edge = r["edge"] if r["edge"] is not None else float("-inf")
+    return (edge, r["p_win"], r["bucket"], r.get("side") or "YES")
+
+
+def _best_per_market_run(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse recommended bets to one per (market, run): the highest-edge bet.
+
+    Buckets on one market all describe the same temperature, so NO bets across
+    buckets win or lose together. Counting each separately would inflate P&L and
+    hit rate, so keep only the best-edge bet per (market, run). Tie-break on
+    (edge, p_win, bucket, side) for a deterministic pick.
+    """
+    best: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in rows:
+        if not r["recommended"]:
+            continue
+        key = (r["market_id"], r["run_id"])
+        if key not in best or _edge_key(r) > _edge_key(best[key]):
+            best[key] = r
+    return list(best.values())
+
+
 def compute_pnl(conn: Conn) -> dict[str, Any]:
     """Hypothetical P&L over recommended bets at a flat one-unit stake."""
     total_pnl = 0.0
     total_staked = 0.0
     wins = 0
     n = 0
-    for r in _settled_rows(conn):
-        if not r["recommended"]:
-            continue
+    for r in _best_per_market_run(_settled_rows(conn)):
         n += 1
         ask = r["ask"]
         total_staked += ask
@@ -77,7 +101,7 @@ def compute_calibration(conn: Conn) -> dict[str, Any]:
         return {"n": 0, "brier": None, "hit_rate": None}
     # Brier measures forecast calibration over the YES bucket-predictions; each NO
     # row's contribution is identical to its YES twin, so including it would only
-    # double n. Hit rate is over recommended bets of either side.
+    # double n. Hit rate is over the one best-edge bet per (market, run), either side.
     yes_rows = [r for r in rows if (r.get("side") or "YES") == "YES"]
     brier = (
         sum(
@@ -88,10 +112,8 @@ def compute_calibration(conn: Conn) -> dict[str, Any]:
         if yes_rows
         else None
     )
-    recommended = [r for r in rows if r["recommended"]]
-    hit_rate = (
-        sum(1 for r in recommended if _bet_won(r)) / len(recommended) if recommended else None
-    )
+    bets = _best_per_market_run(rows)
+    hit_rate = sum(1 for r in bets if _bet_won(r)) / len(bets) if bets else None
     return {"n": len(yes_rows), "brier": brier, "hit_rate": hit_rate}
 
 

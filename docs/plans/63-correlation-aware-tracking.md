@@ -69,14 +69,23 @@ def test_compute_calibration_brier_unchanged_hit_rate_collapsed():
     assert cal["hit_rate"] == pytest.approx(1.0)
 
 
-def _add_market(conn, market_id, run_id="r1"):
-    conn.execute(
-        "INSERT OR IGNORE INTO runs (id, started_at, status) VALUES (?, ?, ?)",
-        (run_id, "t", "ok"),
-    )
+# Market + outcome inserted once (markets.id is a PK); per-run bets added
+# separately so the across-runs test can reuse one market.
+def _add_market_outcome(conn, market_id, actual=71.0):
     conn.execute(
         "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
         (market_id, "NYC", "TMAX", "2026-05-30"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, 't')",
+        (market_id, actual),
+    )
+
+
+def _add_no_bets(conn, market_id, run_id):
+    conn.execute(
+        "INSERT OR IGNORE INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        (run_id, "t", "ok"),
     )
     # Three correlated NO bets; actual 71 lands in 70-71, so 60-61 and 80-81 NO win.
     no_bets = (("60-61°F", 0.10, 0.97, 0.87), ("70-71°F", 0.20, 0.90, 0.70),
@@ -92,16 +101,13 @@ def _add_market(conn, market_id, run_id="r1"):
             "recommended, created_at) VALUES (?, ?, ?, 'NO', ?, ?, 1, 't')",
             (run_id, market_id, bucket, p_no, edge),
         )
-    conn.execute(
-        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, 't')",
-        (market_id, 71.0),
-    )
 
 
 def test_correlated_no_bets_collapse_to_one():
     conn = connect(":memory:")
     init_schema(conn)
-    _add_market(conn, "m1")
+    _add_market_outcome(conn, "m1")
+    _add_no_bets(conn, "m1", "r1")
     conn.commit()
     pnl = compute_pnl(conn)
     conn.close()
@@ -114,8 +120,9 @@ def test_correlated_no_bets_collapse_to_one():
 def test_each_market_run_counted_once():
     conn = connect(":memory:")
     init_schema(conn)
-    _add_market(conn, "m1")
-    _add_market(conn, "m2")
+    for mid in ("m1", "m2"):
+        _add_market_outcome(conn, mid)
+        _add_no_bets(conn, mid, "r1")
     conn.commit()
     pnl = compute_pnl(conn)
     conn.close()
@@ -125,8 +132,9 @@ def test_each_market_run_counted_once():
 def test_same_market_across_runs_counts_separately():
     conn = connect(":memory:")
     init_schema(conn)
-    _add_market(conn, "m1", run_id="r1")
-    _add_market(conn, "m1", run_id="r2")
+    _add_market_outcome(conn, "m1")
+    _add_no_bets(conn, "m1", "r1")
+    _add_no_bets(conn, "m1", "r2")
     conn.commit()
     pnl = compute_pnl(conn)
     conn.close()
