@@ -296,6 +296,62 @@ def test_backtest_exits_when_no_data(monkeypatch, tmp_path):
     assert exc.value.code == 1
 
 
+def test_backtest_pnl_command_writes_report(monkeypatch, tmp_path, capsys):
+    from rainmaker.pnl_backtest import LeadPnl, PnlBacktestResult
+
+    lp = LeadPnl(
+        lead=0, n_bets=2, wins=2, losses=0, total_pnl=0.30, roi=0.18, win_rate=1.0, mean_edge=0.12
+    )
+    result = PnlBacktestResult(
+        n_markets=2,
+        floor=0.90,
+        min_sources=1,
+        min_edge=0.05,
+        per_lead=[lp],
+        overall=lp.model_copy(update={"lead": -1}),
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_backtest_pnl(events, client, **kwargs):
+        captured.update(kwargs)
+        return result
+
+    monkeypatch.setattr(cli, "backtest_pnl", _fake_backtest_pnl)
+    monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 5))
+
+    cli.main(
+        [
+            "backtest-pnl",
+            "--city",
+            "NYC",
+            "--days",
+            "365",
+            "--leads",
+            "0,1,2",
+            "--reports-dir",
+            str(tmp_path),
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert "Betting P/L backtest" in out
+    written = {p.name for p in tmp_path.iterdir()}
+    assert {"pnl-backtest-2026-06-05.md", "pnl-backtest-2026-06-05.json"} <= written
+    assert captured["leads"] == (0, 1, 2)  # the --leads list is parsed to a tuple of ints
+    assert captured["city"] == "NYC"
+
+
+def test_backtest_pnl_exits_when_no_data(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "backtest_pnl", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["backtest-pnl", "--city", "NYC", "--reports-dir", str(tmp_path)])
+    assert exc.value.code == 1
+
+
 def test_datastore_prefers_database_url(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x/y")
     assert cli._datastore("local.db") == "postgresql://x/y"

@@ -26,6 +26,7 @@ from rainmaker.forecasts.aggregate import aggregate
 from rainmaker.forecasts.base import ForecastSet
 from rainmaker.forecasts.nws import NwsSource
 from rainmaker.forecasts.openmeteo import OpenMeteoSource
+from rainmaker.pnl_backtest import backtest_pnl, render_pnl_report
 from rainmaker.polymarket.client import discover_markets, fetch_closed_weather_events
 from rainmaker.ranking.edge import evaluate_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
@@ -216,6 +217,39 @@ def _backtest(
     print(f"wrote backtest-{stamp}.md and backtest-{stamp}.json to {reports_dir}")
 
 
+def _parse_leads(spec: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in spec.split(",") if part.strip() != "")
+
+
+def _backtest_pnl(city: str, days: int, leads: tuple[int, ...], reports_dir: str) -> None:
+    end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
+    start = end - timedelta(days=days)
+    client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=60.0)
+    try:
+        try:
+            events = fetch_closed_weather_events(client)
+        except httpx.HTTPError as exc:
+            print(f"Polymarket unavailable, aborting: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+        result = backtest_pnl(
+            events, client, on_or_after=start, leads=leads, city=None if city == "all" else city
+        )
+    finally:
+        client.close()
+    if result is None:
+        print("no P/L backtest data over the requested window", file=sys.stderr)
+        raise SystemExit(1)
+
+    md, payload = render_pnl_report(result)
+    print(md)
+    out = Path(reports_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    stamp = _today().isoformat()
+    (out / f"pnl-backtest-{stamp}.md").write_text(md)
+    (out / f"pnl-backtest-{stamp}.json").write_text(json.dumps(payload, indent=2))
+    print(f"wrote pnl-backtest-{stamp}.md and pnl-backtest-{stamp}.json to {reports_dir}")
+
+
 def _settle(db_path: str) -> None:
     today = _today()
     settled_at = _now_iso()
@@ -303,6 +337,16 @@ def main(argv: list[str] | None = None) -> None:
         help="include the real closed-market reality check",
     )
 
+    btp = sub.add_parser(
+        "backtest-pnl", help="backtest hypothetical betting P/L over closed markets"
+    )
+    btp.add_argument("--city", default="all", help="city key from the station registry, or 'all'")
+    btp.add_argument("--days", type=int, default=730, help="history window length in days")
+    btp.add_argument("--leads", default="0,1,2,3", help="comma-separated forecast leads in days")
+    btp.add_argument(
+        "--reports-dir", default=REPORTS_DIR, help="directory for the P/L backtest report"
+    )
+
     settle = sub.add_parser("settle", help="settle past markets against NOAA actuals")
     settle.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
@@ -316,6 +360,9 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "backtest":
         _backtest(args.city, args.days, args.width, args.span, args.reports_dir, args.real)
+        return
+    if args.command == "backtest-pnl":
+        _backtest_pnl(args.city, args.days, _parse_leads(args.leads), args.reports_dir)
         return
 
     db = _datastore(args.db)
