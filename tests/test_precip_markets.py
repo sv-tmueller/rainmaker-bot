@@ -1,5 +1,6 @@
 import json
 from datetime import date
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -125,7 +126,7 @@ def _assert_tiles_the_line(m: PrecipMonthlyMarket) -> None:
     assert len(below) == 1 and len(above) == 1  # exactly two open tails
     assert below[0].threshold == ranges[0].lo  # low tail meets the first range
     assert above[0].threshold == ranges[-1].hi  # high tail meets the last range
-    for left, right in zip(ranges, ranges[1:]):
+    for left, right in pairwise(ranges):
         assert left.hi == right.lo  # interior ranges are contiguous, no gaps or overlaps
 
 

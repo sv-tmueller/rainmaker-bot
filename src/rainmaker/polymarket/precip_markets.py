@@ -122,6 +122,13 @@ class PrecipMonthlyMarket(BaseModel):
 _TITLE_RE = re.compile(r"precipitation in (.+?) in (\w+)\??$", re.IGNORECASE)
 
 
+def parse_precip_city(title: str) -> str:
+    match = _TITLE_RE.match(title)
+    if match is None:
+        raise ValueError(f"not a monthly precip market title: {title!r}")
+    return match.group(1).strip()
+
+
 def parse_precip_event(event: dict[str, Any]) -> PrecipMonthlyMarket:
     title = event["title"]
     match = _TITLE_RE.match(title)

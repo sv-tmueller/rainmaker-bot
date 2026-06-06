@@ -3,8 +3,13 @@ from typing import Any, cast
 
 import httpx
 
-from rainmaker.config import STATIONS
+from rainmaker.config import PRECIP_STATIONS, STATIONS
 from rainmaker.polymarket.markets import Market, parse_city, parse_market
+from rainmaker.polymarket.precip_markets import (
+    PrecipMonthlyMarket,
+    parse_precip_city,
+    parse_precip_event,
+)
 
 GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
 
@@ -78,4 +83,30 @@ def discover_markets(client: httpx.Client) -> list[Market]:
             markets.append(parse_market(ev))
         except ValueError as exc:
             print(f"skipping market {ev.get('id')}: {exc}", file=sys.stderr)
+    return markets
+
+
+def _is_us_precip_event(event: dict[str, Any]) -> bool:
+    try:
+        city = parse_precip_city(event.get("title", ""))
+    except ValueError:
+        return False
+    return city in PRECIP_STATIONS
+
+
+def discover_precip_markets(client: httpx.Client) -> list[PrecipMonthlyMarket]:
+    """Fetch live weather events and parse the US monthly precipitation markets.
+
+    The parallel of discover_markets for the precip path: a market that fails to
+    parse (for example its description does not name the resolution station) is
+    skipped with a warning so one bad market does not abort the whole run.
+    """
+    markets: list[PrecipMonthlyMarket] = []
+    for ev in fetch_weather_events(client):
+        if not _is_us_precip_event(ev):
+            continue
+        try:
+            markets.append(parse_precip_event(ev))
+        except ValueError as exc:
+            print(f"skipping precip market {ev.get('id')}: {exc}", file=sys.stderr)
     return markets
