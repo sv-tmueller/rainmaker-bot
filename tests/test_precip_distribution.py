@@ -1,7 +1,7 @@
 import pytest
 from scipy.stats import gamma as _gamma
 
-from rainmaker.probability.precip_distribution import Gamma, fit_gamma
+from rainmaker.probability.precip_distribution import fit_gamma
 
 
 def test_fit_gamma_recovers_known_mean_and_var():

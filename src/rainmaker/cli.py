@@ -18,6 +18,8 @@ from rainmaker.config import (
     MIN_SIGMA_F,
     MIN_SOURCES,
     NWS_USER_AGENT,
+    PRECIP_CLIMATOLOGY_YEARS,
+    PRECIP_VAR_FLOOR,
     REPORTS_DIR,
     STATIONS,
     Target,
@@ -26,14 +28,26 @@ from rainmaker.forecasts.aggregate import aggregate
 from rainmaker.forecasts.base import ForecastSet
 from rainmaker.forecasts.nws import NwsSource
 from rainmaker.forecasts.openmeteo import OpenMeteoSource
+from rainmaker.forecasts.precip import PrecipForecastSet, build_precip_forecast_set
 from rainmaker.pnl_backtest import backtest_pnl, render_pnl_report
-from rainmaker.polymarket.client import discover_markets, fetch_closed_weather_events
-from rainmaker.ranking.edge import evaluate_market
+from rainmaker.polymarket.client import (
+    discover_markets,
+    discover_precip_markets,
+    fetch_closed_weather_events,
+)
+from rainmaker.polymarket.precip_markets import PrecipTarget
+from rainmaker.ranking.edge import evaluate_market, evaluate_precip_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
 from rainmaker.settle import run_settlement
 from rainmaker.store.db import connect, init_schema
 from rainmaker.store.query import load_calibration
-from rainmaker.store.record import EvaluatedMarket, record_run, save_accuracy, save_calibration
+from rainmaker.store.record import (
+    EvaluatedMarket,
+    PrecipEvaluatedMarket,
+    record_run,
+    save_accuracy,
+    save_calibration,
+)
 from rainmaker.tracking import compute_calibration, compute_pnl, write_snapshot
 
 SUPPORTED_VARIABLES = {"TMAX", "TMIN"}
@@ -63,6 +77,18 @@ def _db_label(db_path: str) -> str:
 
 def _forecast_for(target: Target, client: httpx.Client) -> ForecastSet:
     return aggregate(target, [NwsSource(client), OpenMeteoSource(client)])
+
+
+def _precip_forecast_for(
+    target: PrecipTarget, today: date, client: httpx.Client
+) -> PrecipForecastSet:
+    return build_precip_forecast_set(
+        target,
+        today=today,
+        client=client,
+        var_floor=PRECIP_VAR_FLOOR,
+        lookback_years=PRECIP_CLIMATOLOGY_YEARS,
+    )
 
 
 def _write_reports(report: Report, reports_dir: str) -> list[Path]:
@@ -111,9 +137,25 @@ def _run(reports_dir: str, db_path: str) -> None:
                 calibration=calibration,
             )
             evaluated.append((market, forecast_set, report))
+
+        precip_evaluated: list[PrecipEvaluatedMarket] = []
+        for precip_market in discover_precip_markets(client):
+            precip_set = _precip_forecast_for(precip_market.target, today, client)
+            precip_report = evaluate_precip_market(
+                precip_market,
+                precip_set,
+                floor=CONFIDENCE_FLOOR,
+                min_sources=MIN_SOURCES,
+                min_edge=MIN_EDGE,
+                var_floor=PRECIP_VAR_FLOOR,
+            )
+            precip_evaluated.append((precip_market, precip_report))
         finished_at = _now_iso()
 
-        daily_report = Report(run_date=today, markets=[r for _, _, r in evaluated])
+        daily_report = Report(
+            run_date=today,
+            markets=[r for _, _, r in evaluated] + [r for _, r in precip_evaluated],
+        )
         print(render_terminal(daily_report))
         paths = _write_reports(daily_report, reports_dir)
         record_run(
@@ -123,6 +165,7 @@ def _run(reports_dir: str, db_path: str) -> None:
             finished_at=finished_at,
             status="ok",
             evaluated=evaluated,
+            precip_evaluated=precip_evaluated,
         )
         print(f"wrote {paths[0]} and {paths[1]}; recorded run to {_db_label(db_path)}")
     finally:

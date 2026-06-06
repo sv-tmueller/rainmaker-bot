@@ -205,6 +205,7 @@ CONFIDENCE_FLOOR = 0.90
 MIN_SOURCES = 2
 MIN_EDGE = 0.05
 PRECIP_VAR_FLOOR = 0.01  # in^2: variance floor for the monthly-total gamma (~0.1in std)
+PRECIP_CLIMATOLOGY_YEARS = 20  # prior years of NCEI history for the climatology tail
 REPORTS_DIR = "reports"
 DB_PATH = "rainmaker.db"
 

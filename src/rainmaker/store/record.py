@@ -9,12 +9,17 @@ from collections import defaultdict
 
 from rainmaker.forecasts.base import ForecastSet
 from rainmaker.polymarket.markets import Market
+from rainmaker.polymarket.precip_markets import PrecipMonthlyMarket
 from rainmaker.probability.calibration import Accuracy, Calibration
 from rainmaker.ranking.edge import MarketReport
 from rainmaker.store.db import Conn
 
 # One evaluated market: the market, the forecasts it got, and the resulting report.
 EvaluatedMarket = tuple[Market, ForecastSet, MarketReport]
+# A precip market persists only the market and its report; the pooled forecast
+# members are not written to the forecasts table (the gamma path has no per-sample
+# rows to record).
+PrecipEvaluatedMarket = tuple[PrecipMonthlyMarket, MarketReport]
 
 
 def record_run(
@@ -25,6 +30,7 @@ def record_run(
     finished_at: str,
     status: str,
     evaluated: list[EvaluatedMarket],
+    precip_evaluated: list[PrecipEvaluatedMarket] | None = None,
 ) -> None:
     """Persist a run and everything it produced, in one transaction."""
     conn.execute(
@@ -36,6 +42,10 @@ def record_run(
         _record_prices(conn, run_id, market, started_at)
         _record_forecasts(conn, run_id, market.id, forecast_set, started_at)
         _record_predictions(conn, run_id, market.id, report, finished_at)
+    for precip_market, precip_report in precip_evaluated or []:
+        _record_precip_market(conn, precip_market, started_at)
+        _record_prices(conn, run_id, precip_market, started_at)
+        _record_predictions(conn, run_id, precip_market.id, precip_report, finished_at)
     conn.commit()
 
 
@@ -78,7 +88,46 @@ def _record_market(conn: Conn, market: Market, captured_at: str) -> None:
     )
 
 
-def _record_prices(conn: Conn, run_id: str, market: Market, captured_at: str) -> None:
+def _record_precip_market(conn: Conn, market: PrecipMonthlyMarket, captured_at: str) -> None:
+    """Persist a monthly precip market into the shared markets table.
+
+    The parallel of _record_market: variable is PRCP, the resolution station is
+    the climate-tool label, the settlement date is the month's last day, and the
+    inch bracket bounds are floats in the JSON outcome_spec. No new table."""
+    spec = [
+        {"label": b.label, "kind": b.kind, "lo": b.lo, "hi": b.hi, "threshold": b.threshold}
+        for b in market.buckets
+    ]
+    conn.execute(
+        """
+        INSERT INTO markets
+            (id, slug, title, city, variable, resolution_source, settlement_date,
+             outcome_spec, raw, captured_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            slug = excluded.slug, title = excluded.title, city = excluded.city,
+            variable = excluded.variable, resolution_source = excluded.resolution_source,
+            settlement_date = excluded.settlement_date, outcome_spec = excluded.outcome_spec,
+            raw = excluded.raw, captured_at = excluded.captured_at
+        """,
+        (
+            market.id,
+            market.slug,
+            market.title,
+            market.target.station.city,
+            market.target.variable,
+            market.target.station.resolution_name,
+            market.target.settlement_date.isoformat(),
+            json.dumps(spec),
+            json.dumps(market.model_dump(mode="json")),
+            captured_at,
+        ),
+    )
+
+
+def _record_prices(
+    conn: Conn, run_id: str, market: Market | PrecipMonthlyMarket, captured_at: str
+) -> None:
     insert = (
         "INSERT INTO prices (run_id, market_id, outcome, side, price, implied_prob, captured_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)"

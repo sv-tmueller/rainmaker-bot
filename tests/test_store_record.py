@@ -167,6 +167,65 @@ def test_record_predictions_stores_bucket():
     assert {r["bucket"] for r in rows} == {o.bucket_label for o in report.outcomes}
 
 
+def _precip_evaluated():
+    from rainmaker.config import PRECIP_VAR_FLOOR
+    from rainmaker.forecasts.precip import PrecipForecastSet
+    from rainmaker.polymarket.precip_markets import parse_precip_event
+    from rainmaker.ranking.edge import evaluate_precip_market
+
+    market = parse_precip_event(
+        json.loads((FIXTURES / "polymarket_precip_monthly_nyc.json").read_text())
+    )
+    fs = PrecipForecastSet(
+        target=market.target,
+        mean=2.5,
+        var=0.6,
+        coverage=[
+            SourceCoverage(source="open-meteo", ok=True, n_samples=40),
+            SourceCoverage(source="nws", ok=True, n_samples=3),
+        ],
+        n_observed_days=5,
+        n_forecast_days=7,
+        n_clim_days=18,
+    )
+    report = evaluate_precip_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_edge=MIN_EDGE,
+        var_floor=PRECIP_VAR_FLOOR,
+    )
+    return market, report
+
+
+def test_record_run_persists_precip_market():
+    conn = connect(":memory:")
+    init_schema(conn)
+    market, report = _precip_evaluated()
+    record_run(
+        conn,
+        run_id="run-p",
+        started_at="2026-06-06T10:00:00Z",
+        finished_at="2026-06-06T10:00:05Z",
+        status="ok",
+        evaluated=[],
+        precip_evaluated=[(market, report)],
+    )
+    row = conn.execute("SELECT * FROM markets WHERE id = ?", (market.id,)).fetchone()
+    assert row["variable"] == "PRCP"
+    assert row["resolution_source"] == "Central Park NY"
+    assert row["settlement_date"] == "2026-06-30"
+    # The inch bracket bounds are floats in the shared JSON outcome_spec column.
+    spec = json.loads(row["outcome_spec"])
+    assert any(b["lo"] == 2.0 and b["hi"] == 3.0 for b in spec)
+    # Predictions and prices reuse the temperature recorder.
+    assert count_rows(conn, "predictions") == len(report.outcomes)
+    expected_prices = sum(1 + (1 if b.no_ask is not None else 0) for b in market.buckets)
+    assert count_rows(conn, "prices") == expected_prices
+    conn.close()
+
+
 def test_accuracy_save_and_upsert_round_trip():
     conn = connect(":memory:")
     init_schema(conn)

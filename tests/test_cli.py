@@ -63,6 +63,7 @@ def _forecast_set(variable: str = "TMAX") -> ForecastSet:
 
 def test_run_builds_report_and_writes_files(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMAX")])
+    monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
     monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set())
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 5, 31))
@@ -84,6 +85,7 @@ def test_run_builds_report_and_writes_files(monkeypatch, tmp_path, capsys):
 
 def test_run_processes_tmin_market(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMIN")])
+    monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
     monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set("TMIN"))
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 5, 31))
@@ -103,6 +105,7 @@ def test_run_processes_tmin_market(monkeypatch, tmp_path, capsys):
 def test_run_skips_when_variable_unsupported(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "SUPPORTED_VARIABLES", {"TMAX"})
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMIN")])
+    monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
 
     cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(tmp_path / "t.db")])
@@ -374,3 +377,48 @@ def test_db_label_redacts_postgres_dsn():
     assert cli._db_label("postgresql://user:secret@host:5432/db") == "postgres"
     assert cli._db_label("postgres://user:secret@host/db") == "postgres"
     assert cli._db_label("rainmaker.db") == "rainmaker.db"
+
+
+def _precip_market_and_set():
+    import json
+    from pathlib import Path
+
+    from rainmaker.forecasts.precip import PrecipForecastSet
+    from rainmaker.polymarket.precip_markets import parse_precip_event
+
+    fixtures = Path(__file__).parent / "fixtures"
+    market = parse_precip_event(
+        json.loads((fixtures / "polymarket_precip_monthly_nyc.json").read_text())
+    )
+    fs = PrecipForecastSet(
+        target=market.target,
+        mean=2.5,
+        var=0.6,
+        coverage=[
+            SourceCoverage(source="open-meteo", ok=True, n_samples=40),
+            SourceCoverage(source="nws", ok=True, n_samples=3),
+        ],
+        n_observed_days=5,
+        n_forecast_days=7,
+        n_clim_days=18,
+    )
+    return market, fs
+
+
+def test_run_routes_precip_market(monkeypatch, tmp_path, capsys):
+    market, fs = _precip_market_and_set()
+    monkeypatch.setattr(cli, "discover_markets", lambda client: [])
+    monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [market])
+    monkeypatch.setattr(cli, "_precip_forecast_for", lambda target, today, client: fs)
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 6))
+    db = tmp_path / "t.db"
+
+    cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(db)])
+
+    out = capsys.readouterr().out
+    assert "Central Park NY" in out  # the resolution station is named
+    assert "PRCP" in out
+    conn = connect(str(db))
+    assert count_rows(conn, "predictions") >= 6  # one per inch bracket, persisted
+    conn.close()
