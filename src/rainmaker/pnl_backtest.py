@@ -15,9 +15,35 @@ Caveats baked in by design:
 - The price used is the token mid, mildly optimistic versus the ask actually paid.
 """
 
+from collections.abc import Sequence
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
+
 from rainmaker.config import Target
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
-from rainmaker.polymarket.markets import Market
+from rainmaker.polymarket.markets import Market, parse_bucket_label
+from rainmaker.polymarket.prices import PricePoint, snap_price
+from rainmaker.probability.outcomes import settles
+from rainmaker.ranking.edge import RankedOutcome, evaluate_market
+
+# A lead's price is snapped from the series within this window of the target
+# timestamp; an hourly series puts every midday target well inside it.
+SNAP_TOLERANCE_S = 12 * 3600
+SECONDS_PER_DAY = 86400
+
+
+class Bet(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    lead: int
+    bucket_label: str
+    side: Literal["YES", "NO"]
+    p_win: float
+    ask: float  # price paid: the YES ask for a YES bet, the NO ask for a NO bet
+    edge: float
+    won: bool
 
 
 def forecast_set_from_samples(target: Target, samples: list[ForecastSample]) -> ForecastSet:
@@ -42,3 +68,67 @@ def market_at_lead(market: Market, mids: dict[str, float | None]) -> Market:
             bucket.model_copy(update={"best_ask": mid, "no_ask": None if mid is None else 1 - mid})
         )
     return market.model_copy(update={"buckets": buckets})
+
+
+def _outcome_won(outcome: RankedOutcome, actual: float) -> bool:
+    """A YES bet wins when its bucket settles; a NO bet wins when it does not."""
+    settled = settles(*parse_bucket_label(outcome.bucket_label), actual)
+    return (not settled) if outcome.side == "NO" else settled
+
+
+def replay_market(
+    market: Market,
+    forecast_set: ForecastSet,
+    actual: float,
+    histories: dict[str, list[PricePoint]],
+    settlement_dt: datetime,
+    *,
+    leads: Sequence[int],
+    floor: float,
+    min_sources: int,
+    min_sigma: float,
+    min_edge: float,
+) -> list[Bet]:
+    """One best-edge bet per lead, settled against the actual.
+
+    At each lead the buckets are repriced from their CLOB mid (snapped to the
+    settlement timestamp minus the lead), edge-ranked through the live path, and
+    collapsed to the single highest-edge recommended bet. Buckets on one market
+    describe the same temperature, so counting more than one would inflate the
+    P/L; the collapse mirrors live tracking. A lead with no recommended bet or no
+    snappable price contributes nothing.
+    """
+    settlement_ts = int(settlement_dt.timestamp())
+    bets: list[Bet] = []
+    for lead in leads:
+        target_ts = settlement_ts - lead * SECONDS_PER_DAY
+        mids = {
+            bucket.label: snap_price(
+                histories.get(bucket.yes_token_id, []), target_ts, tolerance_s=SNAP_TOLERANCE_S
+            )
+            for bucket in market.buckets
+        }
+        report = evaluate_market(
+            market_at_lead(market, mids),
+            forecast_set,
+            floor=floor,
+            min_sources=min_sources,
+            min_sigma=min_sigma,
+            min_edge=min_edge,
+        )
+        recommended = [o for o in report.outcomes if o.recommended]
+        if not recommended:
+            continue
+        best = max(recommended, key=lambda o: (o.edge, o.p_win, o.bucket_label, o.side))
+        bets.append(
+            Bet(
+                lead=lead,
+                bucket_label=best.bucket_label,
+                side=best.side,
+                p_win=best.p_win,
+                ask=best.best_ask,
+                edge=best.edge,
+                won=_outcome_won(best, actual),
+            )
+        )
+    return bets
