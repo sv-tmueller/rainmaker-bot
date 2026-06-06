@@ -40,6 +40,7 @@ from rainmaker.ranking.edge import evaluate_market, evaluate_precip_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
 from rainmaker.settle import run_settlement
 from rainmaker.store.db import connect, init_schema
+from rainmaker.store.prune import prune_settled
 from rainmaker.store.query import load_calibration
 from rainmaker.store.record import (
     EvaluatedMarket,
@@ -316,6 +317,19 @@ def _settle(db_path: str) -> None:
     print(f"settled {settled} market(s); {waiting} waiting on NCEI data -> {_db_label(db_path)}")
 
 
+def _prune(db_path: str) -> None:
+    if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        deleted = prune_settled(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"pruned {deleted} redundant intraday row(s) -> {_db_label(db_path)}")
+
+
 def _track(db_path: str) -> None:
     if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -406,6 +420,9 @@ def main(argv: list[str] | None = None) -> None:
     settle = sub.add_parser("settle", help="settle past markets against NOAA actuals")
     settle.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
+    prune = sub.add_parser("prune", help="delete redundant intraday rows for settled markets")
+    prune.add_argument("--db", default=DB_PATH, help="SQLite database path")
+
     track = sub.add_parser("track", help="report P&L and calibration over settled markets")
     track.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
@@ -428,6 +445,8 @@ def main(argv: list[str] | None = None) -> None:
         _backfill(args.city, args.variable, args.days, args.lead, db)
     elif args.command == "settle":
         _settle(db)
+    elif args.command == "prune":
+        _prune(db)
     elif args.command == "track":
         _track(db)
     elif args.command == "snapshot":
