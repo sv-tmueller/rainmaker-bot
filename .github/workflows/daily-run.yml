@@ -36,6 +36,15 @@ jobs:
             *) echo "DATABASE_URL is not a Postgres DSN; refusing to run"; exit 1 ;;
           esac
           uv run rainmaker settle
+      - name: Prune redundant intraday rows
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          case "$DATABASE_URL" in
+            postgres://*|postgresql://*) ;;
+            *) echo "DATABASE_URL is not a Postgres DSN; refusing to run"; exit 1 ;;
+          esac
+          uv run rainmaker prune
       - name: Write tracking snapshot
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

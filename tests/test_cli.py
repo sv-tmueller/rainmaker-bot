@@ -256,6 +256,13 @@ def test_track_command_reports_pnl_and_calibration(monkeypatch, tmp_path, capsys
     assert "Brier 0.127" in out
 
 
+def test_prune_command_reports_rows_pruned(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "prune_settled", lambda conn: 5)
+    cli.main(["prune", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+    assert "pruned 5" in out
+
+
 def test_settle_command_reports_summary(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "run_settlement", lambda conn, client, today, settled_at: (2, 1))
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())

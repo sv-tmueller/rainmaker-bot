@@ -154,12 +154,76 @@ def test_same_market_across_runs_counts_separately():
     conn = connect(":memory:")
     init_schema(conn)
     _add_market_outcome(conn, "m1")
+    # Two runs on different UTC days each count once. Insert the runs with real
+    # dated timestamps first; _add_no_bets' INSERT OR IGNORE keeps them.
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("r1", "2026-06-05T13:00:00Z", "ok"),
+    )
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("r2", "2026-06-06T13:00:00Z", "ok"),
+    )
     _add_no_bets(conn, "m1", "r1")
     _add_no_bets(conn, "m1", "r2")
     conn.commit()
     pnl = compute_pnl(conn)
     conn.close()
-    assert pnl["n_bets"] == 2  # re-recommendation across runs stays separate
+    assert pnl["n_bets"] == 2  # different UTC days stay separate
+
+
+def _add_yes_run(conn, market_id, run_id, started_at, p_win):
+    """One YES bet on 70-71 for (market, run): ask 0.40, given p_win, dist_params set."""
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        (run_id, started_at, "ok"),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, side, price, implied_prob, captured_at) "
+        "VALUES (?, ?, '70-71°F', 'YES', 0.40, 0.40, 't')",
+        (run_id, market_id),
+    )
+    dist = json.dumps({"mu": 70.0, "sigma": 2.0, "n_sources": 2})
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, side, p_win, dist_params, edge, recommended, created_at) "
+        "VALUES (?, ?, '70-71°F', 'YES', ?, ?, 0.20, 1, 't')",
+        (run_id, market_id, p_win, dist),
+    )
+
+
+def test_same_day_runs_collapse_to_latest():
+    from rainmaker.tracking import compute_live_accuracy
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    _add_market_outcome(conn, "m1", actual=71.0)  # 71 in 70-71 -> YES wins
+    _add_yes_run(conn, "m1", "r1", "2026-06-06T09:00:00Z", p_win=0.60)
+    _add_yes_run(conn, "m1", "r2", "2026-06-06T12:00:00Z", p_win=0.93)
+    conn.commit()
+    pnl = compute_pnl(conn)
+    cal = compute_calibration(conn)
+    acc = compute_live_accuracy(conn)
+    conn.close()
+    assert pnl["n_bets"] == 1  # same-day runs collapse to the latest (r2)
+    assert cal["n"] == 1  # one YES row scored: the latest run's
+    assert cal["hit_rate"] == pytest.approx(1.0)  # 70-71 YES won
+    assert cal["brier"] == pytest.approx((0.93 - 1) ** 2)  # r2's p_win, not r1's 0.60
+    assert len(acc) == 1  # one (market, UTC day) sample
+
+
+def test_different_day_runs_counted_separately():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _add_market_outcome(conn, "m1", actual=71.0)
+    _add_yes_run(conn, "m1", "r1", "2026-06-05T12:00:00Z", p_win=0.60)
+    _add_yes_run(conn, "m1", "r2", "2026-06-06T12:00:00Z", p_win=0.93)
+    conn.commit()
+    pnl = compute_pnl(conn)
+    cal = compute_calibration(conn)
+    conn.close()
+    assert pnl["n_bets"] == 2  # different UTC days stay separate
+    assert cal["n"] == 2  # both runs' YES rows scored
 
 
 def _setup_no_bet(conn, actual: float):

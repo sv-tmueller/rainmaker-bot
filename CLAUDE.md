@@ -92,6 +92,8 @@ Python 3.11+ managed with uv. Commands:
 - Install: `uv sync`
 - Run: `uv run rainmaker run` (discovers all live US-city markets; `--reports-dir`, `--db`)
 - Settle: `uv run rainmaker settle` (record NOAA actuals for past markets)
+- Prune: `uv run rainmaker prune` (drop all-but-latest intraday rows per
+  (settled market, UTC day) from prices/predictions/forecasts; bounds storage)
 - Track: `uv run rainmaker track` (P&L + calibration summary over settled markets)
 - Snapshot: `uv run rainmaker snapshot` (upsert the daily metrics row the dashboard reads)
 - Backfill: `uv run rainmaker backfill --city <X>` (fit a calibration cell and
@@ -116,7 +118,7 @@ saved JSON fixtures in `tests/fixtures/`, never live endpoints.
 ```
 src/rainmaker/
   config.py           station registry (11 cities), Target, source config constants
-  cli.py              run/settle/track/snapshot/backfill/backtest/backtest-pnl entry points
+  cli.py              run/settle/prune/track/snapshot/backfill/backtest/backtest-pnl entry points
   backfill.py         NCEI actuals + historical forecasts -> calibration fit; GSOM monthly precip
   backtest.py         forecast calibration + win-rate over history (no P/L)
   pnl_backtest.py     replay closed markets at historical CLOB prices -> betting P/L
@@ -148,9 +150,10 @@ src/rainmaker/
     migrate.py        forward schema migrations (schema_migrations)
     record.py         persist a run (runs/markets/prices/forecasts/predictions)
     query.py          read-back helpers
+    prune.py          drop all-but-latest intraday rows per (settled market, UTC day)
 dashboard/            read-only Next.js dashboard (Vercel, behind Cloudflare Access)
 .github/workflows/
-  daily-run.yml       scheduled cron (every 3h): run -> settle -> snapshot against Supabase
+  daily-run.yml       scheduled cron (every 3h): run -> settle -> prune -> snapshot against Supabase
 tests/
   fixtures/           saved API responses (NWS, Open-Meteo, NCEI, Polymarket)
   test_*.py           unit and I/O tests (pytest-httpx for mocked HTTP)

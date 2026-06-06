@@ -1,10 +1,11 @@
 """Score the bot against settled outcomes: hypothetical P&L and calibration.
 
 Computed on read from predictions + prices + outcomes. One one-unit bet per
-(market, run): the best-edge recommended side/bucket. Buckets on one market
-describe the same temperature, so correlated same-market bets collapse to one; a
-market re-recommended across daily runs still counts once per run. Tracking only
-covers rows with a bucket recorded.
+(market, UTC day): the best-edge recommended side/bucket from that day's latest
+run. Buckets on one market describe the same temperature, so correlated
+same-market bets collapse to one; the intraday runs (#77) that re-price a market
+many times a day are correlated too, so they collapse to the latest run per UTC
+day (#63, #78). Tracking only covers rows with a bucket recorded.
 """
 
 import json
@@ -34,22 +35,43 @@ def _bet_won(row: dict[str, Any]) -> bool:
     return (not settled) if (row.get("side") or "YES") == "NO" else settled
 
 
+def _latest_run_per_market_day(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only the latest run's rows per (market, UTC day).
+
+    The intraday runs (#77) re-price a market many times a day; their bets are
+    correlated, so counting each run separately inflates P&L and calibration
+    (#63). started_at[:10] is the UTC day (same grain as compute_live_accuracy).
+    Among rows sharing a (market_id, UTC day), keep only those whose run started
+    latest; (started_at, run_id) breaks an exact-timestamp tie deterministically.
+    """
+    latest: dict[tuple[str, str], tuple[str, str]] = {}
+    for r in rows:
+        key = (r["market_id"], r["started_at"][:10])
+        marker = (r["started_at"], r["run_id"])
+        if key not in latest or marker > latest[key]:
+            latest[key] = marker
+    keep = {(market_id, run_id) for (market_id, _), (_, run_id) in latest.items()}
+    return [r for r in rows if (r["market_id"], r["run_id"]) in keep]
+
+
 def _settled_rows(conn: Conn) -> list[dict[str, Any]]:
     # Match the price to the prediction's side; legacy rows with a null side are YES.
     rows = conn.execute(
         "SELECT p.market_id AS market_id, p.run_id AS run_id, p.bucket AS bucket, "
         "p.side AS side, p.p_win AS p_win, p.edge AS edge, "
         "p.recommended AS recommended, m.variable AS variable, "
+        "r.started_at AS started_at, "
         "pr.price AS ask, o.actual_value AS actual_value "
         "FROM predictions p "
         "JOIN markets m ON m.id = p.market_id "
         "JOIN outcomes o ON o.market_id = p.market_id "
+        "JOIN runs r ON r.id = p.run_id "
         "JOIN prices pr ON pr.run_id = p.run_id AND pr.market_id = p.market_id "
         "AND pr.outcome = p.bucket "
         "AND COALESCE(pr.side, 'YES') = COALESCE(p.side, 'YES') "
         "WHERE p.bucket IS NOT NULL AND pr.price IS NOT NULL"
     ).fetchall()
-    return [dict(r) for r in rows]
+    return _latest_run_per_market_day([dict(r) for r in rows])
 
 
 def _edge_key(r: dict[str, Any]) -> tuple[float, float, str, str]:
@@ -127,12 +149,15 @@ def compute_calibration(conn: Conn) -> dict[str, Any]:
 def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
     """Degrees-space accuracy of the bot's own forecasts over settled markets.
 
-    One sample per (run, market): the predicted mu against the settled actual,
-    grouped per (station, variable, lead). DISTINCT collapses the per-bucket
-    prediction rows, which share one dist_params. This relies on _record_predictions
-    writing an identical dist_params string for every bucket row of one (run, market);
-    if that changes, replace DISTINCT with a subquery. Rows with an unknown city,
-    unparsable dist_params, a null actual, or no usable mu/sigma are skipped.
+    One sample per (market, UTC day): the latest run's predicted mu against the
+    settled actual, grouped per (station, variable, lead). DISTINCT collapses the
+    per-bucket prediction rows, which share one dist_params, to one row per (run,
+    market); _latest_run_per_market_day then keeps the latest run per (market, UTC
+    day) so correlated intraday runs (#77) count once (#63, #78). This relies on
+    _record_predictions writing an identical dist_params string for every bucket
+    row of one (run, market); if that changes, replace DISTINCT with a subquery.
+    Rows with an unknown city, unparsable dist_params, a null actual, or no usable
+    mu/sigma are skipped.
     """
     rows = conn.execute(
         "SELECT DISTINCT p.run_id AS run_id, p.market_id AS market_id, "
@@ -146,7 +171,7 @@ def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
         "WHERE p.dist_params IS NOT NULL AND o.actual_value IS NOT NULL"
     ).fetchall()
     groups: dict[tuple[str, str, str, int], list[CalibrationPair]] = defaultdict(list)
-    for r in (dict(row) for row in rows):
+    for r in _latest_run_per_market_day([dict(row) for row in rows]):
         station = STATIONS.get(r["city"])
         if station is None:
             continue
