@@ -1,0 +1,13 @@
+{
+  "properties": {
+    "quantitativePrecipitation": {
+      "uom": "wmoUnit:mm",
+      "values": [
+        {"validTime": "2026-06-06T12:00:00+00:00/PT6H", "value": 0.254},
+        {"validTime": "2026-06-06T18:00:00+00:00/PT6H", "value": 3.048},
+        {"validTime": "2026-06-07T12:00:00+00:00/PT6H", "value": 1.016},
+        {"validTime": "2026-06-08T12:00:00+00:00/PT6H", "value": 0.0}
+      ]
+    }
+  }
+}

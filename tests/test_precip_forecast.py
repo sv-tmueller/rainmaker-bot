@@ -1,6 +1,35 @@
+import json
+import re
+from datetime import date
+from pathlib import Path
+
+import httpx
 import pytest
 
-from rainmaker.forecasts.precip import monthly_total_moments
+from rainmaker.backfill import NCEI_URL
+from rainmaker.forecasts.openmeteo import ENSEMBLE_URL, FORECAST_URL
+from rainmaker.forecasts.precip import (
+    build_precip_forecast_set,
+    monthly_total_moments,
+    parse_precip_open_meteo,
+)
+from rainmaker.polymarket.precip_markets import parse_precip_event
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _nyc_target():
+    return parse_precip_event(
+        json.loads((FIXTURES / "polymarket_precip_monthly_nyc.json").read_text())
+    ).target
+
+
+def _multimodel():
+    return json.loads((FIXTURES / "openmeteo_precip_multimodel_nyc.json").read_text())
+
+
+def _ensemble():
+    return json.loads((FIXTURES / "openmeteo_precip_ensemble_nyc.json").read_text())
 
 
 def test_moments_sum_observed_forecast_climatology():
@@ -46,3 +75,67 @@ def test_var_floor_applied():
         floor=0.01,
     )
     assert v == pytest.approx(0.01)
+
+
+def test_parse_precip_open_meteo_pools_per_day_in_inches():
+    pooled = parse_precip_open_meteo(_multimodel())
+    # Every model reports June 6, so the pool has one value per model.
+    assert len(pooled[date(2026, 6, 6)]) == 5
+    assert pooled[date(2026, 6, 6)] == pytest.approx([0.043, 0.213, 0.004, 0.102, 0.0])
+    # meteofrance is null on June 10, so that day pools only the four models present.
+    assert len(pooled[date(2026, 6, 10)]) == 4
+
+
+def test_parse_precip_open_meteo_pools_ensemble_members():
+    pooled = parse_precip_open_meteo(_ensemble())
+    # The control run plus five members all report June 6.
+    assert len(pooled[date(2026, 6, 6)]) == 6
+
+
+def test_parse_precip_open_meteo_rejects_non_inch_units():
+    data = _multimodel()
+    data["daily_units"] = {
+        k: ("mm" if k.startswith("precipitation_sum") else v)
+        for k, v in data["daily_units"].items()
+    }
+    with pytest.raises(ValueError, match="inch"):
+        parse_precip_open_meteo(data)
+
+
+def _mock_build(httpx_mock):
+    daily = json.loads((FIXTURES / "ncei_daily_precip_nyc.json").read_text())
+    clim = json.loads((FIXTURES / "ncei_climatology_precip_nyc.json").read_text())
+    # NCEI is hit twice: observed-to-date first, then the climatology span.
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=daily)
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=clim)
+    httpx_mock.add_response(url=re.compile(re.escape(FORECAST_URL)), json=_multimodel())
+    for _ in range(3):  # OPENMETEO_ENSEMBLE_MODELS has three entries
+        httpx_mock.add_response(url=re.compile(re.escape(ENSEMBLE_URL)), json=_ensemble())
+    httpx_mock.add_response(
+        url="https://api.weather.gov/points/40.779,-73.9692",
+        json={"properties": {"forecastGridData": "https://api.weather.gov/gridpoints/OKX/34,45"}},
+    )
+    httpx_mock.add_response(
+        url="https://api.weather.gov/gridpoints/OKX/34,45",
+        json=json.loads((FIXTURES / "nws_qpf_nyc.json").read_text()),
+    )
+
+
+def test_build_precip_forecast_set_pools_all_sources(httpx_mock):
+    _mock_build(httpx_mock)
+    with httpx.Client() as client:
+        fs = build_precip_forecast_set(
+            _nyc_target(),
+            today=date(2026, 6, 6),
+            client=client,
+            var_floor=0.01,
+            lookback_years=20,
+        )
+    assert fs.mean > 0
+    assert fs.var > 0
+    assert {c.source for c in fs.coverage} == {"open-meteo", "nws"}
+    assert all(c.ok for c in fs.coverage)
+    # Five elapsed days observed, the seven-day forecast horizon, the rest climatology.
+    assert fs.n_observed_days == 5
+    assert fs.n_forecast_days == 7
+    assert fs.n_observed_days + fs.n_forecast_days + fs.n_clim_days == 30
