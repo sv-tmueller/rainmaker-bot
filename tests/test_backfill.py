@@ -13,6 +13,7 @@ from rainmaker.backfill import (
     build_pairs,
     fetch_actuals,
     fetch_historical_forecasts,
+    fetch_monthly_precip,
     run_backfill,
 )
 from rainmaker.config import STATIONS
@@ -137,6 +138,20 @@ def test_fetch_historical_forecasts_requests_min_field_for_tmin(httpx_mock):
     assert "daily=temperature_2m_min" in str(httpx_mock.get_requests()[0].url)
     # The min model keys were parsed: 40/38 -> mean 39 on the first date.
     assert forecasts[date(2026, 3, 1)].mu == pytest.approx(39.0)
+
+
+def test_fetch_monthly_precip_reads_gsom_inches(httpx_mock):
+    gsom = json.loads((FIXTURES / "ncei_gsom_precip_nyc.json").read_text())
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=gsom)
+    with httpx.Client() as client:
+        value = fetch_monthly_precip("USW00094728", 2026, 6, client)
+    assert value == pytest.approx(4.10)
+
+
+def test_fetch_monthly_precip_none_when_unpublished(httpx_mock):
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=[])
+    with httpx.Client() as client:
+        assert fetch_monthly_precip("USW00094728", 2026, 6, client) is None
 
 
 def test_run_backfill_tmin_pairs_min_forecast_with_tmin_actual(httpx_mock):

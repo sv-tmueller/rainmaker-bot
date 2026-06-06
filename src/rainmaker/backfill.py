@@ -9,6 +9,7 @@ deterministic models). That is an approximation of the live pooled distribution;
 tighter calibration grows from the bot's own persisted runs over time.
 """
 
+import calendar
 import statistics
 from datetime import date
 from typing import Any
@@ -61,6 +62,35 @@ def fetch_actuals(
         for r in rows
         if r.get(variable) not in (None, "")
     }
+
+
+def fetch_monthly_precip(
+    ghcnd_id: str, year: int, month: int, client: httpx.Client
+) -> float | None:
+    """Monthly total precipitation (inches) from NCEI global-summary-of-the-month.
+
+    Returns None when the month is not yet published, so the settle loop waits.
+    Raises on HTTP error. GSOM rejects a YYYY-MM range, so the request is bounded
+    by the month's first and last calendar day.
+    """
+    last = calendar.monthrange(year, month)[1]
+    resp = client.get(
+        NCEI_URL,
+        params={
+            "dataset": "global-summary-of-the-month",
+            "stations": ghcnd_id,
+            "dataTypes": "PRCP",
+            "startDate": f"{year:04d}-{month:02d}-01",
+            "endDate": f"{year:04d}-{month:02d}-{last:02d}",
+            "units": "standard",
+            "format": "json",
+        },
+    )
+    resp.raise_for_status()
+    for r in resp.json():
+        if r.get("PRCP") not in (None, ""):
+            return float(r["PRCP"])
+    return None
 
 
 def _fetch_archive_daily(

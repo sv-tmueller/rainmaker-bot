@@ -11,8 +11,8 @@ from datetime import date
 
 import httpx
 
-from rainmaker.backfill import fetch_actuals
-from rainmaker.config import STATIONS
+from rainmaker.backfill import fetch_actuals, fetch_monthly_precip
+from rainmaker.config import PRECIP_STATIONS, STATIONS
 from rainmaker.store.db import Conn
 from rainmaker.store.query import unsettled_markets
 from rainmaker.store.record import record_outcome
@@ -25,13 +25,19 @@ def run_settlement(
     settled = 0
     waiting = 0
     for m in unsettled_markets(conn, today):
-        station = STATIONS.get(m["city"])
-        if station is None:
-            print(f"skipping {m['market_id']}: unknown city {m['city']!r}", file=sys.stderr)
-            continue
         day = date.fromisoformat(m["settlement_date"])
-        actuals = fetch_actuals(station.ghcnd_id, day, day, client, m["variable"])
-        value = actuals.get(day)
+        if m["variable"] == "PRCP":
+            precip_station = PRECIP_STATIONS.get(m["city"])
+            if precip_station is None:
+                print(f"skipping {m['market_id']}: unknown city {m['city']!r}", file=sys.stderr)
+                continue
+            value = fetch_monthly_precip(precip_station.ghcnd_id, day.year, day.month, client)
+        else:
+            station = STATIONS.get(m["city"])
+            if station is None:
+                print(f"skipping {m['market_id']}: unknown city {m['city']!r}", file=sys.stderr)
+                continue
+            value = fetch_actuals(station.ghcnd_id, day, day, client, m["variable"]).get(day)
         if value is None:
             waiting += 1
             continue

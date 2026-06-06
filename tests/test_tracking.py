@@ -57,6 +57,38 @@ def test_compute_calibration_brier_unchanged_hit_rate_collapsed():
     assert cal["hit_rate"] == pytest.approx(1.0)
 
 
+def test_compute_pnl_settles_precip_bucket():
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute("INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)", ("r1", "t", "ok"))
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        ("pm1", "NYC", "PRCP", "2026-06-30"),
+    )
+    # An open-low inch bracket the temperature parser cannot read: this only works
+    # through the PRCP branch using precip_settles.
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("r1", "pm1", '<2"', 0.30, 0.30, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions (run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "pm1", '<2"', 0.60, 0.30, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("pm1", 1.50, "t"),
+    )
+    conn.commit()
+    pnl = compute_pnl(conn)
+    conn.close()
+    # 1.50 inches lands under 2", so the YES bet on the <2" bracket wins.
+    assert (pnl["wins"], pnl["losses"]) == (1, 0)
+    assert pnl["total_pnl"] == pytest.approx(1 - 0.30)
+
+
 def _add_market_outcome(conn, market_id, actual=71.0):
     conn.execute(
         "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",

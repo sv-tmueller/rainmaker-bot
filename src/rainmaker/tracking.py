@@ -14,19 +14,23 @@ from typing import Any
 
 from rainmaker.config import STATIONS
 from rainmaker.polymarket.markets import parse_bucket_label
+from rainmaker.polymarket.precip_markets import parse_precip_bracket_label
 from rainmaker.probability.calibration import CalibrationPair, compute_accuracy
 from rainmaker.probability.outcomes import settles
+from rainmaker.probability.precip_outcomes import precip_settles
 from rainmaker.store.db import Conn
 from rainmaker.store.record import save_accuracy
 
 
-def _won(bucket_label: str, actual_value: float) -> bool:
+def _won(variable: str, bucket_label: str, actual_value: float) -> bool:
+    if variable == "PRCP":
+        return precip_settles(*parse_precip_bracket_label(bucket_label), actual_value)
     return settles(*parse_bucket_label(bucket_label), actual_value)
 
 
 def _bet_won(row: dict[str, Any]) -> bool:
     """A YES bet wins when the bucket settles; a NO bet wins when it does not."""
-    settled = _won(row["bucket"], row["actual_value"])
+    settled = _won(row["variable"], row["bucket"], row["actual_value"])
     return (not settled) if (row.get("side") or "YES") == "NO" else settled
 
 
@@ -35,8 +39,10 @@ def _settled_rows(conn: Conn) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT p.market_id AS market_id, p.run_id AS run_id, p.bucket AS bucket, "
         "p.side AS side, p.p_win AS p_win, p.edge AS edge, "
-        "p.recommended AS recommended, pr.price AS ask, o.actual_value AS actual_value "
+        "p.recommended AS recommended, m.variable AS variable, "
+        "pr.price AS ask, o.actual_value AS actual_value "
         "FROM predictions p "
+        "JOIN markets m ON m.id = p.market_id "
         "JOIN outcomes o ON o.market_id = p.market_id "
         "JOIN prices pr ON pr.run_id = p.run_id AND pr.market_id = p.market_id "
         "AND pr.outcome = p.bucket "
@@ -105,7 +111,8 @@ def compute_calibration(conn: Conn) -> dict[str, Any]:
     yes_rows = [r for r in rows if (r.get("side") or "YES") == "YES"]
     brier = (
         sum(
-            (r["p_win"] - (1.0 if _won(r["bucket"], r["actual_value"]) else 0.0)) ** 2
+            (r["p_win"] - (1.0 if _won(r["variable"], r["bucket"], r["actual_value"]) else 0.0))
+            ** 2
             for r in yes_rows
         )
         / len(yes_rows)
