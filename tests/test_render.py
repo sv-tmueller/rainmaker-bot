@@ -9,6 +9,7 @@ def _market_report() -> MarketReport:
     return MarketReport(
         market_id="m1",
         title="Highest temperature in NYC on May 31?",
+        city="NYC",
         station="KLGA",
         variable="TMAX",
         settlement_date=date(2026, 5, 31),
@@ -65,6 +66,7 @@ def test_render_handles_empty_samples_market():
     empty = MarketReport(
         market_id="m2",
         title="Highest temperature in NYC on May 31?",
+        city="NYC",
         station="KLGA",
         variable="TMAX",
         settlement_date=date(2026, 5, 31),
@@ -105,10 +107,55 @@ def test_render_leads_with_recommended_bets_summary():
     assert "70-71°F" in md
 
 
+def _rec_market(city: str, title: str, edge: float) -> MarketReport:
+    return MarketReport(
+        market_id=city,
+        title=title,
+        city=city,
+        station="X",
+        variable="TMAX",
+        settlement_date=date(2026, 5, 31),
+        mu=70.0,
+        sigma=2.0,
+        n_sources=2,
+        calibrated=False,
+        coverage=[],
+        outcomes=[
+            RankedOutcome(
+                bucket_label="70-71°F",
+                side="NO",
+                p_win=0.90,
+                best_ask=round(0.90 - edge, 2),
+                edge=edge,
+                recommended=True,
+            )
+        ],
+        excluded_no_ask=[],
+    )
+
+
+def test_recommended_summary_groups_by_city_ordered_by_best_edge():
+    report = Report(
+        run_date=date(2026, 5, 31),
+        markets=[
+            _rec_market("Seattle", "Highest temperature in Seattle on May 31?", 0.40),
+            _rec_market("NYC", "Highest temperature in NYC on May 31?", 0.50),
+        ],
+    )
+    for render in (render_terminal, render_markdown):
+        out = render(report)
+        # the per-market detail starts at the first full title; the summary precedes it
+        summary = out.split("Highest temperature in Seattle")[0]
+        assert "NYC" in summary and "Seattle" in summary  # both cities head a group
+        assert summary.index("NYC") < summary.index("Seattle")  # bigger edge leads
+        assert "Highest temperature in NYC" not in summary  # city dropped from the bet label
+
+
 def test_render_shows_side_for_no_bet():
     rep = MarketReport(
         market_id="m4",
         title="Highest temperature in NYC on May 31?",
+        city="NYC",
         station="KLGA",
         variable="TMAX",
         settlement_date=date(2026, 5, 31),
@@ -140,6 +187,7 @@ def test_render_uses_inch_unit_for_precip():
     rep = MarketReport(
         market_id="p1",
         title="Precipitation in NYC in June?",
+        city="NYC",
         station="Central Park NY",
         variable="PRCP",
         settlement_date=date(2026, 6, 30),
@@ -167,6 +215,7 @@ def test_render_summary_says_none_when_no_recommendations():
     no_rec = MarketReport(
         market_id="m3",
         title="Highest temperature in NYC on May 31?",
+        city="NYC",
         station="KLGA",
         variable="TMAX",
         settlement_date=date(2026, 5, 31),

@@ -31,6 +31,7 @@ class MarketReport(BaseModel):
 
     market_id: str
     title: str
+    city: str
     station: str
     variable: str
     settlement_date: date
@@ -57,6 +58,7 @@ def evaluate_market(
     common: dict[str, Any] = dict(
         market_id=market.id,
         title=market.title,
+        city=market.target.station.city,
         station=market.target.station.icao,
         variable=market.target.variable,
         settlement_date=market.target.local_date,
@@ -175,6 +177,7 @@ def evaluate_precip_market(
     return MarketReport(
         market_id=market.id,
         title=market.title,
+        city=market.target.station.city,
         station=market.target.station.resolution_name,
         variable=market.target.variable,
         settlement_date=market.target.settlement_date,
