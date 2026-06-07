@@ -248,3 +248,28 @@ def run_backfill(
     actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)
     pairs = build_pairs(forecasts, actuals)
     return fit_calibration(station.icao, variable, lead_time, pairs), compute_accuracy(pairs)
+
+
+def run_backfill_accuracy(
+    station: Station,
+    variable: str,
+    leads: tuple[int, ...],
+    start: date,
+    end: date,
+    client: httpx.Client,
+) -> dict[int, Accuracy]:
+    """Per-lead forecast accuracy (mae/bias) from the Previous Runs API vs NCEI actuals.
+
+    Accuracy needs only the point forecast, so each per-date mean is wrapped in a
+    placeholder-sigma Gaussian to reuse build_pairs/compute_accuracy. Leads with no
+    overlapping actual are omitted.
+    """
+    point = fetch_historical_point_forecasts(station, leads, start, end, client, variable)
+    actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)
+    out: dict[int, Accuracy] = {}
+    for lead in leads:
+        forecasts = {day: Gaussian(mu=mu, sigma=1.0) for day, mu in point[lead].items()}
+        pairs = build_pairs(forecasts, actuals)
+        if pairs:
+            out[lead] = compute_accuracy(pairs)
+    return out

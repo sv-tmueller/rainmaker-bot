@@ -17,6 +17,7 @@ from rainmaker.backfill import (
     fetch_historical_point_forecasts,
     fetch_monthly_precip,
     run_backfill,
+    run_backfill_accuracy,
 )
 from rainmaker.config import STATIONS
 from rainmaker.probability.calibration import CalibrationPair
@@ -194,6 +195,25 @@ def test_fetch_historical_point_forecasts_reduces_hourly_to_daily_mean(httpx_moc
     assert "hourly=temperature_2m_previous_day2" in str(req.url)
     assert "previous_day3" in str(req.url)
     assert "models=" in str(req.url)
+
+
+def test_run_backfill_accuracy_scores_each_lead(httpx_mock):
+    httpx_mock.add_response(
+        url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
+    )
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    with httpx.Client() as client:
+        accs = run_backfill_accuracy(
+            KLGA, "TMAX", (2, 3), date(2026, 3, 1), date(2026, 3, 2), client
+        )
+    assert set(accs) == {2, 3}
+    # lead 2: mu 49.0 vs 43 (+6), 37.0 vs 34 (+3) -> bias 4.5, mae 4.5
+    assert accs[2].n == 2
+    assert accs[2].bias_f == pytest.approx(4.5)
+    assert accs[2].mae_f == pytest.approx(4.5)
+    # lead 3: mu 45.0 vs 43 (+2), 33.5 vs 34 (-0.5) -> bias 0.75, mae 1.25
+    assert accs[3].bias_f == pytest.approx(0.75)
+    assert accs[3].mae_f == pytest.approx(1.25)
 
 
 def test_fetch_historical_point_forecasts_uses_min_for_tmin(httpx_mock):
