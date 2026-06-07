@@ -172,10 +172,10 @@ def fetch_historical_point_forecasts(
         per_model_daily: dict[date, list[float]] = {}
         for model in OPENMETEO_MODELS:
             values = hourly.get(f"temperature_2m_previous_day{lead}_{model}")
-            if not values:
-                continue  # this model did not report at this lead
+            if values is None:
+                continue  # key absent: this model did not report at this lead
             by_day: dict[date, list[float]] = {}
-            for iso, value in zip(times, values, strict=False):
+            for iso, value in zip(times, values, strict=True):
                 if value is None:
                     continue
                 by_day.setdefault(date.fromisoformat(iso[:10]), []).append(value)
