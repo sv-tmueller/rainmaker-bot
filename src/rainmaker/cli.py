@@ -123,8 +123,11 @@ def _run(reports_dir: str, db_path: str) -> None:
             if market.target.variable not in SUPPORTED_VARIABLES:
                 print(f"skipped {market.id}: unsupported variable {market.target.variable}")
                 continue
-            forecast_set = _forecast_for(market.target, client)
             lead_time = (market.target.local_date - today).days
+            if lead_time < 0:  # the day is over: a closed/settling market, not bettable
+                print(f"skipped {market.id}: settled ({market.target.local_date})")
+                continue
+            forecast_set = _forecast_for(market.target, client)
             calibration = load_calibration(
                 conn, market.target.station.icao, market.target.variable, lead_time
             )
@@ -141,6 +144,10 @@ def _run(reports_dir: str, db_path: str) -> None:
 
         precip_evaluated: list[PrecipEvaluatedMarket] = []
         for precip_market in discover_precip_markets(client):
+            if precip_market.target.settlement_date < today:  # month over: not bettable
+                day = precip_market.target.settlement_date
+                print(f"skipped {precip_market.id}: settled ({day})")
+                continue
             precip_set = _precip_forecast_for(precip_market.target, today, client)
             precip_report = evaluate_precip_market(
                 precip_market,
