@@ -83,6 +83,49 @@ def test_run_builds_report_and_writes_files(monkeypatch, tmp_path, capsys):
     conn.close()
 
 
+def test_run_includes_kalshi_high_temp_market(monkeypatch, tmp_path, capsys):
+    from rainmaker.config import KALSHI_STATIONS, Target
+
+    market = Market(
+        id="KXHIGHNY-26MAY31",
+        slug="KXHIGHNY-26MAY31",
+        title="Kalshi: highest temperature in NYC on 2026-05-31",
+        target=Target(
+            station=KALSHI_STATIONS["NYC"], variable="TMAX", local_date=date(2026, 5, 31)
+        ),
+        buckets=[
+            Bucket(
+                label="70-71°F",
+                kind="range",
+                lo=70,
+                hi=71,
+                threshold=None,
+                yes_token_id="KXHIGHNY-26MAY31-B70.5",
+                best_ask=0.40,
+                best_bid=0.35,
+                yes_price=0.38,
+                no_token_id="",
+                no_ask=0.60,
+            )
+        ],
+    )
+    monkeypatch.setattr(cli, "discover_markets", lambda client: [])
+    monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
+    monkeypatch.setattr(cli, "discover_kalshi_markets", lambda client: [market])
+    monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set())
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 5, 31))
+    db = tmp_path / "t.db"
+
+    cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(db)])
+
+    out = capsys.readouterr().out
+    assert "KNYC" in out  # Kalshi NYC settles on Central Park (KNYC), not KLGA
+    conn = connect(str(db))
+    assert count_rows(conn, "predictions") >= 1  # the Kalshi market reached the store
+    conn.close()
+
+
 def test_run_processes_tmin_market(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMIN")])
     monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
@@ -402,6 +445,12 @@ def test_datastore_prefers_database_url(monkeypatch):
 
 
 class _DummyClient:
+    def get(self, *args, **kwargs):
+        # No real HTTP in unit tests. Kalshi discovery runs in every _run and hits
+        # this; raising a transport error exercises its graceful skip so run tests
+        # that do not stub discover_kalshi_markets simply get an empty Kalshi venue.
+        raise httpx.ConnectError("dummy client makes no real requests")
+
     def close(self):
         pass
 

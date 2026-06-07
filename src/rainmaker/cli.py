@@ -29,6 +29,7 @@ from rainmaker.forecasts.base import ForecastSet
 from rainmaker.forecasts.nws import NwsSource
 from rainmaker.forecasts.openmeteo import OpenMeteoSource
 from rainmaker.forecasts.precip import PrecipForecastSet, build_precip_forecast_set
+from rainmaker.kalshi.client import discover_kalshi_markets
 from rainmaker.pnl_backtest import backtest_pnl, render_pnl_report
 from rainmaker.polymarket.client import (
     discover_markets,
@@ -120,6 +121,35 @@ def _run(reports_dir: str, db_path: str) -> None:
 
         evaluated: list[EvaluatedMarket] = []
         for market in markets:
+            if market.target.variable not in SUPPORTED_VARIABLES:
+                print(f"skipped {market.id}: unsupported variable {market.target.variable}")
+                continue
+            lead_time = (market.target.local_date - today).days
+            if lead_time < 0:  # the day is over: a closed/settling market, not bettable
+                print(f"skipped {market.id}: settled ({market.target.local_date})")
+                continue
+            forecast_set = _forecast_for(market.target, client)
+            calibration = load_calibration(
+                conn, market.target.station.icao, market.target.variable, lead_time
+            )
+            report = evaluate_market(
+                market,
+                forecast_set,
+                floor=CONFIDENCE_FLOOR,
+                min_sources=MIN_SOURCES,
+                min_sigma=MIN_SIGMA_F,
+                min_edge=MIN_EDGE,
+                calibration=calibration,
+            )
+            evaluated.append((market, forecast_set, report))
+
+        # Kalshi is the secondary venue: its outage must never abort the run.
+        try:
+            kalshi_markets = discover_kalshi_markets(client)
+        except httpx.HTTPError as exc:
+            print(f"Kalshi discovery failed, continuing: {exc}", file=sys.stderr)
+            kalshi_markets = []
+        for market in kalshi_markets:
             if market.target.variable not in SUPPORTED_VARIABLES:
                 print(f"skipped {market.id}: unsupported variable {market.target.variable}")
                 continue
