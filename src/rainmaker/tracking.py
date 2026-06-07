@@ -185,6 +185,8 @@ def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
         lead = (
             date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
         ).days
+        if lead < 0:
+            continue  # a run after settlement is a catch-up, not a forecast: not accuracy
         key = (station.icao, r["city"], r["variable"], lead)
         groups[key].append(CalibrationPair(mu=mu, sigma=sigma, actual=r["actual_value"]))
     return [

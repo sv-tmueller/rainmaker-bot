@@ -59,8 +59,9 @@ export function AccuracyGrid({ accuracy }: { accuracy: Accuracy }) {
         </table>
       )}
       <p className="mt-3 text-[11px] leading-relaxed text-faint">
-        Columns are forecast lead in days (0d = same-day, 1d = one day ahead). Each cell:
-        MAE in °F (average miss), bias (<span className="text-warm">+ warm</span> /{" "}
+        Columns are how far ahead the forecast was made: 0d = same day, 1d = one day
+        ahead (issued the day before), higher = earlier. Each cell: MAE in °F (average
+        miss), bias (<span className="text-warm">+ warm</span> /{" "}
         <span className="text-cool">− cool</span>), and n cases from live runs. bt = the
         2-year backtest baseline (its MAE and n). – = not enough data yet.
       </p>

@@ -211,6 +211,7 @@ export async function getDashboardData() {
   for (const r of accQ.data ?? []) {
     const city = r.city as string;
     const lead = r.lead_time as number;
+    if (lead < 0) continue; // a run after settlement is a catch-up, not a forecast
     leadSet.add(lead);
     const row = accMap.get(city) ?? { city, cells: {} };
     const cell = { n: r.n as number, mae: r.mae_f as number, bias: r.bias_f as number };

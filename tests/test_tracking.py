@@ -198,8 +198,9 @@ def test_same_day_runs_collapse_to_latest():
     conn = connect(":memory:")
     init_schema(conn)
     _add_market_outcome(conn, "m1", actual=71.0)  # 71 in 70-71 -> YES wins
-    _add_yes_run(conn, "m1", "r1", "2026-06-06T09:00:00Z", p_win=0.60)
-    _add_yes_run(conn, "m1", "r2", "2026-06-06T12:00:00Z", p_win=0.93)
+    # both runs on the settlement day (2026-05-30) -> lead 0, same UTC day
+    _add_yes_run(conn, "m1", "r1", "2026-05-30T09:00:00Z", p_win=0.60)
+    _add_yes_run(conn, "m1", "r2", "2026-05-30T12:00:00Z", p_win=0.93)
     conn.commit()
     pnl = compute_pnl(conn)
     cal = compute_calibration(conn)
@@ -216,8 +217,9 @@ def test_different_day_runs_counted_separately():
     conn = connect(":memory:")
     init_schema(conn)
     _add_market_outcome(conn, "m1", actual=71.0)
-    _add_yes_run(conn, "m1", "r1", "2026-06-05T12:00:00Z", p_win=0.60)
-    _add_yes_run(conn, "m1", "r2", "2026-06-06T12:00:00Z", p_win=0.93)
+    # settlement is 2026-05-30: lead 1 then lead 0, two different UTC days
+    _add_yes_run(conn, "m1", "r1", "2026-05-29T12:00:00Z", p_win=0.60)
+    _add_yes_run(conn, "m1", "r2", "2026-05-30T12:00:00Z", p_win=0.93)
     conn.commit()
     pnl = compute_pnl(conn)
     cal = compute_calibration(conn)
@@ -359,6 +361,38 @@ def test_compute_live_accuracy_skips_unknown_city():
 
     conn = connect(":memory:")
     _setup_live(conn, city="Gotham")
+    rows = compute_live_accuracy(conn)
+    conn.close()
+    assert rows == []
+
+
+def test_compute_live_accuracy_skips_negative_lead_runs():
+    from rainmaker.tracking import compute_live_accuracy
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    # run on 2026-06-01, market settled 2026-05-31 -> lead -1, a post-settlement
+    # catch-up run, not a real forecast: excluded from accuracy.
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("r1", "2026-06-01T12:00:00+00:00", "ok"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        ("m1", "NYC", "TMAX", "2026-05-31"),
+    )
+    dist = json.dumps({"mu": 70.0, "sigma": 2.0, "n_sources": 2})
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, dist_params, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "m1", "70-71°F", 0.5, dist, 0.1, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("m1", 73.0, "t"),
+    )
+    conn.commit()
     rows = compute_live_accuracy(conn)
     conn.close()
     assert rows == []
