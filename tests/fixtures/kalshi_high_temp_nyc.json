@@ -1,0 +1,32 @@
+{
+  "cursor": "",
+  "markets": [
+    {
+      "event_ticker": "KXHIGHNY-26JUN08",
+      "ticker": "KXHIGHNY-26JUN08-T79",
+      "status": "active",
+      "strike_type": "greater",
+      "floor_strike": 79,
+      "subtitle": "above 79",
+      "yes_bid_dollars": "0.0900",
+      "yes_ask_dollars": "0.1200",
+      "no_ask_dollars": "0.8900",
+      "last_price_dollars": "0.1000",
+      "rules_primary": "If the highest temperature recorded in Central Park, New York for June 08, 2026 as reported by the National Weather Service's Climatological Report (Daily), is greater than 79, then the market resolves to Yes."
+    },
+    {
+      "event_ticker": "KXHIGHNY-26JUN08",
+      "ticker": "KXHIGHNY-26JUN08-B77.5",
+      "status": "active",
+      "strike_type": "between",
+      "floor_strike": 77,
+      "cap_strike": 78,
+      "subtitle": "77 to 78",
+      "yes_bid_dollars": "0.1500",
+      "yes_ask_dollars": "0.1600",
+      "no_ask_dollars": "0.8500",
+      "last_price_dollars": "0.1500",
+      "rules_primary": "If the highest temperature recorded in Central Park, New York for June 08, 2026 as reported by the National Weather Service's Climatological Report (Daily), is between 77 and 78, then the market resolves to Yes."
+    }
+  ]
+}
