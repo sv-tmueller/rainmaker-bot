@@ -12,15 +12,28 @@
 
 ## Scope
 
-In scope (this plan): discover Kalshi daily high-temp markets, parse them into the existing `Market` type, edge-rank them with the existing pipeline, render and record them in the daily run. Seed the station registry with the five cities whose live markets and settlement stations were confirmed in the #102 discovery spike: NYC, Chicago, Miami, Los Angeles, Austin.
+> **Status update.** This PR grew past slice 1 to cover the weather markets the
+> bot already does on Polymarket: Kalshi **daily high temp** (Tasks 1-6 below),
+> plus **daily low temp (TMIN)** and **monthly rain** (added on the same branch,
+> reusing the temperature and precip pipelines). SpaceX was dropped by decision.
+> The tasks below describe the high-temp slice; low temp and rain follow the same
+> shape (a Kalshi parser + registry that feeds the existing pipeline).
+
+In scope: discover Kalshi daily high-temp, daily low-temp, and monthly-rain
+markets, parse them into the existing `Market` / `PrecipMonthlyMarket` types,
+edge-rank them with the existing pipeline, render and record them in the daily
+run. Temperature seeds five cities (NYC, Chicago, Miami, Los Angeles, Austin);
+rain seeds NYC and Chicago (the cities with confirmed GHCND ids).
 
 Explicitly out of scope (separate follow-up issues, noted at the end):
-- Kalshi monthly rain (`KXRAIN*M`) via the existing precip slice.
 - Kalshi monthly snowfall (new variable; confirm the rule in winter first).
-- SpaceX launch counts (a different, non-weather pipeline).
-- Calibration backfill for the Kalshi stations (KNYC, KMDW). Slice 1 runs them uncalibrated; the report flags `calibrated=False`. This is acceptable for advisory output.
-- Settlement and P&L tracking of Kalshi markets (verify `settle.py`'s station resolution first).
-- A formal `venue` column. Slice 1 distinguishes venues by the station code already shown in the report (Polymarket NYC = KLGA, Kalshi NYC = KNYC).
+- Calibration backfill for the Kalshi stations (KNYC, KMDW). They run
+  uncalibrated for now; the report flags `calibrated=False`. Acceptable for
+  advisory output.
+- Settlement and P&L tracking of Kalshi markets (verify `settle.py`'s station
+  resolution first; confirm the KMDW GHCND id).
+- A formal `venue` column. Venues are distinguished by the station code already
+  shown in the report (Polymarket NYC = KLGA, Kalshi NYC = KNYC).
 
 ## Key design decisions
 
@@ -779,9 +792,17 @@ git commit -m "docs: note the kalshi package in the repo layout (#102)"
 
 ## Follow-up issues (out of scope here)
 
-1. Calibration backfill for the Kalshi stations (KNYC, KMDW) so high-temp markets run calibrated; extend `backfill` to accept the Kalshi registry.
-2. Settlement + tracking for Kalshi markets: verify `settle.py` resolves the station/GHCND for Kalshi rows; confirm the KMDW GHCND id.
-3. Kalshi monthly rain (`KXRAIN*M`) via the existing precip slice.
-4. Kalshi monthly snowfall (new variable); confirm the exact rule and station in winter when markets are live.
-5. SpaceX launch-count markets as a separate non-weather module.
-6. A `venue` column if per-venue reporting/filtering is wanted beyond the station code.
+1. Calibration backfill for the Kalshi stations (KNYC, KMDW, and the rain
+   stations) so the markets run calibrated; extend `backfill` to accept the
+   Kalshi registries.
+2. Settlement + tracking for Kalshi markets: verify `settle.py` resolves the
+   station/GHCND for Kalshi rows; confirm the KMDW GHCND id.
+3. Kalshi monthly snowfall (new variable); confirm the exact rule and station in
+   winter when markets are live.
+4. More rain cities (Denver `CLIDEN` and others) once their GHCND ids are
+   confirmed against NCEI.
+5. A `venue` column if per-venue reporting/filtering is wanted beyond the station
+   code.
+
+Delivered in this PR (was follow-up, now done): daily low temp (TMIN) and monthly
+rain. Dropped by decision: SpaceX launch counts.
