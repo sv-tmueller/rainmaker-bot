@@ -186,6 +186,75 @@ PRECIP_STATIONS: dict[str, PrecipStation] = {
     ),
 }
 
+# Kalshi (read-only second venue). Daily high-temp markets settle on the NWS
+# Climatological Report (Daily) for a named station, which differs from the
+# Polymarket/Wunderground station for NYC (Central Park, not LaGuardia) and
+# Chicago (Midway, not O'Hare). The Station.name field holds the exact phrase the
+# Kalshi rule text uses (the parser guards on it); wunderground_url holds the NWS
+# CLI product URL (the recorder stores it as resolution_source).
+KALSHI_API_BASE = "https://api.elections.kalshi.com/trade-api/v2"
+
+KALSHI_HIGH_SERIES: dict[str, str] = {
+    "NYC": "KXHIGHNY",
+    "Chicago": "KXHIGHCHI",
+    "Miami": "KXHIGHMIA",
+    "Los Angeles": "KXHIGHLAX",
+    "Austin": "KXHIGHAUS",
+}
+
+KALSHI_STATIONS: dict[str, Station] = {
+    "NYC": Station(
+        city="NYC",
+        icao="KNYC",
+        name="Central Park, New York",
+        lat=40.7790,
+        lon=-73.9692,
+        timezone="America/New_York",
+        wunderground_url="https://forecast.weather.gov/product.php?site=OKX&product=CLI&issuedby=NYC",
+        ghcnd_id="USW00094728",  # confirmed in PRECIP_STATIONS (Central Park)
+    ),
+    "Chicago": Station(
+        city="Chicago",
+        icao="KMDW",
+        name="Chicago Midway",
+        lat=41.7860,
+        lon=-87.7524,
+        timezone="America/Chicago",
+        wunderground_url="https://forecast.weather.gov/product.php?site=LOT&product=CLI&issuedby=MDW",
+        ghcnd_id="USW00014819",  # TODO: confirm against NCEI GHCND before trusting settlement
+    ),
+    "Miami": Station(
+        city="Miami",
+        icao="KMIA",
+        name="Miami International Airport",
+        lat=25.7881,
+        lon=-80.3169,
+        timezone="America/New_York",
+        wunderground_url="https://forecast.weather.gov/product.php?site=MFL&product=CLI&issuedby=MIA",
+        ghcnd_id="USW00012839",
+    ),
+    "Los Angeles": Station(
+        city="Los Angeles",
+        icao="KLAX",
+        name="Los Angeles Airport",
+        lat=33.9382,
+        lon=-118.3866,
+        timezone="America/Los_Angeles",
+        wunderground_url="https://forecast.weather.gov/product.php?site=LOX&product=CLI&issuedby=LAX",
+        ghcnd_id="USW00023174",
+    ),
+    "Austin": Station(
+        city="Austin",
+        icao="KAUS",
+        name="Austin Bergstrom",
+        lat=30.1831,
+        lon=-97.6799,
+        timezone="America/Chicago",
+        wunderground_url="https://forecast.weather.gov/product.php?site=EWX&product=CLI&issuedby=AUS",
+        ghcnd_id="USW00013904",
+    ),
+}
+
 # Source config
 NWS_USER_AGENT = "rainmaker-bot (thomas.mueller@solvvision.de)"
 OPENMETEO_MODELS = [
