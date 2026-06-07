@@ -212,6 +212,7 @@ def test_run_backfill_accuracy_scores_each_lead(httpx_mock):
     assert accs[2].bias_f == pytest.approx(4.5)
     assert accs[2].mae_f == pytest.approx(4.5)
     # lead 3: mu 45.0 vs 43 (+2), 33.5 vs 34 (-0.5) -> bias 0.75, mae 1.25
+    assert accs[3].n == 2
     assert accs[3].bias_f == pytest.approx(0.75)
     assert accs[3].mae_f == pytest.approx(1.25)
 

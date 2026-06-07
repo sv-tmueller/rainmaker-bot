@@ -268,8 +268,8 @@ def run_backfill_accuracy(
     actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)
     out: dict[int, Accuracy] = {}
     for lead in leads:
-        forecasts = {day: Gaussian(mu=mu, sigma=1.0) for day, mu in point[lead].items()}
-        pairs = build_pairs(forecasts, actuals)
+        gaussians = {day: Gaussian(mu=mu, sigma=1.0) for day, mu in point[lead].items()}
+        pairs = build_pairs(gaussians, actuals)
         if pairs:
             out[lead] = compute_accuracy(pairs)
     return out
