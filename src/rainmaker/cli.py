@@ -18,7 +18,6 @@ from rainmaker.config import (
     MIN_EDGE,
     MIN_SIGMA_F,
     MIN_SOURCES,
-    NWS_USER_AGENT,
     PRECIP_CLIMATOLOGY_YEARS,
     PRECIP_VAR_FLOOR,
     REPORTS_DIR,
@@ -32,6 +31,7 @@ from rainmaker.forecasts.base import ForecastSet
 from rainmaker.forecasts.nws import NwsSource
 from rainmaker.forecasts.openmeteo import OpenMeteoSource
 from rainmaker.forecasts.precip import PrecipForecastSet, build_precip_forecast_set
+from rainmaker.httpclient import build_client
 from rainmaker.kalshi.client import discover_kalshi_markets, discover_kalshi_precip_markets
 from rainmaker.pnl_backtest import backtest_pnl, render_pnl_report
 from rainmaker.polymarket.client import (
@@ -113,7 +113,7 @@ def _run(reports_dir: str, db_path: str) -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
     init_schema(conn)
-    client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=30.0)
+    client = build_client(30.0)
     try:
         try:
             markets = discover_markets(client)
@@ -249,7 +249,7 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
     if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
-    client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=60.0)
+    client = build_client(60.0)
     label = _db_label(db_path)
     succeeded = 0
     try:
@@ -322,7 +322,7 @@ def _backtest(
     cities = sorted(STATIONS) if city == "all" else [city]
     end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
     start = end - timedelta(days=days)
-    client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=60.0)
+    client = build_client(60.0)
     synthetic: dict[str, BacktestResult] = {}
     real = None
     try:
@@ -367,7 +367,7 @@ def _backtest_pnl(
 ) -> None:
     end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
     start = end - timedelta(days=days)
-    client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=60.0)
+    client = build_client(60.0)
     try:
         try:
             events = fetch_closed_weather_events(client)
@@ -404,7 +404,7 @@ def _settle(db_path: str) -> None:
     if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
-    client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=60.0)
+    client = build_client(60.0)
     try:
         init_schema(conn)
         settled, waiting = run_settlement(conn, client, today, settled_at)
@@ -492,7 +492,8 @@ def main(argv: list[str] | None = None) -> None:
         "--leads",
         default="1,2,3",
         help=(
-            "comma-separated leads in days; lead 1 fits calibration, higher leads are accuracy-only"
+            "comma-separated leads in days; lead 1 fits calibration, "
+            "higher leads are accuracy-only"
         ),
     )
     backfill.add_argument("--db", default=DB_PATH, help="SQLite database path")
