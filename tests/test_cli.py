@@ -159,7 +159,7 @@ def test_backfill_fits_and_saves_calibration_and_accuracy(monkeypatch, tmp_path,
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
     db = tmp_path / "t.db"
 
-    cli.main(["backfill", "--db", str(db), "--lead", "1"])
+    cli.main(["backfill", "--db", str(db), "--leads", "1"])
 
     out = capsys.readouterr().out
     assert "calibrated KLGA TMAX lead=1" in out
