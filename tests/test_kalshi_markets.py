@@ -1,6 +1,9 @@
+from datetime import date
+
 import pytest
 
-from rainmaker.kalshi.markets import parse_kalshi_bucket
+from rainmaker.config import KALSHI_STATIONS
+from rainmaker.kalshi.markets import parse_kalshi_bucket, parse_kalshi_event
 
 
 def _mkt(**over):
@@ -43,3 +46,63 @@ def test_missing_price_is_none():
 def test_unknown_strike_type_raises():
     with pytest.raises(ValueError):
         parse_kalshi_bucket(_mkt(strike_type="weird"))
+
+
+def _event_markets():
+    rule = (
+        "If the highest temperature recorded in Central Park, New York for "
+        "June 08, 2026 as reported by the National Weather Service's "
+        "Climatological Report (Daily), is greater than 79, then Yes."
+    )
+    return [
+        {
+            "event_ticker": "KXHIGHNY-26JUN08",
+            "ticker": "KXHIGHNY-26JUN08-T79",
+            "strike_type": "greater",
+            "floor_strike": 79,
+            "subtitle": "above 79",
+            "yes_bid_dollars": "0.0900",
+            "yes_ask_dollars": "0.1200",
+            "no_ask_dollars": "0.8900",
+            "last_price_dollars": "0.1000",
+            "rules_primary": rule,
+        },
+        {
+            "event_ticker": "KXHIGHNY-26JUN08",
+            "ticker": "KXHIGHNY-26JUN08-B77.5",
+            "strike_type": "between",
+            "floor_strike": 77,
+            "cap_strike": 78,
+            "subtitle": "77 to 78",
+            "yes_bid_dollars": "0.1500",
+            "yes_ask_dollars": "0.1600",
+            "no_ask_dollars": "0.8500",
+            "last_price_dollars": "0.1500",
+            "rules_primary": rule,
+        },
+    ]
+
+
+def test_parse_event_builds_market():
+    m = parse_kalshi_event("NYC", KALSHI_STATIONS["NYC"], _event_markets())
+    assert m.id == "KXHIGHNY-26JUN08"
+    assert m.target.station.icao == "KNYC"
+    assert m.target.variable == "TMAX"
+    assert m.target.local_date == date(2026, 6, 8)
+    assert len(m.buckets) == 2
+
+
+def test_parse_event_guards_station_mismatch():
+    markets = _event_markets()
+    for mk in markets:
+        mk["rules_primary"] = mk["rules_primary"].replace("Central Park, New York", "LaGuardia")
+    with pytest.raises(ValueError, match="not named"):
+        parse_kalshi_event("NYC", KALSHI_STATIONS["NYC"], markets)
+
+
+def test_parse_event_bad_ticker_date_raises():
+    markets = _event_markets()
+    for mk in markets:
+        mk["event_ticker"] = "KXHIGHNY-NODATE"
+    with pytest.raises(ValueError, match="date token"):
+        parse_kalshi_event("NYC", KALSHI_STATIONS["NYC"], markets)
