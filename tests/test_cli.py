@@ -83,6 +83,49 @@ def test_run_builds_report_and_writes_files(monkeypatch, tmp_path, capsys):
     conn.close()
 
 
+def test_run_includes_kalshi_high_temp_market(monkeypatch, tmp_path, capsys):
+    from rainmaker.config import KALSHI_STATIONS, Target
+
+    market = Market(
+        id="KXHIGHNY-26MAY31",
+        slug="KXHIGHNY-26MAY31",
+        title="Kalshi: highest temperature in NYC on 2026-05-31",
+        target=Target(
+            station=KALSHI_STATIONS["NYC"], variable="TMAX", local_date=date(2026, 5, 31)
+        ),
+        buckets=[
+            Bucket(
+                label="70-71°F",
+                kind="range",
+                lo=70,
+                hi=71,
+                threshold=None,
+                yes_token_id="KXHIGHNY-26MAY31-B70.5",
+                best_ask=0.40,
+                best_bid=0.35,
+                yes_price=0.38,
+                no_token_id="",
+                no_ask=0.60,
+            )
+        ],
+    )
+    monkeypatch.setattr(cli, "discover_markets", lambda client: [])
+    monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
+    monkeypatch.setattr(cli, "discover_kalshi_markets", lambda client: [market])
+    monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set())
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 5, 31))
+    db = tmp_path / "t.db"
+
+    cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(db)])
+
+    out = capsys.readouterr().out
+    assert "KNYC" in out  # Kalshi NYC settles on Central Park (KNYC), not KLGA
+    conn = connect(str(db))
+    assert count_rows(conn, "predictions") >= 1  # the Kalshi market reached the store
+    conn.close()
+
+
 def test_run_processes_tmin_market(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMIN")])
     monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
@@ -159,7 +202,7 @@ def test_backfill_fits_and_saves_calibration_and_accuracy(monkeypatch, tmp_path,
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
     db = tmp_path / "t.db"
 
-    cli.main(["backfill", "--db", str(db), "--lead", "1"])
+    cli.main(["backfill", "--db", str(db), "--leads", "1"])
 
     out = capsys.readouterr().out
     assert "calibrated KLGA TMAX lead=1" in out
@@ -188,7 +231,11 @@ def test_backfill_all_covers_every_city(monkeypatch, tmp_path):
         )
         return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
 
+    def _fake_acc(station, variable, leads, start, end, client):
+        return {lead: Accuracy(n=42, mae_f=2.0, bias_f=0.0) for lead in leads}
+
     monkeypatch.setattr(cli, "run_backfill", _fake)
+    monkeypatch.setattr(cli, "run_backfill_accuracy", _fake_acc)
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
     db = tmp_path / "t.db"
 
@@ -197,7 +244,8 @@ def test_backfill_all_covers_every_city(monkeypatch, tmp_path):
     conn = connect(str(db))
     n = conn.execute("SELECT count(*) AS n FROM forecast_accuracy").fetchone()["n"]
     conn.close()
-    assert n == len(STATIONS)
+    # 3 leads (1, 2, 3) per city
+    assert n == len(STATIONS) * 3
 
 
 def test_backfill_exits_nonzero_when_all_cities_fail(monkeypatch, tmp_path, capsys):
@@ -205,6 +253,7 @@ def test_backfill_exits_nonzero_when_all_cities_fail(monkeypatch, tmp_path, caps
         raise httpx.ConnectError("down")
 
     monkeypatch.setattr(cli, "run_backfill", _boom)
+    monkeypatch.setattr(cli, "run_backfill_accuracy", _boom)
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
 
     with pytest.raises(SystemExit) as exc:
@@ -232,7 +281,13 @@ def test_backfill_partial_failure_exits_zero(monkeypatch, tmp_path, capsys):
         )
         return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
 
+    def _mixed_acc(station, variable, leads, start, end, client):
+        if station.icao == STATIONS[fail_city].icao:
+            raise httpx.ConnectError("down")
+        return {lead: Accuracy(n=42, mae_f=2.0, bias_f=0.0) for lead in leads}
+
     monkeypatch.setattr(cli, "run_backfill", _mixed)
+    monkeypatch.setattr(cli, "run_backfill_accuracy", _mixed_acc)
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
     db = tmp_path / "t.db"
 
@@ -243,7 +298,8 @@ def test_backfill_partial_failure_exits_zero(monkeypatch, tmp_path, capsys):
     conn = connect(str(db))
     n = conn.execute("SELECT count(*) AS n FROM forecast_accuracy").fetchone()["n"]
     conn.close()
-    assert n == len(STATIONS) - 1
+    # fail_city contributes 0 rows; each passing city contributes 3 (leads 1, 2, 3)
+    assert n == (len(STATIONS) - 1) * 3
 
 
 def test_snapshot_command_writes_and_reports(monkeypatch, tmp_path, capsys):
@@ -389,6 +445,12 @@ def test_datastore_prefers_database_url(monkeypatch):
 
 
 class _DummyClient:
+    def get(self, *args, **kwargs):
+        # No real HTTP in unit tests. Kalshi discovery runs in every _run and hits
+        # this; raising a transport error exercises its graceful skip so run tests
+        # that do not stub discover_kalshi_markets simply get an empty Kalshi venue.
+        raise httpx.ConnectError("dummy client makes no real requests")
+
     def close(self):
         pass
 
@@ -429,6 +491,60 @@ def _precip_market_and_set():
         n_clim_days=18,
     )
     return market, fs
+
+
+def test_run_routes_kalshi_precip_market(monkeypatch, tmp_path, capsys):
+    from rainmaker.config import KALSHI_PRECIP_STATIONS
+    from rainmaker.forecasts.precip import PrecipForecastSet
+    from rainmaker.kalshi.precip_markets import parse_kalshi_precip_event
+
+    rule = (
+        "If the total precipitation at Central Park, New York City in Jun 2026 is "
+        "strictly greater than 4 inches, then the market resolves to Yes."
+    )
+    event_markets = [
+        {
+            "event_ticker": "KXRAINNYCM-26JUN",
+            "ticker": "KXRAINNYCM-26JUN-4",
+            "strike_type": "greater",
+            "floor_strike": 4,
+            "subtitle": "greater than 4in",
+            "yes_bid_dollars": "0.1000",
+            "yes_ask_dollars": "0.1200",
+            "no_ask_dollars": "0.8800",
+            "last_price_dollars": "0.1100",
+            "rules_primary": rule,
+        }
+    ]
+    market = parse_kalshi_precip_event("NYC", KALSHI_PRECIP_STATIONS["NYC"], event_markets)
+    fs = PrecipForecastSet(
+        target=market.target,
+        mean=2.5,
+        var=0.6,
+        coverage=[
+            SourceCoverage(source="open-meteo", ok=True, n_samples=40),
+            SourceCoverage(source="nws", ok=True, n_samples=3),
+        ],
+        n_observed_days=5,
+        n_forecast_days=7,
+        n_clim_days=18,
+    )
+    monkeypatch.setattr(cli, "discover_markets", lambda client: [])
+    monkeypatch.setattr(cli, "discover_kalshi_markets", lambda client: [])
+    monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
+    monkeypatch.setattr(cli, "discover_kalshi_precip_markets", lambda client: [market])
+    monkeypatch.setattr(cli, "_precip_forecast_for", lambda target, today, client: fs)
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 6))
+    db = tmp_path / "t.db"
+
+    cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(db)])
+
+    out = capsys.readouterr().out
+    assert "Central Park" in out and "PRCP" in out  # Kalshi rain reached the report
+    conn = connect(str(db))
+    assert count_rows(conn, "predictions") >= 1
+    conn.close()
 
 
 def test_run_routes_precip_market(monkeypatch, tmp_path, capsys):

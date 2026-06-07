@@ -10,12 +10,16 @@ import pytest
 from rainmaker.backfill import (
     HISTORICAL_FORECAST_URL,
     NCEI_URL,
+    PREVIOUS_RUNS_URL,
     build_pairs,
     fetch_actuals,
     fetch_historical_forecasts,
+    fetch_historical_point_forecasts,
     fetch_monthly_precip,
     run_backfill,
+    run_backfill_accuracy,
 )
+from rainmaker.cli import _backfill
 from rainmaker.config import STATIONS
 from rainmaker.probability.calibration import CalibrationPair
 from rainmaker.probability.distribution import Gaussian
@@ -166,3 +170,97 @@ def test_run_backfill_tmin_pairs_min_forecast_with_tmin_actual(httpx_mock):
     assert cal.variable == "TMIN"
     assert cal.n_samples == 2
     assert acc.n == 2
+
+
+def _previous_runs_fixture() -> dict[str, Any]:
+    return json.loads((FIXTURES / "openmeteo_previous_runs_klga.json").read_text())
+
+
+def test_fetch_historical_point_forecasts_reduces_hourly_to_daily_mean(httpx_mock):
+    httpx_mock.add_response(
+        url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
+    )
+    with httpx.Client() as client:
+        point = fetch_historical_point_forecasts(
+            KLGA, (2, 3), date(2026, 3, 1), date(2026, 3, 2), client
+        )
+    assert point[2] == {
+        date(2026, 3, 1): pytest.approx(49.0),
+        date(2026, 3, 2): pytest.approx(37.0),
+    }
+    assert point[3] == {
+        date(2026, 3, 1): pytest.approx(45.0),
+        date(2026, 3, 2): pytest.approx(33.5),
+    }
+    req = httpx_mock.get_requests()[0]
+    assert "hourly=temperature_2m_previous_day2" in str(req.url)
+    assert "previous_day3" in str(req.url)
+    assert "models=" in str(req.url)
+
+
+def test_run_backfill_accuracy_scores_each_lead(httpx_mock):
+    httpx_mock.add_response(
+        url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
+    )
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    with httpx.Client() as client:
+        accs = run_backfill_accuracy(
+            KLGA, "TMAX", (2, 3), date(2026, 3, 1), date(2026, 3, 2), client
+        )
+    assert set(accs) == {2, 3}
+    # lead 2: mu 49.0 vs 43 (+6), 37.0 vs 34 (+3) -> bias 4.5, mae 4.5
+    assert accs[2].n == 2
+    assert accs[2].bias_f == pytest.approx(4.5)
+    assert accs[2].mae_f == pytest.approx(4.5)
+    # lead 3: mu 45.0 vs 43 (+2), 33.5 vs 34 (-0.5) -> bias 0.75, mae 1.25
+    assert accs[3].n == 2
+    assert accs[3].bias_f == pytest.approx(0.75)
+    assert accs[3].mae_f == pytest.approx(1.25)
+
+
+def test_fetch_historical_point_forecasts_uses_min_for_tmin(httpx_mock):
+    data = {
+        "hourly": {
+            "time": ["2026-03-01T06:00", "2026-03-01T12:00"],
+            "temperature_2m_previous_day2_gfs_seamless": [30.0, 41.0],
+            "temperature_2m_previous_day2_ecmwf_ifs025": [32.0, 39.0],
+        }
+    }
+    httpx_mock.add_response(url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=data)
+    with httpx.Client() as client:
+        point = fetch_historical_point_forecasts(
+            KLGA, (2,), date(2026, 3, 1), date(2026, 3, 1), client, "TMIN"
+        )
+    # min reduction: gfs min 30, ecmwf min 32 -> mean 31.0
+    assert point[2] == {date(2026, 3, 1): pytest.approx(31.0)}
+    assert "daily=" not in str(httpx_mock.get_requests()[0].url)
+
+
+def test_backfill_cli_saves_a_backtest_row_per_lead(httpx_mock, tmp_path, monkeypatch):
+    import rainmaker.cli as cli
+
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+    )
+    httpx_mock.add_response(
+        url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
+    )
+    # NCEI is hit twice: once for lead 1 (run_backfill), once for leads 2-3 (run_backfill_accuracy)
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 3, 6))
+    db = str(tmp_path / "t.db")
+
+    _backfill("NYC", "TMAX", 5, (1, 2, 3), db)
+
+    from rainmaker.store.db import connect
+
+    conn = connect(db)
+    rows = conn.execute(
+        "SELECT lead_time, kind, n FROM forecast_accuracy "
+        "WHERE station = 'KLGA' AND variable = 'TMAX' ORDER BY lead_time"
+    ).fetchall()
+    conn.close()
+    leads = sorted(r[0] for r in rows)
+    assert leads == [1, 2, 3]
+    assert all(r[1] == "backtest" for r in rows)

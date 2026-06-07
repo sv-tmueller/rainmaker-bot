@@ -1,7 +1,14 @@
 import zoneinfo
 from datetime import date
 
-from rainmaker.config import PRECIP_STATIONS, STATIONS, build_target
+from rainmaker.config import (
+    KALSHI_HIGH_SERIES,
+    KALSHI_LOW_SERIES,
+    KALSHI_STATIONS,
+    PRECIP_STATIONS,
+    STATIONS,
+    build_target,
+)
 
 
 def test_nyc_station_resolves_to_klga():
@@ -86,3 +93,19 @@ def test_every_precip_station_is_valid():
         assert -180 <= s.lon <= 180
         assert s.ghcnd_id.startswith("US")
         zoneinfo.ZoneInfo(s.timezone)  # raises if the timezone is invalid
+
+
+def test_kalshi_registry_aligned():
+    # every city with a series ticker has a settlement station and vice versa, and
+    # high and low temp cover the same cities (they share the per-city CLI station)
+    assert set(KALSHI_HIGH_SERIES) == set(KALSHI_STATIONS)
+    assert set(KALSHI_LOW_SERIES) == set(KALSHI_STATIONS)
+    # the two cities that differ from the Polymarket temperature stations
+    assert KALSHI_STATIONS["NYC"].icao == "KNYC"  # Central Park, not LaGuardia
+    assert KALSHI_STATIONS["Chicago"].icao == "KMDW"  # Midway, not O'Hare
+    # every station carries the rule-text guard phrase and a resolution-source URL
+    for city, st in KALSHI_STATIONS.items():
+        assert st.name, city
+        assert st.wunderground_url.startswith("https://"), city
+        assert st.ghcnd_id.startswith("USW"), city
+        zoneinfo.ZoneInfo(st.timezone)
