@@ -106,3 +106,40 @@ def test_parse_event_bad_ticker_date_raises():
         mk["event_ticker"] = "KXHIGHNY-NODATE"
     with pytest.raises(ValueError, match="date token"):
         parse_kalshi_event("NYC", KALSHI_STATIONS["NYC"], markets)
+
+
+def _low_event_markets():
+    # low-temp rules name only the city ("at New York City"), not the station
+    rule = (
+        "If the minimum temperature recorded at New York City for Jun 8, 2026, is "
+        "greater than 67 fahrenheit according to the National Weather Service's "
+        "Climatological Report (Daily), then Yes."
+    )
+    return [
+        {
+            "event_ticker": "KXLOWTNYC-26JUN08",
+            "ticker": "KXLOWTNYC-26JUN08-T67",
+            "strike_type": "greater",
+            "floor_strike": 67,
+            "subtitle": "above 67",
+            "yes_bid_dollars": "0.4000",
+            "yes_ask_dollars": "0.4200",
+            "no_ask_dollars": "0.6000",
+            "last_price_dollars": "0.4100",
+            "rules_primary": rule,
+        }
+    ]
+
+
+def test_parse_low_temp_event_reuses_cli_station():
+    m = parse_kalshi_event("NYC", KALSHI_STATIONS["NYC"], _low_event_markets(), variable="TMIN")
+    assert m.target.variable == "TMIN"
+    assert m.target.station.icao == "KNYC"  # same per-city CLI station as high temp
+    assert m.target.local_date == date(2026, 6, 8)
+    assert "lowest temperature" in m.title
+
+
+def test_parse_event_variable_mismatch_raises():
+    # a high-temp ladder parsed as TMIN must be rejected by the quantity guard
+    with pytest.raises(ValueError, match="not a TMIN"):
+        parse_kalshi_event("NYC", KALSHI_STATIONS["NYC"], _event_markets(), variable="TMIN")

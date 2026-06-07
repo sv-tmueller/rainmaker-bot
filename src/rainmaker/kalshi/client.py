@@ -4,7 +4,13 @@ from typing import Any
 
 import httpx
 
-from rainmaker.config import KALSHI_API_BASE, KALSHI_HIGH_SERIES, KALSHI_STATIONS
+from rainmaker.config import (
+    KALSHI_API_BASE,
+    KALSHI_HIGH_SERIES,
+    KALSHI_LOW_SERIES,
+    KALSHI_STATIONS,
+    Variable,
+)
 from rainmaker.kalshi.markets import parse_kalshi_event
 from rainmaker.polymarket.markets import Market
 
@@ -29,15 +35,16 @@ def _fetch_open_markets(
     return out
 
 
-def discover_kalshi_markets(client: httpx.Client) -> list[Market]:
-    """Discover live Kalshi daily high-temp markets for the configured cities.
+def _discover_temp(
+    client: httpx.Client, series_map: dict[str, str], variable: Variable
+) -> list[Market]:
+    """Discover the temperature markets for one variable across the configured cities.
 
-    Read-only. Kalshi is the secondary venue: an HTTP error on a series logs a
-    warning and yields no markets for it so the run continues on Polymarket. A
-    single event that fails to parse is skipped with a warning.
+    A per-series HTTP error logs a warning and skips that series (Kalshi is the
+    secondary venue); a single event that fails to parse is skipped with a warning.
     """
     markets: list[Market] = []
-    for city, series in KALSHI_HIGH_SERIES.items():
+    for city, series in series_map.items():
         station = KALSHI_STATIONS[city]
         try:
             raw = _fetch_open_markets(client, series)
@@ -49,7 +56,18 @@ def discover_kalshi_markets(client: httpx.Client) -> list[Market]:
             by_event[m["event_ticker"]].append(m)
         for event_ticker, event_markets in by_event.items():
             try:
-                markets.append(parse_kalshi_event(city, station, event_markets))
+                markets.append(parse_kalshi_event(city, station, event_markets, variable=variable))
             except ValueError as exc:
                 print(f"skipping Kalshi event {event_ticker}: {exc}", file=sys.stderr)
     return markets
+
+
+def discover_kalshi_markets(client: httpx.Client) -> list[Market]:
+    """Discover live Kalshi daily high- and low-temperature markets (read-only).
+
+    Both settle on the per-city NWS Climatological Report (Daily). Kalshi is the
+    secondary venue, so any outage degrades to fewer markets, never an aborted run.
+    """
+    return _discover_temp(client, KALSHI_HIGH_SERIES, "TMAX") + _discover_temp(
+        client, KALSHI_LOW_SERIES, "TMIN"
+    )

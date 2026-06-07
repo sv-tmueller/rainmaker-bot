@@ -1,4 +1,4 @@
-"""Parse Kalshi daily high-temp markets into the shared Market/Bucket types.
+"""Parse Kalshi daily temperature markets into the shared Market/Bucket types.
 
 Kalshi exposes one binary strike per market (strike_type greater/less/between
 with floor_strike/cap_strike), grouped under an event ladder. We map each strike
@@ -11,8 +11,13 @@ import re
 from datetime import date
 from typing import Any
 
-from rainmaker.config import Station, Target
+from rainmaker.config import Station, Target, Variable
 from rainmaker.polymarket.markets import Bucket, BucketKind, Market
+
+# The phrase each daily-temperature rule uses for its quantity. High-temp rules
+# also name the exact station ("Central Park, New York"); low-temp rules name only
+# the city, so TMIN guards on the shared NWS resolution source instead.
+_VAR_PHRASE: dict[Variable, str] = {"TMAX": "highest temperature", "TMIN": "minimum temperature"}
 
 _MONTHS = {
     "JAN": 1,
@@ -87,28 +92,38 @@ def _settlement_date(event_ticker: str) -> date:
     return date(2000 + int(yy), month, int(dd))
 
 
-def parse_kalshi_event(city: str, station: Station, event_markets: list[dict[str, Any]]) -> Market:
-    """Build a Market from the strikes of one Kalshi high-temp event ladder.
+def parse_kalshi_event(
+    city: str, station: Station, event_markets: list[dict[str, Any]], *, variable: Variable = "TMAX"
+) -> Market:
+    """Build a Market from the strikes of one Kalshi daily-temperature event ladder.
 
-    Guards that the rule text names the expected settlement station, mirroring the
-    Polymarket parser's ICAO guard. Raises ValueError on any inconsistency so one
-    bad event is skipped upstream rather than silently mispriced.
+    Guards that the rule text matches the expected quantity, and for high temp that
+    it names the settlement station (catching the Central Park/Midway trap). Low-temp
+    rules name only the city, so TMIN relies on the confirmed series->station map and
+    guards on the shared NWS resolution source. Raises ValueError on any inconsistency
+    so one bad event is skipped upstream rather than silently mispriced.
     """
     if not event_markets:
         raise ValueError(f"empty Kalshi event for {city}")
     event_ticker = event_markets[0]["event_ticker"]
     rules = event_markets[0].get("rules_primary", "")
-    if station.name not in rules:
-        raise ValueError(
-            f"resolution station {station.name!r} not named in event {event_ticker} rules"
-        )
+    if _VAR_PHRASE[variable] not in rules.lower():
+        raise ValueError(f"event {event_ticker} rules are not a {variable} market")
+    if variable == "TMAX":
+        if station.name not in rules:
+            raise ValueError(
+                f"resolution station {station.name!r} not named in event {event_ticker} rules"
+            )
+    elif "Climatological Report" not in rules:
+        raise ValueError(f"event {event_ticker} rules name no NWS Climatological Report source")
     local_date = _settlement_date(event_ticker)
-    target = Target(station=station, variable="TMAX", local_date=local_date)
+    target = Target(station=station, variable=variable, local_date=local_date)
     buckets = [parse_kalshi_bucket(m) for m in event_markets]
+    descriptor = "highest" if variable == "TMAX" else "lowest"
     return Market(
         id=event_ticker,
         slug=event_ticker,
-        title=f"Kalshi: highest temperature in {city} on {local_date.isoformat()}",
+        title=f"Kalshi: {descriptor} temperature in {city} on {local_date.isoformat()}",
         target=target,
         buckets=buckets,
     )
