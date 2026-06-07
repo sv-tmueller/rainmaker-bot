@@ -30,6 +30,7 @@ from rainmaker.probability.distribution import Gaussian
 
 NCEI_URL = "https://www.ncei.noaa.gov/access/services/data/v1"
 HISTORICAL_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
+PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 
 
 def fetch_actuals(
@@ -130,6 +131,59 @@ def fetch_historical_forecasts(
         out[date.fromisoformat(iso)] = Gaussian(
             mu=statistics.fmean(values), sigma=max(statistics.stdev(values), 1e-6)
         )
+    return out
+
+
+def fetch_historical_point_forecasts(
+    station: Station,
+    leads: tuple[int, ...],
+    start: date,
+    end: date,
+    client: httpx.Client,
+    variable: str = "TMAX",
+) -> dict[int, dict[date, float]]:
+    """Per-lead, per-date multi-model-mean daily extreme from the Previous Runs API.
+
+    Each value is the daily max (TMAX) or min (TMIN) of the hourly temperature the
+    models forecast `lead` days before the valid day, averaged across the models
+    that reported it. `previous_dayN` is an hourly-only suffix, so the daily extreme
+    is reduced here. Raises on HTTP error.
+    """
+    fields = [f"temperature_2m_previous_day{lead}" for lead in leads]
+    resp = client.get(
+        PREVIOUS_RUNS_URL,
+        params={
+            "latitude": str(station.lat),
+            "longitude": str(station.lon),
+            "hourly": ",".join(fields),
+            "temperature_unit": "fahrenheit",
+            "timezone": station.timezone,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "models": ",".join(OPENMETEO_MODELS),
+        },
+    )
+    resp.raise_for_status()
+    hourly: dict[str, Any] = resp.json()["hourly"]
+    times = hourly["time"]
+    reduce = max if variable == "TMAX" else min
+    out: dict[int, dict[date, float]] = {}
+    for lead in leads:
+        per_model_daily: dict[date, list[float]] = {}
+        for model in OPENMETEO_MODELS:
+            values = hourly.get(f"temperature_2m_previous_day{lead}_{model}")
+            if not values:
+                continue  # this model did not report at this lead
+            by_day: dict[date, list[float]] = {}
+            for iso, value in zip(times, values, strict=False):
+                if value is None:
+                    continue
+                by_day.setdefault(date.fromisoformat(iso[:10]), []).append(value)
+            for day, hours in by_day.items():
+                per_model_daily.setdefault(day, []).append(reduce(hours))
+        out[lead] = {
+            day: statistics.fmean(extremes) for day, extremes in per_model_daily.items()
+        }
     return out
 
 
