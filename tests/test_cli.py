@@ -188,7 +188,11 @@ def test_backfill_all_covers_every_city(monkeypatch, tmp_path):
         )
         return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
 
+    def _fake_acc(station, variable, leads, start, end, client):
+        return {lead: Accuracy(n=42, mae_f=2.0, bias_f=0.0) for lead in leads}
+
     monkeypatch.setattr(cli, "run_backfill", _fake)
+    monkeypatch.setattr(cli, "run_backfill_accuracy", _fake_acc)
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
     db = tmp_path / "t.db"
 
@@ -197,7 +201,8 @@ def test_backfill_all_covers_every_city(monkeypatch, tmp_path):
     conn = connect(str(db))
     n = conn.execute("SELECT count(*) AS n FROM forecast_accuracy").fetchone()["n"]
     conn.close()
-    assert n == len(STATIONS)
+    # 3 leads (1, 2, 3) per city
+    assert n == len(STATIONS) * 3
 
 
 def test_backfill_exits_nonzero_when_all_cities_fail(monkeypatch, tmp_path, capsys):
@@ -205,6 +210,7 @@ def test_backfill_exits_nonzero_when_all_cities_fail(monkeypatch, tmp_path, caps
         raise httpx.ConnectError("down")
 
     monkeypatch.setattr(cli, "run_backfill", _boom)
+    monkeypatch.setattr(cli, "run_backfill_accuracy", _boom)
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
 
     with pytest.raises(SystemExit) as exc:
@@ -232,7 +238,13 @@ def test_backfill_partial_failure_exits_zero(monkeypatch, tmp_path, capsys):
         )
         return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
 
+    def _mixed_acc(station, variable, leads, start, end, client):
+        if station.icao == STATIONS[fail_city].icao:
+            raise httpx.ConnectError("down")
+        return {lead: Accuracy(n=42, mae_f=2.0, bias_f=0.0) for lead in leads}
+
     monkeypatch.setattr(cli, "run_backfill", _mixed)
+    monkeypatch.setattr(cli, "run_backfill_accuracy", _mixed_acc)
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
     db = tmp_path / "t.db"
 
@@ -243,7 +255,8 @@ def test_backfill_partial_failure_exits_zero(monkeypatch, tmp_path, capsys):
     conn = connect(str(db))
     n = conn.execute("SELECT count(*) AS n FROM forecast_accuracy").fetchone()["n"]
     conn.close()
-    assert n == len(STATIONS) - 1
+    # fail_city contributes 0 rows; each passing city contributes 3 (leads 1, 2, 3)
+    assert n == (len(STATIONS) - 1) * 3
 
 
 def test_snapshot_command_writes_and_reports(monkeypatch, tmp_path, capsys):

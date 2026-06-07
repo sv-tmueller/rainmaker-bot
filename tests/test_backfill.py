@@ -19,6 +19,7 @@ from rainmaker.backfill import (
     run_backfill,
     run_backfill_accuracy,
 )
+from rainmaker.cli import _backfill
 from rainmaker.config import STATIONS
 from rainmaker.probability.calibration import CalibrationPair
 from rainmaker.probability.distribution import Gaussian
@@ -233,3 +234,33 @@ def test_fetch_historical_point_forecasts_uses_min_for_tmin(httpx_mock):
     # min reduction: gfs min 30, ecmwf min 32 -> mean 31.0
     assert point[2] == {date(2026, 3, 1): pytest.approx(31.0)}
     assert "daily=" not in str(httpx_mock.get_requests()[0].url)
+
+
+def test_backfill_cli_saves_a_backtest_row_per_lead(httpx_mock, tmp_path, monkeypatch):
+    import rainmaker.cli as cli
+
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+    )
+    httpx_mock.add_response(
+        url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
+    )
+    # NCEI is hit twice: once for lead 1 (run_backfill), once for leads 2-3 (run_backfill_accuracy)
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 3, 6))
+    db = str(tmp_path / "t.db")
+
+    _backfill("NYC", "TMAX", 5, (1, 2, 3), db)
+
+    from rainmaker.store.db import connect
+
+    conn = connect(db)
+    rows = conn.execute(
+        "SELECT lead_time, kind, n FROM forecast_accuracy "
+        "WHERE station = 'KLGA' AND variable = 'TMAX' ORDER BY lead_time"
+    ).fetchall()
+    conn.close()
+    leads = sorted(r[0] for r in rows)
+    assert leads == [1, 2, 3]
+    assert all(r[1] == "backtest" for r in rows)

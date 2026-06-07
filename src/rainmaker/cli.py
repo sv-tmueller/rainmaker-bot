@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 from pydantic import ValidationError
 
-from rainmaker.backfill import run_backfill
+from rainmaker.backfill import run_backfill, run_backfill_accuracy
 from rainmaker.backtest import BacktestResult, backtest_real, backtest_synthetic, render_report
 from rainmaker.config import (
     CONFIDENCE_FLOOR,
@@ -181,7 +181,7 @@ def _run(reports_dir: str, db_path: str) -> None:
         conn.close()
 
 
-def _backfill(city: str, variable: str, days: int, lead: int, db_path: str) -> None:
+def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_path: str) -> None:
     cities = sorted(STATIONS) if city == "all" else [city]
     end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
     start = end - timedelta(days=days)
@@ -189,36 +189,54 @@ def _backfill(city: str, variable: str, days: int, lead: int, db_path: str) -> N
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
     client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=60.0)
+    label = _db_label(db_path)
     succeeded = 0
     try:
         init_schema(conn)
         for name in cities:
             station = STATIONS[name]
-            try:
-                cal, acc = run_backfill(station, variable, lead, start, end, client)
-            except (httpx.HTTPError, ValueError) as exc:
-                if isinstance(exc, ValidationError):
-                    raise  # schema bug, not a data gap; fail loud
-                print(f"{name}: backfill failed: {exc}", file=sys.stderr)
-                continue
             now = _now_iso()
-            save_calibration(conn, cal, updated_at=now)
-            save_accuracy(
-                conn,
-                station=cal.station,
-                city=station.city,
-                variable=cal.variable,
-                lead_time=cal.lead_time,
-                kind="backtest",
-                accuracy=acc,
-                updated_at=now,
-            )
-            succeeded += 1
-            print(
-                f"calibrated {cal.station} {cal.variable} lead={cal.lead_time}: "
-                f"bias={cal.bias:+.2f}F spread_scale={cal.spread_scale:.2f} "
-                f"mae={acc.mae_f:.2f}F n={cal.n_samples} -> {_db_label(db_path)}"
-            )
+            city_ok = False
+            if 1 in leads:  # lead 1 keeps the calibration + accuracy fit
+                try:
+                    cal, acc = run_backfill(station, variable, 1, start, end, client)
+                except (httpx.HTTPError, ValueError) as exc:
+                    if isinstance(exc, ValidationError):
+                        raise  # schema bug, not a data gap; fail loud
+                    print(f"{name}: backfill failed: {exc}", file=sys.stderr)
+                else:
+                    save_calibration(conn, cal, updated_at=now)
+                    save_accuracy(
+                        conn, station=cal.station, city=station.city, variable=cal.variable,
+                        lead_time=cal.lead_time, kind="backtest", accuracy=acc, updated_at=now,
+                    )
+                    print(
+                        f"calibrated {cal.station} {cal.variable} lead={cal.lead_time}: "
+                        f"bias={cal.bias:+.2f}F spread_scale={cal.spread_scale:.2f} "
+                        f"mae={acc.mae_f:.2f}F n={cal.n_samples} -> {label}"
+                    )
+                    city_ok = True
+            higher = tuple(lead for lead in leads if lead != 1)
+            if higher:  # higher leads are accuracy-only (no calibration fit)
+                try:
+                    accs = run_backfill_accuracy(station, variable, higher, start, end, client)
+                except (httpx.HTTPError, ValueError) as exc:
+                    if isinstance(exc, ValidationError):
+                        raise
+                    print(f"{name}: accuracy backfill failed: {exc}", file=sys.stderr)
+                else:
+                    for lead, acc in sorted(accs.items()):
+                        save_accuracy(
+                            conn, station=station.icao, city=station.city, variable=variable,
+                            lead_time=lead, kind="backtest", accuracy=acc, updated_at=now,
+                        )
+                        print(
+                            f"accuracy {station.icao} {variable} lead={lead}: "
+                            f"mae={acc.mae_f:.2f}F bias={acc.bias_f:+.2f}F n={acc.n} -> {label}"
+                        )
+                        city_ok = True
+            if city_ok:
+                succeeded += 1
     finally:
         client.close()
         conn.close()
@@ -391,7 +409,9 @@ def main(argv: list[str] | None = None) -> None:
     backfill.add_argument("--variable", default="TMAX")
     backfill.add_argument("--days", type=int, default=60, help="history window length in days")
     backfill.add_argument(
-        "--lead", type=int, default=1, help="forecast lead time the archive represents"
+        "--leads",
+        default="1,2,3",
+        help="comma-separated leads in days; lead 1 fits calibration, higher are accuracy-only",
     )
     backfill.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
@@ -449,7 +469,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "run":
         _run(args.reports_dir, db)
     elif args.command == "backfill":
-        _backfill(args.city, args.variable, args.days, args.lead, db)
+        _backfill(args.city, args.variable, args.days, _parse_leads(args.leads), db)
     elif args.command == "settle":
         _settle(db)
     elif args.command == "prune":
