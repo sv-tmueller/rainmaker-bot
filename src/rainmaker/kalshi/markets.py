@@ -12,7 +12,7 @@ from datetime import date
 from typing import Any
 
 from rainmaker.config import Station, Target
-from rainmaker.polymarket.markets import Bucket, Market
+from rainmaker.polymarket.markets import Bucket, BucketKind, Market
 
 _MONTHS = {
     "JAN": 1,
@@ -33,8 +33,8 @@ _TICKER_DATE_RE = re.compile(r"-(\d{2})([A-Z]{3})(\d{2})(?:-|$)")
 
 
 def _price(market: dict[str, Any], key: str) -> float | None:
-    raw = market.get(key)
-    if raw in (None, ""):
+    raw: Any = market.get(key)
+    if raw is None or raw == "":
         return None
     val = float(raw)
     return val if val > 0 else None
@@ -42,14 +42,18 @@ def _price(market: dict[str, Any], key: str) -> float | None:
 
 def parse_kalshi_bucket(market: dict[str, Any]) -> Bucket:
     strike_type = market["strike_type"]
-    floor = market.get("floor_strike")
-    cap = market.get("cap_strike")
+    floor: Any = market.get("floor_strike")
+    cap: Any = market.get("cap_strike")
+    kind: BucketKind
+    lo: int | None = None
+    hi: int | None = None
+    threshold: int | None = None
     if strike_type == "greater":
-        kind, lo, hi, threshold = "above", None, None, int(floor)
+        kind, threshold = "above", int(floor)
     elif strike_type == "less":
-        kind, lo, hi, threshold = "below", None, None, int(cap)
+        kind, threshold = "below", int(cap)
     elif strike_type == "between":
-        kind, lo, hi, threshold = "range", int(floor), int(cap), None
+        kind, lo, hi = "range", int(floor), int(cap)
     else:
         raise ValueError(f"unknown Kalshi strike_type: {strike_type!r}")
     best_ask = _price(market, "yes_ask_dollars")
@@ -83,9 +87,7 @@ def _settlement_date(event_ticker: str) -> date:
     return date(2000 + int(yy), month, int(dd))
 
 
-def parse_kalshi_event(
-    city: str, station: Station, event_markets: list[dict[str, Any]]
-) -> Market:
+def parse_kalshi_event(city: str, station: Station, event_markets: list[dict[str, Any]]) -> Market:
     """Build a Market from the strikes of one Kalshi high-temp event ladder.
 
     Guards that the rule text names the expected settlement station, mirroring the

@@ -145,6 +145,9 @@ src/rainmaker/
     markets.py        event JSON -> Market (target + buckets, ICAO guard)
     precip_markets.py monthly-precip event JSON -> PrecipMonthlyMarket (inch brackets)
     prices.py         CLOB price-history client (read-only) + snap to a timestamp
+  kalshi/
+    client.py         Kalshi discovery (read-only): daily high-temp markets, secondary venue
+    markets.py        Kalshi event ladder -> Market (reuses Bucket/Target; station-name guard)
   store/
     db.py             dual-backend store (SQLite default, Postgres via DSN)
     migrate.py        forward schema migrations (schema_migrations)

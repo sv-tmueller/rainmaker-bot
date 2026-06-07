@@ -7,9 +7,7 @@ import httpx
 from rainmaker.config import KALSHI_API_BASE, KALSHI_HIGH_SERIES
 from rainmaker.kalshi.client import discover_kalshi_markets
 
-FIXTURE = json.loads(
-    (Path(__file__).parent / "fixtures" / "kalshi_high_temp_nyc.json").read_text()
-)
+FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "kalshi_high_temp_nyc.json").read_text())
 _URL = re.compile(re.escape(KALSHI_API_BASE))
 _EMPTY = {"cursor": "", "markets": []}
 
