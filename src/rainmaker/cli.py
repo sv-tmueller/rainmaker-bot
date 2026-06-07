@@ -207,8 +207,14 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
                 else:
                     save_calibration(conn, cal, updated_at=now)
                     save_accuracy(
-                        conn, station=cal.station, city=station.city, variable=cal.variable,
-                        lead_time=cal.lead_time, kind="backtest", accuracy=acc, updated_at=now,
+                        conn,
+                        station=cal.station,
+                        city=station.city,
+                        variable=cal.variable,
+                        lead_time=cal.lead_time,
+                        kind="backtest",
+                        accuracy=acc,
+                        updated_at=now,
                     )
                     print(
                         f"calibrated {cal.station} {cal.variable} lead={cal.lead_time}: "
@@ -222,13 +228,19 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
                     accs = run_backfill_accuracy(station, variable, higher, start, end, client)
                 except (httpx.HTTPError, ValueError) as exc:
                     if isinstance(exc, ValidationError):
-                        raise
+                        raise  # schema bug, not a data gap; fail loud
                     print(f"{name}: accuracy backfill failed: {exc}", file=sys.stderr)
                 else:
                     for lead, acc in sorted(accs.items()):
                         save_accuracy(
-                            conn, station=station.icao, city=station.city, variable=variable,
-                            lead_time=lead, kind="backtest", accuracy=acc, updated_at=now,
+                            conn,
+                            station=station.icao,
+                            city=station.city,
+                            variable=variable,
+                            lead_time=lead,
+                            kind="backtest",
+                            accuracy=acc,
+                            updated_at=now,
                         )
                         print(
                             f"accuracy {station.icao} {variable} lead={lead}: "
@@ -411,7 +423,9 @@ def main(argv: list[str] | None = None) -> None:
     backfill.add_argument(
         "--leads",
         default="1,2,3",
-        help="comma-separated leads in days; lead 1 fits calibration, higher are accuracy-only",
+        help=(
+            "comma-separated leads in days; lead 1 fits calibration, higher leads are accuracy-only"
+        ),
     )
     backfill.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
