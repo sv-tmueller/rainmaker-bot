@@ -115,6 +115,25 @@ def test_run_skips_when_variable_unsupported(monkeypatch, tmp_path, capsys):
     assert "TMIN" in out
 
 
+def test_run_skips_settled_market(monkeypatch, tmp_path, capsys):
+    # _market's day is 2026-05-31; today is the next day, so the market is past
+    # (lead -1) - already settled, not bettable, must not be recommended/recorded.
+    monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMAX")])
+    monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
+    monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set())
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 1))
+
+    db = tmp_path / "t.db"
+    cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(db)])
+
+    out = capsys.readouterr().out
+    assert "skipped" in out.lower() and "settled" in out.lower()
+    conn = connect(str(db))
+    assert count_rows(conn, "predictions") == 0  # settled market not evaluated
+    conn.close()
+
+
 def test_run_aborts_when_polymarket_down(monkeypatch, tmp_path):
     def _boom(client):
         raise httpx.HTTPStatusError(
