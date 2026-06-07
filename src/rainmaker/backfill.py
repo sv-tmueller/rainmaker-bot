@@ -181,9 +181,7 @@ def fetch_historical_point_forecasts(
                 by_day.setdefault(date.fromisoformat(iso[:10]), []).append(value)
             for day, hours in by_day.items():
                 per_model_daily.setdefault(day, []).append(reduce(hours))
-        out[lead] = {
-            day: statistics.fmean(extremes) for day, extremes in per_model_daily.items()
-        }
+        out[lead] = {day: statistics.fmean(extremes) for day, extremes in per_model_daily.items()}
     return out
 
 
