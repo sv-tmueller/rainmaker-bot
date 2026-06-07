@@ -267,6 +267,37 @@ KALSHI_STATIONS: dict[str, Station] = {
     ),
 }
 
+# Kalshi monthly rain series and their settlement stations. Like the temperature
+# markets they settle on the per-city NWS Climatological Report, named in the rule
+# text (NYC = Central Park, Chicago = CLIMDW / Midway). resolution_name is the
+# substring the parser guards on. Starts with the two cities whose GHCND ids are
+# confirmed; more follow once their station ids are verified against NCEI.
+KALSHI_RAIN_SERIES: dict[str, str] = {
+    "NYC": "KXRAINNYCM",
+    "Chicago": "KXRAINCHIM",
+}
+
+KALSHI_PRECIP_STATIONS: dict[str, PrecipStation] = {
+    "NYC": PrecipStation(
+        city="NYC",
+        resolution_name="Central Park",
+        name="Central Park",
+        lat=40.7790,
+        lon=-73.9692,
+        timezone="America/New_York",
+        ghcnd_id="USW00094728",  # confirmed in PRECIP_STATIONS (Central Park)
+    ),
+    "Chicago": PrecipStation(
+        city="Chicago",
+        resolution_name="CLIMDW",
+        name="Chicago Midway",
+        lat=41.7860,
+        lon=-87.7524,
+        timezone="America/Chicago",
+        ghcnd_id="USW00014819",  # TODO: confirm against NCEI GHCND before trusting settlement
+    ),
+}
+
 # Source config
 NWS_USER_AGENT = "rainmaker-bot (thomas.mueller@solvvision.de)"
 OPENMETEO_MODELS = [

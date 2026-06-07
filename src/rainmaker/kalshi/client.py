@@ -8,11 +8,15 @@ from rainmaker.config import (
     KALSHI_API_BASE,
     KALSHI_HIGH_SERIES,
     KALSHI_LOW_SERIES,
+    KALSHI_PRECIP_STATIONS,
+    KALSHI_RAIN_SERIES,
     KALSHI_STATIONS,
     Variable,
 )
 from rainmaker.kalshi.markets import parse_kalshi_event
+from rainmaker.kalshi.precip_markets import parse_kalshi_precip_event
 from rainmaker.polymarket.markets import Market
+from rainmaker.polymarket.precip_markets import PrecipMonthlyMarket
 
 
 def _fetch_open_markets(
@@ -35,26 +39,33 @@ def _fetch_open_markets(
     return out
 
 
+def _open_events(client: httpx.Client, series: str) -> dict[str, list[dict[str, Any]]] | None:
+    """One series' open markets grouped by event ticker; None on HTTP error.
+
+    Kalshi is the secondary venue, so an outage degrades to fewer markets (None
+    here, skipped by the caller) rather than aborting the run.
+    """
+    try:
+        raw = _fetch_open_markets(client, series)
+    except httpx.HTTPError as exc:
+        print(f"Kalshi unavailable for {series}, skipping: {exc}", file=sys.stderr)
+        return None
+    by_event: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for m in raw:
+        by_event[m["event_ticker"]].append(m)
+    return by_event
+
+
 def _discover_temp(
     client: httpx.Client, series_map: dict[str, str], variable: Variable
 ) -> list[Market]:
-    """Discover the temperature markets for one variable across the configured cities.
-
-    A per-series HTTP error logs a warning and skips that series (Kalshi is the
-    secondary venue); a single event that fails to parse is skipped with a warning.
-    """
     markets: list[Market] = []
     for city, series in series_map.items():
-        station = KALSHI_STATIONS[city]
-        try:
-            raw = _fetch_open_markets(client, series)
-        except httpx.HTTPError as exc:
-            print(f"Kalshi unavailable for {series}, skipping: {exc}", file=sys.stderr)
+        events = _open_events(client, series)
+        if events is None:
             continue
-        by_event: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for m in raw:
-            by_event[m["event_ticker"]].append(m)
-        for event_ticker, event_markets in by_event.items():
+        station = KALSHI_STATIONS[city]
+        for event_ticker, event_markets in events.items():
             try:
                 markets.append(parse_kalshi_event(city, station, event_markets, variable=variable))
             except ValueError as exc:
@@ -71,3 +82,23 @@ def discover_kalshi_markets(client: httpx.Client) -> list[Market]:
     return _discover_temp(client, KALSHI_HIGH_SERIES, "TMAX") + _discover_temp(
         client, KALSHI_LOW_SERIES, "TMIN"
     )
+
+
+def discover_kalshi_precip_markets(client: httpx.Client) -> list[PrecipMonthlyMarket]:
+    """Discover live Kalshi monthly rain markets (read-only).
+
+    Strike ladders on total monthly precipitation, settled on the per-city NWS
+    Climatological Report. The precip parallel of discover_kalshi_markets.
+    """
+    markets: list[PrecipMonthlyMarket] = []
+    for city, series in KALSHI_RAIN_SERIES.items():
+        events = _open_events(client, series)
+        if events is None:
+            continue
+        station = KALSHI_PRECIP_STATIONS[city]
+        for event_ticker, event_markets in events.items():
+            try:
+                markets.append(parse_kalshi_precip_event(city, station, event_markets))
+            except ValueError as exc:
+                print(f"skipping Kalshi precip event {event_ticker}: {exc}", file=sys.stderr)
+    return markets

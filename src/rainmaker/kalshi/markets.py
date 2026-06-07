@@ -45,6 +45,15 @@ def _price(market: dict[str, Any], key: str) -> float | None:
     return val if val > 0 else None
 
 
+def _yes_price(market: dict[str, Any]) -> float:
+    """The YES implied price: last trade, else the bid/ask mid, else 0."""
+    best_ask = _price(market, "yes_ask_dollars")
+    best_bid = _price(market, "yes_bid_dollars")
+    last = _price(market, "last_price_dollars")
+    mid = None if best_ask is None or best_bid is None else (best_ask + best_bid) / 2
+    return last if last is not None else (mid if mid is not None else 0.0)
+
+
 def parse_kalshi_bucket(market: dict[str, Any]) -> Bucket:
     strike_type = market["strike_type"]
     floor: Any = market.get("floor_strike")
@@ -61,11 +70,6 @@ def parse_kalshi_bucket(market: dict[str, Any]) -> Bucket:
         kind, lo, hi = "range", int(floor), int(cap)
     else:
         raise ValueError(f"unknown Kalshi strike_type: {strike_type!r}")
-    best_ask = _price(market, "yes_ask_dollars")
-    best_bid = _price(market, "yes_bid_dollars")
-    last = _price(market, "last_price_dollars")
-    mid = None if best_ask is None or best_bid is None else (best_ask + best_bid) / 2
-    yes_price = last if last is not None else (mid if mid is not None else 0.0)
     return Bucket(
         label=market.get("subtitle") or market["ticker"],
         kind=kind,
@@ -73,9 +77,9 @@ def parse_kalshi_bucket(market: dict[str, Any]) -> Bucket:
         hi=hi,
         threshold=threshold,
         yes_token_id=market["ticker"],
-        best_ask=best_ask,
-        best_bid=best_bid,
-        yes_price=yes_price,
+        best_ask=_price(market, "yes_ask_dollars"),
+        best_bid=_price(market, "yes_bid_dollars"),
+        yes_price=_yes_price(market),
         no_token_id="",
         no_ask=_price(market, "no_ask_dollars"),
     )

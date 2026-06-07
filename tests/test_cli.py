@@ -493,6 +493,60 @@ def _precip_market_and_set():
     return market, fs
 
 
+def test_run_routes_kalshi_precip_market(monkeypatch, tmp_path, capsys):
+    from rainmaker.config import KALSHI_PRECIP_STATIONS
+    from rainmaker.forecasts.precip import PrecipForecastSet
+    from rainmaker.kalshi.precip_markets import parse_kalshi_precip_event
+
+    rule = (
+        "If the total precipitation at Central Park, New York City in Jun 2026 is "
+        "strictly greater than 4 inches, then the market resolves to Yes."
+    )
+    event_markets = [
+        {
+            "event_ticker": "KXRAINNYCM-26JUN",
+            "ticker": "KXRAINNYCM-26JUN-4",
+            "strike_type": "greater",
+            "floor_strike": 4,
+            "subtitle": "greater than 4in",
+            "yes_bid_dollars": "0.1000",
+            "yes_ask_dollars": "0.1200",
+            "no_ask_dollars": "0.8800",
+            "last_price_dollars": "0.1100",
+            "rules_primary": rule,
+        }
+    ]
+    market = parse_kalshi_precip_event("NYC", KALSHI_PRECIP_STATIONS["NYC"], event_markets)
+    fs = PrecipForecastSet(
+        target=market.target,
+        mean=2.5,
+        var=0.6,
+        coverage=[
+            SourceCoverage(source="open-meteo", ok=True, n_samples=40),
+            SourceCoverage(source="nws", ok=True, n_samples=3),
+        ],
+        n_observed_days=5,
+        n_forecast_days=7,
+        n_clim_days=18,
+    )
+    monkeypatch.setattr(cli, "discover_markets", lambda client: [])
+    monkeypatch.setattr(cli, "discover_kalshi_markets", lambda client: [])
+    monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
+    monkeypatch.setattr(cli, "discover_kalshi_precip_markets", lambda client: [market])
+    monkeypatch.setattr(cli, "_precip_forecast_for", lambda target, today, client: fs)
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 6))
+    db = tmp_path / "t.db"
+
+    cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(db)])
+
+    out = capsys.readouterr().out
+    assert "Central Park" in out and "PRCP" in out  # Kalshi rain reached the report
+    conn = connect(str(db))
+    assert count_rows(conn, "predictions") >= 1
+    conn.close()
+
+
 def test_run_routes_precip_market(monkeypatch, tmp_path, capsys):
     market, fs = _precip_market_and_set()
     monkeypatch.setattr(cli, "discover_markets", lambda client: [])

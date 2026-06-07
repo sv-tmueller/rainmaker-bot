@@ -4,12 +4,17 @@ from pathlib import Path
 
 import httpx
 
-from rainmaker.config import KALSHI_API_BASE, KALSHI_HIGH_SERIES, KALSHI_LOW_SERIES
-from rainmaker.kalshi.client import discover_kalshi_markets
-
-FIXTURE = json.loads(
-    (Path(__file__).parent / "fixtures" / "kalshi_high_temp_nyc.json").read_text()
+from rainmaker.config import (
+    KALSHI_API_BASE,
+    KALSHI_HIGH_SERIES,
+    KALSHI_LOW_SERIES,
+    KALSHI_RAIN_SERIES,
 )
+from rainmaker.kalshi.client import discover_kalshi_markets, discover_kalshi_precip_markets
+
+FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURE = json.loads((FIXTURES / "kalshi_high_temp_nyc.json").read_text())
+RAIN_FIXTURE = json.loads((FIXTURES / "kalshi_rain_nyc.json").read_text())
 _URL = re.compile(re.escape(KALSHI_API_BASE))
 _EMPTY = {"cursor": "", "markets": []}
 
@@ -64,3 +69,15 @@ def test_discover_kalshi_outage_is_non_fatal(httpx_mock):
     with httpx.Client() as client:
         markets = discover_kalshi_markets(client)
     assert markets == []
+
+
+def test_discover_precip_parses_nyc(httpx_mock):
+    for city in KALSHI_RAIN_SERIES:
+        httpx_mock.add_response(url=_URL, json=RAIN_FIXTURE if city == "NYC" else _EMPTY)
+    with httpx.Client() as client:
+        markets = discover_kalshi_precip_markets(client)
+    nyc = [m for m in markets if m.id == "KXRAINNYCM-26JUN"]
+    assert len(nyc) == 1
+    assert nyc[0].target.variable == "PRCP"
+    assert nyc[0].target.station.ghcnd_id == "USW00094728"
+    assert len(nyc[0].buckets) == 2

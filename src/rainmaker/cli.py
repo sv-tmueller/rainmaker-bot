@@ -29,7 +29,7 @@ from rainmaker.forecasts.base import ForecastSet
 from rainmaker.forecasts.nws import NwsSource
 from rainmaker.forecasts.openmeteo import OpenMeteoSource
 from rainmaker.forecasts.precip import PrecipForecastSet, build_precip_forecast_set
-from rainmaker.kalshi.client import discover_kalshi_markets
+from rainmaker.kalshi.client import discover_kalshi_markets, discover_kalshi_precip_markets
 from rainmaker.pnl_backtest import backtest_pnl, render_pnl_report
 from rainmaker.polymarket.client import (
     discover_markets,
@@ -172,8 +172,14 @@ def _run(reports_dir: str, db_path: str) -> None:
             )
             evaluated.append((market, forecast_set, report))
 
+        precip_markets = list(discover_precip_markets(client))
+        # Kalshi rain is the secondary venue: its outage must never abort the run.
+        try:
+            precip_markets += discover_kalshi_precip_markets(client)
+        except httpx.HTTPError as exc:
+            print(f"Kalshi precip discovery failed, continuing: {exc}", file=sys.stderr)
         precip_evaluated: list[PrecipEvaluatedMarket] = []
-        for precip_market in discover_precip_markets(client):
+        for precip_market in precip_markets:
             if precip_market.target.settlement_date < today:  # month over: not bettable
                 day = precip_market.target.settlement_date
                 print(f"skipped {precip_market.id}: settled ({day})")

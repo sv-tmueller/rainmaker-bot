@@ -1,0 +1,32 @@
+{
+  "cursor": "",
+  "markets": [
+    {
+      "event_ticker": "KXRAINNYCM-26JUN",
+      "ticker": "KXRAINNYCM-26JUN-4",
+      "status": "active",
+      "strike_type": "greater",
+      "floor_strike": 4,
+      "subtitle": "greater than 4\"",
+      "yes_bid_dollars": "0.1000",
+      "yes_ask_dollars": "0.1200",
+      "no_ask_dollars": "0.8800",
+      "last_price_dollars": "0.1100",
+      "rules_primary": "If the total precipitation at Central Park, New York City in Jun 2026 is strictly greater than 4 inches, then the market resolves to Yes."
+    },
+    {
+      "event_ticker": "KXRAINNYCM-26JUN",
+      "ticker": "KXRAINNYCM-26JUN-B2.5",
+      "status": "active",
+      "strike_type": "between",
+      "floor_strike": 2,
+      "cap_strike": 3,
+      "subtitle": "2\" to 3\"",
+      "yes_bid_dollars": "0.3000",
+      "yes_ask_dollars": "0.3200",
+      "no_ask_dollars": "0.6800",
+      "last_price_dollars": "0.3100",
+      "rules_primary": "If the total precipitation at Central Park, New York City in Jun 2026 is between 2 and 3 inches, then the market resolves to Yes."
+    }
+  ]
+}
