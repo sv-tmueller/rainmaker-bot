@@ -236,6 +236,9 @@ def test_fetch_historical_point_forecasts_uses_min_for_tmin(httpx_mock):
     assert "daily=" not in str(httpx_mock.get_requests()[0].url)
 
 
+# 'NYC' now resolves to two settlement stations (LaGuardia and Kalshi's Central
+# Park), so the same mocked endpoints are hit once per station; allow reuse.
+@pytest.mark.httpx_mock(can_send_already_matched_responses=True)
 def test_backfill_cli_saves_a_backtest_row_per_lead(httpx_mock, tmp_path, monkeypatch):
     import rainmaker.cli as cli
 
@@ -260,7 +263,11 @@ def test_backfill_cli_saves_a_backtest_row_per_lead(httpx_mock, tmp_path, monkey
         "SELECT lead_time, kind, n FROM forecast_accuracy "
         "WHERE station = 'KLGA' AND variable = 'TMAX' ORDER BY lead_time"
     ).fetchall()
+    knyc = conn.execute(
+        "SELECT count(*) AS n FROM forecast_accuracy WHERE station = 'KNYC' AND variable = 'TMAX'"
+    ).fetchone()["n"]
     conn.close()
     leads = sorted(r[0] for r in rows)
     assert leads == [1, 2, 3]
     assert all(r[1] == "backtest" for r in rows)
+    assert knyc == 3  # the Kalshi Central Park station is backfilled alongside LaGuardia

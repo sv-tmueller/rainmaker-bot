@@ -14,6 +14,7 @@ from rainmaker.backtest import BacktestResult, backtest_real, backtest_synthetic
 from rainmaker.config import (
     CONFIDENCE_FLOOR,
     DB_PATH,
+    KALSHI_STATIONS,
     MIN_EDGE,
     MIN_SIGMA_F,
     MIN_SOURCES,
@@ -22,6 +23,7 @@ from rainmaker.config import (
     PRECIP_VAR_FLOOR,
     REPORTS_DIR,
     STATIONS,
+    Station,
     Target,
 )
 from rainmaker.forecasts.aggregate import aggregate
@@ -217,8 +219,31 @@ def _run(reports_dir: str, db_path: str) -> None:
         conn.close()
 
 
+def _distinct_stations() -> list[Station]:
+    """Every settlement station across venues, deduped by icao (the calibration key).
+
+    Polymarket and Kalshi share a station for some cities (Miami, LA, Austin) and
+    differ for others (NYC: LaGuardia vs Central Park; Chicago: O'Hare vs Midway).
+    Deduping by icao fits each physical station once; calibration is keyed by icao,
+    so a shared station serves both venues.
+    """
+    out: dict[str, Station] = {}
+    for station in (*STATIONS.values(), *KALSHI_STATIONS.values()):
+        out.setdefault(station.icao, station)
+    return list(out.values())
+
+
+def _backfill_stations(city: str) -> list[Station]:
+    """Stations to calibrate: all of them for 'all', else every venue's station
+    for the named city (NYC and Chicago each resolve to two)."""
+    stations = _distinct_stations()
+    if city == "all":
+        return sorted(stations, key=lambda s: s.icao)
+    return [s for s in stations if s.city == city]
+
+
 def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_path: str) -> None:
-    cities = sorted(STATIONS) if city == "all" else [city]
+    stations = _backfill_stations(city)
     end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
     start = end - timedelta(days=days)
     if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
@@ -229,8 +254,7 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
     succeeded = 0
     try:
         init_schema(conn)
-        for name in cities:
-            station = STATIONS[name]
+        for station in stations:
             now = _now_iso()
             city_ok = False
             if 1 in leads:  # lead 1 keeps the calibration + accuracy fit
@@ -239,7 +263,7 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
                 except (httpx.HTTPError, ValueError) as exc:
                     if isinstance(exc, ValidationError):
                         raise  # schema bug, not a data gap; fail loud
-                    print(f"{name}: backfill failed: {exc}", file=sys.stderr)
+                    print(f"{station.city}: backfill failed: {exc}", file=sys.stderr)
                 else:
                     save_calibration(conn, cal, updated_at=now)
                     save_accuracy(
@@ -265,7 +289,7 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
                 except (httpx.HTTPError, ValueError) as exc:
                     if isinstance(exc, ValidationError):
                         raise  # schema bug, not a data gap; fail loud
-                    print(f"{name}: accuracy backfill failed: {exc}", file=sys.stderr)
+                    print(f"{station.city}: accuracy backfill failed: {exc}", file=sys.stderr)
                 else:
                     for lead, acc in sorted(accs.items()):
                         save_accuracy(
