@@ -63,3 +63,11 @@ sets it from a secret). Checks: `uv run pytest`, `uv run ruff check .`,
 - `docs/operations/README.md` - how to run, deploy, and operate the bot.
 - `docs/superpowers/specs/2026-05-29-mvp1-advisory-design.md` - the approved MVP
   1.0 design.
+
+## License
+
+**Copyright © 2026 Thomas Mueller. All rights reserved.**
+
+This is proprietary software. No license is granted to use, copy, modify, merge, publish, distribute, sublicense, or sell any part of this software, in whole or in part, in any other project — public or private — without prior written permission from the copyright holder.
+
+Unauthorized reuse of any portion of this code constitutes copyright infringement and will be pursued accordingly.
