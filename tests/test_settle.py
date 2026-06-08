@@ -90,6 +90,32 @@ def test_run_settlement_idempotent(httpx_mock):
     assert (settled, waiting) == (0, 0)
 
 
+def test_run_settlement_uses_row_ghcnd_for_kalshi(httpx_mock):
+    # a Kalshi NYC temp market settles on Central Park (USW00094728), not the
+    # city default LaGuardia (USW00014732); settlement must use the row's GHCND.
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, settlement_ghcnd) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("KXHIGHNY-26MAY30", "NYC", "TMAX", "2026-05-30", "USW00094728"),
+    )
+    conn.commit()
+    captured: dict[str, str] = {}
+
+    def handler(request):
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json=[{"DATE": "2026-05-30", "TMAX": "70"}])
+
+    httpx_mock.add_callback(handler)
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 6, 3), "t")
+    conn.close()
+    assert (settled, waiting) == (1, 0)
+    assert "USW00094728" in captured["url"]  # Central Park, not LaGuardia
+    assert "USW00014732" not in captured["url"]
+
+
 def test_run_settlement_skips_unknown_city():
     conn = connect(":memory:")
     init_schema(conn)

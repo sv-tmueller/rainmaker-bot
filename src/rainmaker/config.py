@@ -233,7 +233,7 @@ KALSHI_STATIONS: dict[str, Station] = {
         lon=-87.7524,
         timezone="America/Chicago",
         wunderground_url="https://forecast.weather.gov/product.php?site=LOT&product=CLI&issuedby=MDW",
-        ghcnd_id="USW00014819",  # TODO: confirm against NCEI GHCND before trusting settlement
+        ghcnd_id="USW00014819",  # Chicago Midway, confirmed against NCEI (backfill #105)
     ),
     "Miami": Station(
         city="Miami",
@@ -294,7 +294,7 @@ KALSHI_PRECIP_STATIONS: dict[str, PrecipStation] = {
         lat=41.7860,
         lon=-87.7524,
         timezone="America/Chicago",
-        ghcnd_id="USW00014819",  # TODO: confirm against NCEI GHCND before trusting settlement
+        ghcnd_id="USW00014819",  # Chicago Midway, confirmed against NCEI (backfill #105)
     ),
 }
 

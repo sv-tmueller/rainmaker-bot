@@ -18,6 +18,16 @@ from rainmaker.store.query import unsettled_markets
 from rainmaker.store.record import record_outcome
 
 
+def _legacy_ghcnd(market: dict[str, str]) -> str | None:
+    """The settlement GHCND from the city registry, for rows recorded before the
+    markets.settlement_ghcnd column existed (it is NULL on those rows)."""
+    if market["variable"] == "PRCP":
+        precip = PRECIP_STATIONS.get(market["city"])
+        return precip.ghcnd_id if precip is not None else None
+    station = STATIONS.get(market["city"])
+    return station.ghcnd_id if station is not None else None
+
+
 def run_settlement(
     conn: Conn, client: httpx.Client, today: date, settled_at: str
 ) -> tuple[int, int]:
@@ -26,18 +36,16 @@ def run_settlement(
     waiting = 0
     for m in unsettled_markets(conn, today):
         day = date.fromisoformat(m["settlement_date"])
+        # Use the market's exact settlement station (Kalshi NYC = Central Park, not
+        # LaGuardia); fall back to the city registry for legacy rows.
+        ghcnd = m.get("settlement_ghcnd") or _legacy_ghcnd(m)
+        if ghcnd is None:
+            print(f"skipping {m['market_id']}: no station for {m['city']!r}", file=sys.stderr)
+            continue
         if m["variable"] == "PRCP":
-            precip_station = PRECIP_STATIONS.get(m["city"])
-            if precip_station is None:
-                print(f"skipping {m['market_id']}: unknown city {m['city']!r}", file=sys.stderr)
-                continue
-            value = fetch_monthly_precip(precip_station.ghcnd_id, day.year, day.month, client)
+            value = fetch_monthly_precip(ghcnd, day.year, day.month, client)
         else:
-            station = STATIONS.get(m["city"])
-            if station is None:
-                print(f"skipping {m['market_id']}: unknown city {m['city']!r}", file=sys.stderr)
-                continue
-            value = fetch_actuals(station.ghcnd_id, day, day, client, m["variable"]).get(day)
+            value = fetch_actuals(ghcnd, day, day, client, m["variable"]).get(day)
         if value is None:
             waiting += 1
             continue
