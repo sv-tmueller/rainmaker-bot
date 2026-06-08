@@ -13,7 +13,7 @@ from collections import defaultdict
 from datetime import date
 from typing import Any
 
-from rainmaker.config import STATIONS
+from rainmaker.config import KALSHI_STATIONS, STATIONS
 from rainmaker.polymarket.markets import parse_bucket_label
 from rainmaker.polymarket.precip_markets import parse_precip_bracket_label
 from rainmaker.probability.calibration import CalibrationPair, compute_accuracy
@@ -173,7 +173,7 @@ def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT DISTINCT p.run_id AS run_id, p.market_id AS market_id, "
         "p.dist_params AS dist_params, m.city AS city, m.variable AS variable, "
-        "m.settlement_date AS settlement_date, r.started_at AS started_at, "
+        "m.venue AS venue, m.settlement_date AS settlement_date, r.started_at AS started_at, "
         "o.actual_value AS actual_value "
         "FROM predictions p "
         "JOIN outcomes o ON o.market_id = p.market_id "
@@ -183,7 +183,10 @@ def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
     ).fetchall()
     groups: dict[tuple[str, str, str, int], list[CalibrationPair]] = defaultdict(list)
     for r in _latest_run_per_market_day([dict(row) for row in rows]):
-        station = STATIONS.get(r["city"])
+        # Attribute to the market's own station: the Kalshi registry for Kalshi
+        # markets (NYC = Central Park, not LaGuardia), else the Polymarket one.
+        registry = KALSHI_STATIONS if (r.get("venue") == "kalshi") else STATIONS
+        station = registry.get(r["city"])
         if station is None:
             continue
         try:
