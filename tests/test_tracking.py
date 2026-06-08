@@ -343,15 +343,15 @@ def test_write_snapshot_is_idempotent_per_day():
     assert n == 1
 
 
-def _setup_live(conn, city="NYC"):
+def _setup_live(conn, city="NYC", venue=None):
     init_schema(conn)
     conn.execute(
         "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
         ("r1", "2026-05-30T12:00:00+00:00", "ok"),
     )
     conn.execute(
-        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
-        ("m1", city, "TMAX", "2026-05-31"),
+        "INSERT INTO markets (id, city, variable, settlement_date, venue) VALUES (?, ?, ?, ?, ?)",
+        ("m1", city, "TMAX", "2026-05-31", venue),
     )
     dist = json.dumps({"mu": 70.0, "sigma": 2.0, "n_sources": 2})
     for bucket in ("70-71°F", "72-73°F"):  # two buckets, same market -> one sample
@@ -387,6 +387,19 @@ def test_compute_live_accuracy_dedupes_buckets():
     assert acc.n == 1  # two bucket rows collapse to one (run, market) sample
     assert acc.mae_f == pytest.approx(3.0)  # |70 - 73|
     assert acc.bias_f == pytest.approx(-3.0)  # forecast ran cold
+
+
+def test_compute_live_accuracy_attributes_kalshi_to_its_station():
+    from rainmaker.tracking import compute_live_accuracy
+
+    conn = connect(":memory:")
+    _setup_live(conn, venue="kalshi")  # a Kalshi NYC market settles on Central Park
+    rows = compute_live_accuracy(conn)
+    conn.close()
+    assert len(rows) == 1
+    # attributed to KNYC (Central Park), not the Polymarket KLGA (LaGuardia)
+    assert rows[0]["station"] == "KNYC"
+    assert rows[0]["city"] == "NYC"
 
 
 def test_compute_live_accuracy_skips_unknown_city():
