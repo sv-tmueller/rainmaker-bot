@@ -81,7 +81,7 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
                           href={url}
                           target="_blank"
                           rel="noreferrer"
-                          className="hover:underline"
+                          className="text-cool underline underline-offset-2"
                         >
                           {marketLabel(b)} <span className="text-[10px] text-faint">↗</span>
                         </a>
