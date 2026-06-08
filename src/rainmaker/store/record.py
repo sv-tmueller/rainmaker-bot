@@ -65,13 +65,14 @@ def _record_market(conn: Conn, market: Market, captured_at: str) -> None:
         """
         INSERT INTO markets
             (id, slug, title, city, variable, resolution_source, settlement_date,
-             outcome_spec, raw, captured_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             outcome_spec, raw, captured_at, settlement_ghcnd)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             slug = excluded.slug, title = excluded.title, city = excluded.city,
             variable = excluded.variable, resolution_source = excluded.resolution_source,
             settlement_date = excluded.settlement_date, outcome_spec = excluded.outcome_spec,
-            raw = excluded.raw, captured_at = excluded.captured_at
+            raw = excluded.raw, captured_at = excluded.captured_at,
+            settlement_ghcnd = excluded.settlement_ghcnd
         """,
         (
             market.id,
@@ -84,6 +85,7 @@ def _record_market(conn: Conn, market: Market, captured_at: str) -> None:
             json.dumps(spec),
             json.dumps(market.model_dump(mode="json")),
             captured_at,
+            market.target.station.ghcnd_id,
         ),
     )
 
@@ -102,13 +104,14 @@ def _record_precip_market(conn: Conn, market: PrecipMonthlyMarket, captured_at: 
         """
         INSERT INTO markets
             (id, slug, title, city, variable, resolution_source, settlement_date,
-             outcome_spec, raw, captured_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             outcome_spec, raw, captured_at, settlement_ghcnd)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             slug = excluded.slug, title = excluded.title, city = excluded.city,
             variable = excluded.variable, resolution_source = excluded.resolution_source,
             settlement_date = excluded.settlement_date, outcome_spec = excluded.outcome_spec,
-            raw = excluded.raw, captured_at = excluded.captured_at
+            raw = excluded.raw, captured_at = excluded.captured_at,
+            settlement_ghcnd = excluded.settlement_ghcnd
         """,
         (
             market.id,
@@ -121,6 +124,7 @@ def _record_precip_market(conn: Conn, market: PrecipMonthlyMarket, captured_at: 
             json.dumps(spec),
             json.dumps(market.model_dump(mode="json")),
             captured_at,
+            market.target.station.ghcnd_id,
         ),
     )
 

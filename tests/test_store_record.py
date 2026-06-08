@@ -92,6 +92,9 @@ def test_record_run_persists_all_tables():
     assert count_rows(conn, "prices") == expected_prices
     assert count_rows(conn, "forecasts") == 2  # grouped by (source, model): nws + gfs_seamless
     assert count_rows(conn, "predictions") == len(report.outcomes)
+    # the exact settlement-station GHCND is persisted for settlement to use
+    row = conn.execute("SELECT settlement_ghcnd FROM markets WHERE id = ?", (market.id,)).fetchone()
+    assert row["settlement_ghcnd"] == market.target.station.ghcnd_id
     conn.close()
 
 
@@ -216,6 +219,7 @@ def test_record_run_persists_precip_market():
     assert row["variable"] == "PRCP"
     assert row["resolution_source"] == "Central Park NY"
     assert row["settlement_date"] == "2026-06-30"
+    assert row["settlement_ghcnd"] == "USW00094728"  # Central Park GHCND, for settlement
     # The inch bracket bounds are floats in the shared JSON outcome_spec column.
     spec = json.loads(row["outcome_spec"])
     assert any(b["lo"] == 2.0 and b["hi"] == 3.0 for b in spec)

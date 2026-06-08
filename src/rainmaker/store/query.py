@@ -44,7 +44,7 @@ def unsettled_markets(conn: Conn, before: date) -> list[dict[str, Any]]:
     """Recorded markets with a past settlement date and no outcome yet."""
     rows = conn.execute(
         "SELECT m.id AS market_id, m.city AS city, m.variable AS variable, "
-        "m.settlement_date AS settlement_date "
+        "m.settlement_date AS settlement_date, m.settlement_ghcnd AS settlement_ghcnd "
         "FROM markets m LEFT JOIN outcomes o ON o.market_id = m.id "
         "WHERE o.market_id IS NULL AND m.settlement_date < ? "
         "ORDER BY m.settlement_date",

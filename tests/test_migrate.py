@@ -35,10 +35,20 @@ def test_migration_adds_side_columns():
     conn.close()
 
 
+def test_migration_adds_markets_settlement_ghcnd_column():
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute("INSERT INTO markets (id, settlement_ghcnd) VALUES (?, ?)", ("m", "USW00094728"))
+    conn.commit()
+    row = conn.execute("SELECT settlement_ghcnd FROM markets").fetchone()
+    conn.close()
+    assert row["settlement_ghcnd"] == "USW00094728"
+
+
 def test_apply_migrations_is_idempotent():
     conn = connect(":memory:")
     init_schema(conn)
     apply_migrations(conn)  # second pass must not error
     n = conn.execute("SELECT count(*) AS n FROM schema_migrations").fetchone()["n"]
     conn.close()
-    assert n == 3
+    assert n == 4
