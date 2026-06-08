@@ -4,6 +4,8 @@ from datetime import date
 from rainmaker.config import (
     KALSHI_HIGH_SERIES,
     KALSHI_LOW_SERIES,
+    KALSHI_PRECIP_STATIONS,
+    KALSHI_RAIN_SERIES,
     KALSHI_STATIONS,
     PRECIP_STATIONS,
     STATIONS,
@@ -107,5 +109,16 @@ def test_kalshi_registry_aligned():
     for city, st in KALSHI_STATIONS.items():
         assert st.name, city
         assert st.wunderground_url.startswith("https://"), city
+        assert st.ghcnd_id.startswith("USW"), city
+        zoneinfo.ZoneInfo(st.timezone)
+
+
+def test_kalshi_rain_registry_aligned():
+    # every rain series has a settlement station and vice versa; all GHCNDs valid
+    assert set(KALSHI_RAIN_SERIES) == set(KALSHI_PRECIP_STATIONS)
+    assert "Denver" in KALSHI_RAIN_SERIES  # CLIDEN / Denver International
+    for city, st in KALSHI_PRECIP_STATIONS.items():
+        assert st.city == city
+        assert st.resolution_name, city
         assert st.ghcnd_id.startswith("USW"), city
         zoneinfo.ZoneInfo(st.timezone)

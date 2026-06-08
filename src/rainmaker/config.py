@@ -269,12 +269,13 @@ KALSHI_STATIONS: dict[str, Station] = {
 
 # Kalshi monthly rain series and their settlement stations. Like the temperature
 # markets they settle on the per-city NWS Climatological Report, named in the rule
-# text (NYC = Central Park, Chicago = CLIMDW / Midway). resolution_name is the
-# substring the parser guards on. Starts with the two cities whose GHCND ids are
-# confirmed; more follow once their station ids are verified against NCEI.
+# text (NYC = Central Park, Chicago = CLIMDW / Midway, Denver = CLIDEN / Denver
+# Intl). resolution_name is the substring the parser guards on. Every GHCND below
+# is confirmed against NCEI station metadata.
 KALSHI_RAIN_SERIES: dict[str, str] = {
     "NYC": "KXRAINNYCM",
     "Chicago": "KXRAINCHIM",
+    "Denver": "KXRAINDENM",
 }
 
 KALSHI_PRECIP_STATIONS: dict[str, PrecipStation] = {
@@ -295,6 +296,15 @@ KALSHI_PRECIP_STATIONS: dict[str, PrecipStation] = {
         lon=-87.7524,
         timezone="America/Chicago",
         ghcnd_id="USW00014819",  # Chicago Midway, confirmed against NCEI (backfill #105)
+    ),
+    "Denver": PrecipStation(
+        city="Denver",
+        resolution_name="CLIDEN",
+        name="Denver International Airport",
+        lat=39.8467,
+        lon=-104.6562,
+        timezone="America/Denver",
+        ghcnd_id="USW00003017",  # DENVER INTERNATIONAL AIRPORT (NCEI), the CLIDEN station
     ),
 }
 
