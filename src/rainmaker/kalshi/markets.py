@@ -130,4 +130,5 @@ def parse_kalshi_event(
         title=f"Kalshi: {descriptor} temperature in {city} on {local_date.isoformat()}",
         target=target,
         buckets=buckets,
+        venue="kalshi",
     )

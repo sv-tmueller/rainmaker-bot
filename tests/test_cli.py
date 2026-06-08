@@ -372,10 +372,18 @@ def test_snapshot_command_writes_and_reports(monkeypatch, tmp_path, capsys):
 
 
 def test_track_command_reports_pnl_and_calibration(monkeypatch, tmp_path, capsys):
+    # overall (venue=None) has bets; the per-venue calls return none so only the
+    # overall line prints (the per-venue breakdown is covered in test_tracking).
     monkeypatch.setattr(
         cli,
         "compute_pnl",
-        lambda conn: {"n_bets": 2, "wins": 1, "losses": 1, "total_pnl": 0.3, "roi": 0.42},
+        lambda conn, venue=None: {
+            "n_bets": 2 if venue is None else 0,
+            "wins": 1,
+            "losses": 1,
+            "total_pnl": 0.3,
+            "roi": 0.42,
+        },
     )
     monkeypatch.setattr(
         cli, "compute_calibration", lambda conn: {"n": 2, "brier": 0.127, "hit_rate": 0.5}

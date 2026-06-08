@@ -92,6 +92,7 @@ class Market(BaseModel):
     title: str
     target: Target
     buckets: list[Bucket]
+    venue: str = "polymarket"  # "kalshi" when discovered from Kalshi
 
 
 def parse_variable(title: str) -> Variable:

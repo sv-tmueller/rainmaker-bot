@@ -117,6 +117,7 @@ class PrecipMonthlyMarket(BaseModel):
     title: str
     target: PrecipTarget
     buckets: list[PrecipBracket]
+    venue: str = "polymarket"  # "kalshi" when discovered from Kalshi
 
 
 _TITLE_RE = re.compile(r"precipitation in (.+?) in (\w+)\??$", re.IGNORECASE)

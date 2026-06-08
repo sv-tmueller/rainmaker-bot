@@ -59,6 +59,7 @@ def test_parse_precip_event_builds_monthly_market():
     assert m.target.settlement_date == date(2026, 6, 30)  # last day of the month
     assert m.target.station.ghcnd_id == "USW00094728"  # Central Park
     assert len(m.buckets) == 2
+    assert m.venue == "kalshi"
 
 
 def test_parse_precip_event_guards_station():

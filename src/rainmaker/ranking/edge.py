@@ -42,6 +42,7 @@ class MarketReport(BaseModel):
     coverage: list[SourceCoverage]
     outcomes: list[RankedOutcome]
     excluded_no_ask: list[str]
+    venue: str = "polymarket"
 
 
 def evaluate_market(
@@ -64,6 +65,7 @@ def evaluate_market(
         settlement_date=market.target.local_date,
         n_sources=n_sources,
         coverage=forecast_set.coverage,
+        venue=market.venue,
     )
     if not forecast_set.samples:
         return MarketReport(
@@ -188,4 +190,5 @@ def evaluate_precip_market(
         coverage=forecast_set.coverage,
         outcomes=outcomes,
         excluded_no_ask=excluded,
+        venue=market.venue,
     )

@@ -95,4 +95,5 @@ def parse_kalshi_precip_event(
         title=f"Kalshi: monthly precipitation in {city} {calendar.month_name[month]} {year}",
         target=target,
         buckets=buckets,
+        venue="kalshi",
     )

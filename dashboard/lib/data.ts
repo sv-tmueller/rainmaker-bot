@@ -3,6 +3,7 @@ import { serverClient } from "./supabase";
 export type Bet = {
   title: string;
   city: string;
+  venue: string;
   slug: string | null;
   bucket: string;
   side: "YES" | "NO";
@@ -119,7 +120,7 @@ export async function getDashboardData() {
     neededIds.length > 0
       ? db
           .from("markets")
-          .select("id, title, slug, settlement_date, city")
+          .select("id, title, slug, settlement_date, city, venue")
           .in("id", neededIds)
       : Promise.resolve({ data: [] }),
     settledRunIds.length > 0
@@ -133,6 +134,9 @@ export async function getDashboardData() {
 
   const titleOf = new Map((marketsQ.data ?? []).map((m) => [m.id, m.title as string]));
   const cityOf = new Map((marketsQ.data ?? []).map((m) => [m.id, (m.city as string | null) ?? ""]));
+  const venueOf = new Map(
+    (marketsQ.data ?? []).map((m) => [m.id, (m.venue as string | null) ?? "polymarket"]),
+  );
   const slugOf = new Map((marketsQ.data ?? []).map((m) => [m.id, (m.slug as string | null) ?? null]));
   const settleDateOf = new Map(
     (marketsQ.data ?? []).map((m) => [m.id, (m.settlement_date as string | null) ?? null]),
@@ -178,6 +182,7 @@ export async function getDashboardData() {
       return {
         title: titleOf.get(p.market_id) ?? (p.market_id as string),
         city: cityOf.get(p.market_id) ?? "",
+        venue: venueOf.get(p.market_id) ?? "polymarket",
         slug: slugOf.get(p.market_id) ?? null,
         bucket: p.bucket as string,
         side,
