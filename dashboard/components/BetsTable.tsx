@@ -92,13 +92,19 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
                         {b.venue}
                       </span>
                     </td>
-                    <td className="text-foreground/80">{withCelsius(b.bucket)}</td>
+                    <td className="text-foreground/80">
+                      {b.variable === "PRCP" ? b.bucket : withCelsius(b.bucket)}
+                    </td>
                     <td className={b.side === "NO" ? "font-semibold text-warm" : "text-faint"}>
                       {b.side}
                     </td>
                     <td className="text-right">
                       {b.mu === null ? (
                         ""
+                      ) : b.variable === "PRCP" ? (
+                        <>
+                          {b.mu.toFixed(2)} <span className="text-faint">in</span>
+                        </>
                       ) : (
                         <>
                           {b.mu.toFixed(1)}° <span className="text-faint">{degC(b.mu)}C</span>

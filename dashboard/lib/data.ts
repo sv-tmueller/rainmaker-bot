@@ -4,6 +4,7 @@ export type Bet = {
   title: string;
   city: string;
   venue: string;
+  variable: string;
   slug: string | null;
   bucket: string;
   side: "YES" | "NO";
@@ -120,7 +121,7 @@ export async function getDashboardData() {
     neededIds.length > 0
       ? db
           .from("markets")
-          .select("id, title, slug, settlement_date, city, venue")
+          .select("id, title, slug, settlement_date, city, venue, variable")
           .in("id", neededIds)
       : Promise.resolve({ data: [] }),
     settledRunIds.length > 0
@@ -136,6 +137,9 @@ export async function getDashboardData() {
   const cityOf = new Map((marketsQ.data ?? []).map((m) => [m.id, (m.city as string | null) ?? ""]));
   const venueOf = new Map(
     (marketsQ.data ?? []).map((m) => [m.id, (m.venue as string | null) ?? "polymarket"]),
+  );
+  const variableOf = new Map(
+    (marketsQ.data ?? []).map((m) => [m.id, (m.variable as string | null) ?? ""]),
   );
   const slugOf = new Map((marketsQ.data ?? []).map((m) => [m.id, (m.slug as string | null) ?? null]));
   const settleDateOf = new Map(
@@ -183,6 +187,7 @@ export async function getDashboardData() {
         title: titleOf.get(p.market_id) ?? (p.market_id as string),
         city: cityOf.get(p.market_id) ?? "",
         venue: venueOf.get(p.market_id) ?? "polymarket",
+        variable: variableOf.get(p.market_id) ?? "",
         slug: slugOf.get(p.market_id) ?? null,
         bucket: p.bucket as string,
         side,
