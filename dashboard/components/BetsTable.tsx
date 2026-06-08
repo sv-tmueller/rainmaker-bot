@@ -24,6 +24,15 @@ function marketLabel(b: Bet): string {
   return b.city ? b.title.replace(` in ${b.city}`, "") : b.title;
 }
 
+function marketUrl(b: Bet): string | null {
+  if (!b.slug) return null;
+  if (b.venue === "polymarket") return `https://polymarket.com/event/${b.slug}`;
+  // Kalshi's public page keys off the series ticker lowercased; the stored slug
+  // is the event ticker (KXHIGHNY-26JUN08), so drop the trailing date token.
+  if (b.venue === "kalshi") return `https://kalshi.com/markets/${b.slug.split("-")[0].toLowerCase()}`;
+  return null;
+}
+
 export function BetsTable({ bets }: { bets: Bet[] }) {
   const groups = groupByCity(bets);
   return (
@@ -62,15 +71,17 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
                     {g.city}
                   </td>
                 </tr>
-                {g.bets.map((b, i) => (
+                {g.bets.map((b, i) => {
+                  const url = marketUrl(b);
+                  return (
                   <tr key={`${g.city}-${i}`} className="border-t border-line-soft">
                     <td className="py-1.5 font-sans text-[13px]">
-                      {b.venue === "polymarket" && b.slug ? (
+                      {url ? (
                         <a
-                          href={`https://polymarket.com/event/${b.slug}`}
+                          href={url}
                           target="_blank"
                           rel="noreferrer"
-                          className="hover:underline"
+                          className="text-cool underline underline-offset-2"
                         >
                           {marketLabel(b)} <span className="text-[10px] text-faint">↗</span>
                         </a>
@@ -81,13 +92,19 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
                         {b.venue}
                       </span>
                     </td>
-                    <td className="text-foreground/80">{withCelsius(b.bucket)}</td>
+                    <td className="text-foreground/80">
+                      {b.variable === "PRCP" ? b.bucket : withCelsius(b.bucket)}
+                    </td>
                     <td className={b.side === "NO" ? "font-semibold text-warm" : "text-faint"}>
                       {b.side}
                     </td>
                     <td className="text-right">
                       {b.mu === null ? (
                         ""
+                      ) : b.variable === "PRCP" ? (
+                        <>
+                          {b.mu.toFixed(2)} <span className="text-faint">in</span>
+                        </>
                       ) : (
                         <>
                           {b.mu.toFixed(1)}° <span className="text-faint">{degC(b.mu)}C</span>
@@ -102,7 +119,8 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
                     </td>
                     <td className="text-right text-faint">{b.nSources ?? ""}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </Fragment>
             ))}
           </tbody>
