@@ -217,7 +217,6 @@ def test_backfill_fits_and_saves_calibration_and_accuracy(monkeypatch, tmp_path,
 
 
 def test_backfill_all_covers_every_city(monkeypatch, tmp_path):
-    from rainmaker.config import STATIONS
     from rainmaker.probability.calibration import Accuracy
 
     def _fake(station, variable, lead, start, end, client):
@@ -244,8 +243,8 @@ def test_backfill_all_covers_every_city(monkeypatch, tmp_path):
     conn = connect(str(db))
     n = conn.execute("SELECT count(*) AS n FROM forecast_accuracy").fetchone()["n"]
     conn.close()
-    # 3 leads (1, 2, 3) per city
-    assert n == len(STATIONS) * 3
+    # 3 leads (1, 2, 3) per distinct station across both venues (incl Kalshi KNYC/KMDW)
+    assert n == len(cli._distinct_stations()) * 3
 
 
 def test_backfill_exits_nonzero_when_all_cities_fail(monkeypatch, tmp_path, capsys):
@@ -298,8 +297,64 @@ def test_backfill_partial_failure_exits_zero(monkeypatch, tmp_path, capsys):
     conn = connect(str(db))
     n = conn.execute("SELECT count(*) AS n FROM forecast_accuracy").fetchone()["n"]
     conn.close()
-    # fail_city contributes 0 rows; each passing city contributes 3 (leads 1, 2, 3)
-    assert n == (len(STATIONS) - 1) * 3
+    # fail_city contributes 0 rows; each passing station contributes 3 (leads 1, 2, 3)
+    assert n == (len(cli._distinct_stations()) - 1) * 3
+
+
+def test_backfill_all_fits_kalshi_only_stations(monkeypatch, tmp_path):
+    from rainmaker.probability.calibration import Accuracy
+
+    def _fake(station, variable, lead, start, end, client):
+        cal = Calibration(
+            station=station.icao,
+            variable=variable,
+            lead_time=lead,
+            bias=0.0,
+            spread_scale=1.0,
+            n_samples=42,
+        )
+        return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
+
+    monkeypatch.setattr(cli, "run_backfill", _fake)
+    monkeypatch.setattr(cli, "run_backfill_accuracy", lambda *a, **k: {})
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    db = tmp_path / "t.db"
+
+    cli.main(["backfill", "--city", "all", "--leads", "1", "--db", str(db)])
+
+    conn = connect(str(db))
+    # the two Kalshi-only stations now get calibration cells
+    assert load_calibration(conn, "KNYC", "TMAX", 1) is not None  # Central Park
+    assert load_calibration(conn, "KMDW", "TMAX", 1) is not None  # Chicago Midway
+    conn.close()
+
+
+def test_backfill_city_covers_both_venue_stations(monkeypatch, tmp_path):
+    from rainmaker.probability.calibration import Accuracy
+
+    def _fake(station, variable, lead, start, end, client):
+        cal = Calibration(
+            station=station.icao,
+            variable=variable,
+            lead_time=lead,
+            bias=0.0,
+            spread_scale=1.0,
+            n_samples=42,
+        )
+        return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
+
+    monkeypatch.setattr(cli, "run_backfill", _fake)
+    monkeypatch.setattr(cli, "run_backfill_accuracy", lambda *a, **k: {})
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    db = tmp_path / "t.db"
+
+    cli.main(["backfill", "--city", "NYC", "--leads", "1", "--db", str(db)])
+
+    conn = connect(str(db))
+    # 'NYC' now resolves to both venue stations: LaGuardia and Central Park
+    assert load_calibration(conn, "KLGA", "TMAX", 1) is not None
+    assert load_calibration(conn, "KNYC", "TMAX", 1) is not None
+    conn.close()
 
 
 def test_snapshot_command_writes_and_reports(monkeypatch, tmp_path, capsys):
