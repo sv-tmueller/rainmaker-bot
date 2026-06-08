@@ -57,6 +57,39 @@ def test_compute_calibration_brier_unchanged_hit_rate_collapsed():
     assert cal["hit_rate"] == pytest.approx(1.0)
 
 
+def test_compute_pnl_filters_by_venue():
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute("INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)", ("r1", "t", "ok"))
+    # one Polymarket market (NULL venue) and one Kalshi market, each a winning bet
+    for mid, venue in (("m_poly", None), ("m_kalshi", "kalshi")):
+        conn.execute(
+            "INSERT INTO markets (id, city, variable, settlement_date, venue) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (mid, "NYC", "TMAX", "2026-05-30", venue),
+        )
+        conn.execute(
+            "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("r1", mid, "70-71°F", 0.40, 0.40, "t"),
+        )
+        conn.execute(
+            "INSERT INTO predictions "
+            "(run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("r1", mid, "70-71°F", 0.93, 0.20, 1, "t"),
+        )
+        conn.execute(
+            "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+            (mid, 71.0, "t"),
+        )
+    conn.commit()
+    assert compute_pnl(conn)["n_bets"] == 2  # both venues
+    assert compute_pnl(conn, venue="kalshi")["n_bets"] == 1
+    assert compute_pnl(conn, venue="polymarket")["n_bets"] == 1  # NULL venue = polymarket
+    conn.close()
+
+
 def test_compute_pnl_settles_precip_bucket():
     conn = connect(":memory:")
     init_schema(conn)

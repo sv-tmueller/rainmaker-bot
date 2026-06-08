@@ -65,7 +65,7 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
                 {g.bets.map((b, i) => (
                   <tr key={`${g.city}-${i}`} className="border-t border-line-soft">
                     <td className="py-1.5 font-sans text-[13px]">
-                      {b.slug ? (
+                      {b.venue === "polymarket" && b.slug ? (
                         <a
                           href={`https://polymarket.com/event/${b.slug}`}
                           target="_blank"
@@ -77,6 +77,9 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
                       ) : (
                         marketLabel(b)
                       )}
+                      <span className="ml-1.5 text-[9px] uppercase tracking-wide text-faint">
+                        {b.venue}
+                      </span>
                     </td>
                     <td className="text-foreground/80">{withCelsius(b.bucket)}</td>
                     <td className={b.side === "NO" ? "font-semibold text-warm" : "text-faint"}>

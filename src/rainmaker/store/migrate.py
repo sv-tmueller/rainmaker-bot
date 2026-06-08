@@ -15,6 +15,8 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
     # The exact settlement-station GHCND, so settlement uses the market's real
     # station (e.g. Kalshi NYC = Central Park) instead of re-deriving it from city.
     ("0004_markets_settlement_ghcnd", ["ALTER TABLE markets ADD COLUMN settlement_ghcnd TEXT"]),
+    # The venue a market came from ("polymarket" or "kalshi").
+    ("0005_markets_venue", ["ALTER TABLE markets ADD COLUMN venue TEXT"]),
 ]
 
 

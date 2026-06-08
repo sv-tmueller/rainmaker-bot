@@ -90,6 +90,7 @@ def test_parse_event_builds_market():
     assert m.target.variable == "TMAX"
     assert m.target.local_date == date(2026, 6, 8)
     assert len(m.buckets) == 2
+    assert m.venue == "kalshi"
 
 
 def test_parse_event_guards_station_mismatch():

@@ -62,6 +62,16 @@ def test_render_markdown_has_table_and_settlement_date():
     assert "2026-05-31" in md
 
 
+def test_render_shows_venue():
+    poly = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
+    assert "polymarket" in render_terminal(poly)
+    assert "venue: polymarket" in render_markdown(poly)
+    kalshi_report = _market_report().model_copy(update={"venue": "kalshi"})
+    report = Report(run_date=date(2026, 5, 31), markets=[kalshi_report])
+    assert "kalshi" in render_terminal(report)
+    assert "venue: kalshi" in render_markdown(report)
+
+
 def test_render_handles_empty_samples_market():
     empty = MarketReport(
         market_id="m2",

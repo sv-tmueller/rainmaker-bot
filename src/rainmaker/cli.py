@@ -435,12 +435,20 @@ def _track(db_path: str) -> None:
         init_schema(conn)
         pnl = compute_pnl(conn)
         cal = compute_calibration(conn)
+        by_venue = {v: compute_pnl(conn, venue=v) for v in ("polymarket", "kalshi")}
     finally:
         conn.close()
     print(
         f"P&L: {pnl['n_bets']} bets, {pnl['wins']}-{pnl['losses']}, "
         f"total {pnl['total_pnl']:+.2f}u, ROI {pnl['roi']:+.1%}"
     )
+    for venue, vp in by_venue.items():
+        if vp["n_bets"] == 0:
+            continue  # only show a venue that actually has settled bets
+        print(
+            f"  {venue}: {vp['n_bets']} bets, {vp['wins']}-{vp['losses']}, "
+            f"total {vp['total_pnl']:+.2f}u, ROI {vp['roi']:+.1%}"
+        )
     brier = "n/a" if cal["brier"] is None else f"{cal['brier']:.3f}"
     hit = "n/a" if cal["hit_rate"] is None else f"{cal['hit_rate']:.0%}"
     print(f"calibration: Brier {brier}, recommended hit rate {hit} (n={cal['n']})")

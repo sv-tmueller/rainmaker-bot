@@ -63,7 +63,9 @@ def render_terminal(report: Report) -> str:
         lines.append("  No bets pass the gates today.")
     lines.append("")
     for m in report.markets:
-        lines.append(f"{m.title}  [{m.station} {m.variable} {m.settlement_date.isoformat()}]")
+        lines.append(
+            f"{m.title}  [{m.station} {m.variable} {m.settlement_date.isoformat()} - {m.venue}]"
+        )
         lines.append(f"  sources: {m.n_sources}")
         if m.mu is not None and m.sigma is not None:
             cal = "calibrated" if m.calibrated else "uncalibrated"
@@ -121,7 +123,7 @@ def render_markdown(report: Report) -> str:
         lines.append("")
         lines.append(
             f"- station: {m.station}  variable: {m.variable}"
-            f"  settlement: {m.settlement_date.isoformat()}"
+            f"  settlement: {m.settlement_date.isoformat()}  venue: {m.venue}"
         )
         lines.append(f"- sources: {m.n_sources}")
         if m.mu is not None and m.sigma is not None:

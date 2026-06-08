@@ -59,7 +59,7 @@ def _settled_rows(conn: Conn) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT p.market_id AS market_id, p.run_id AS run_id, p.bucket AS bucket, "
         "p.side AS side, p.p_win AS p_win, p.edge AS edge, "
-        "p.recommended AS recommended, m.variable AS variable, "
+        "p.recommended AS recommended, m.variable AS variable, m.venue AS venue, "
         "r.started_at AS started_at, "
         "pr.price AS ask, o.actual_value AS actual_value "
         "FROM predictions p "
@@ -97,13 +97,22 @@ def _best_per_market_run(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(best.values())
 
 
-def compute_pnl(conn: Conn) -> dict[str, Any]:
-    """Hypothetical P&L over recommended bets at a flat one-unit stake."""
+def _filter_venue(rows: list[dict[str, Any]], venue: str | None) -> list[dict[str, Any]]:
+    """Keep rows for one venue; legacy rows with a null venue count as polymarket."""
+    if venue is None:
+        return rows
+    return [r for r in rows if (r.get("venue") or "polymarket") == venue]
+
+
+def compute_pnl(conn: Conn, venue: str | None = None) -> dict[str, Any]:
+    """Hypothetical P&L over recommended bets at a flat one-unit stake.
+
+    With venue set ("polymarket" / "kalshi"), restrict to that venue's markets."""
     total_pnl = 0.0
     total_staked = 0.0
     wins = 0
     n = 0
-    for r in _best_per_market_run(_settled_rows(conn)):
+    for r in _best_per_market_run(_filter_venue(_settled_rows(conn), venue)):
         n += 1
         ask = r["ask"]
         total_staked += ask
@@ -122,9 +131,11 @@ def compute_pnl(conn: Conn) -> dict[str, Any]:
     }
 
 
-def compute_calibration(conn: Conn) -> dict[str, Any]:
-    """Brier over the settled YES bucket-predictions, plus recommended hit rate."""
-    rows = _settled_rows(conn)
+def compute_calibration(conn: Conn, venue: str | None = None) -> dict[str, Any]:
+    """Brier over the settled YES bucket-predictions, plus recommended hit rate.
+
+    With venue set, restrict to that venue's markets."""
+    rows = _filter_venue(_settled_rows(conn), venue)
     if not rows:
         return {"n": 0, "brier": None, "hit_rate": None}
     # Brier measures forecast calibration over the YES bucket-predictions; each NO
