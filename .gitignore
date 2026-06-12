@@ -13,3 +13,4 @@ reports/
 .env.*
 .dburl
 .superpowers/
+.claude/settings.local.json
