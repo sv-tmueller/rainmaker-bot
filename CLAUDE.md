@@ -118,8 +118,8 @@ saved JSON fixtures in `tests/fixtures/`, never live endpoints.
 ```
 .claude/
   agents/             role agents: architect, developer, tester, reviewer
-  skills/             project skills: /kickoff, /grill-me, /to-issues, /sync-template
-  workflows/          bounded orchestration scripts (review-changes)
+  skills/             project skills: /tm-advisor, /tm-grill-me, /tm-kickoff, /tm-sync-template, /tm-to-issues
+  workflows/          bounded orchestration scripts (tm-review-changes, tm-review-codebase)
   settings.json       project settings; enables the superpowers plugin
 src/rainmaker/
   config.py           station registry (11 cities), Target, source config constants
@@ -176,6 +176,12 @@ docs/
 The golden end-to-end test (fixture markets and fixture forecasts in, expected
 ranked report out) is the safety net for the whole pipeline; keep it green
 before any change that touches forecasting, calibration, or ranking.
+
+Every skill and workflow built in this repo carries the `tm-` prefix
+(`/tm-advisor`, `/tm-kickoff`, `/tm-review-changes`, and so on). The prefix
+marks them as this project's own commands, so they are easy to tell apart from
+the out-of-the-box and plugin skills (superpowers and the like) in the same
+list. New project commands follow the same rule: name them `tm-<thing>`.
 
 ## How we work
 
@@ -236,7 +242,7 @@ task").
    It must pass before requesting review.
 8. Mark the PR ready for review.
 
-For a batch of refined, sized issues, `/kickoff` automates this flow per
+For a batch of refined, sized issues, `/tm-kickoff` automates this flow per
 issue, with the sub-plan comment standing in for step 5's full plan (see
 "Agent team").
 
@@ -257,9 +263,9 @@ Standing preferences for this project:
 
 ## Agent team
 
-The template ships four role agents in `.claude/agents/` and a `/kickoff`
-skill. The lead is the main session: subagents cannot call each other, so the
-session running `/kickoff` routes every handoff, and GitHub (sub-plan and
+The template ships four role agents in `.claude/agents/` and a set of skills.
+The lead is the main session: subagents cannot call each other, so the
+session running `/tm-kickoff` routes every handoff, and GitHub (sub-plan and
 verdict comments, draft PRs, labels) holds the state that makes a dropped
 session resumable.
 
@@ -268,25 +274,48 @@ session resumable.
 - `tester` - independent verification on the branch, read-only.
 - `reviewer` - spec pass then quality pass, read-only.
 
-Refine and size issues in discussion first (`/grill-me` stress-tests the
-plan, `/to-issues` turns it into sized issues); mark dependencies with a
-literal `Blocked by: #N` line in the issue body. Then `/kickoff <issues>`
+Refine and size issues in discussion first (`/tm-grill-me` stress-tests the
+plan, `/tm-to-issues` turns it into sized issues); mark dependencies with a
+literal `Blocked by: #N` line in the issue body. Then `/tm-kickoff <issues>`
 (user-typed only; it does not auto-trigger) runs unblocked issues in parallel
-waves to ready PRs. Under `/kickoff` the sub-plan comment substitutes for the
+waves to ready PRs. Under `/tm-kickoff` the sub-plan comment substitutes for the
 full plan in `docs/plans/`. Merging stays human and gates the next wave. Caps,
-routing, and report contracts live in `.claude/skills/kickoff/SKILL.md` and
+routing, and report contracts live in `.claude/skills/tm-kickoff/SKILL.md` and
 the agent files; they are not repeated here.
 
 Labels: `in-progress` (package dispatched; resume, do not restart) and
 `needs-human` (parked: question, blocker, or exhausted fix loop), on top of
 the sizing set.
 
+## Operating model (advisor)
+
+`/tm-advisor` (user-typed only) runs the lead session as the user's advisor: it
+refines a raw need into a batch of work packages, gets one sign-off, then
+runs the team uninterrupted and reports. The full design is
+`docs/superpowers/specs/2026-06-12-advisor-operating-model-design.md`; the
+mechanics live in `.claude/skills/tm-advisor/SKILL.md`. The rules that matter
+session-wide:
+
+- A batch is up to 6 independent `size:S`/`size:M` issues, run through the
+  kickoff pipeline 3 at a time. Merging stays human; dependent work waits
+  for the next batch.
+- One sign-off per batch covers filing the issues and dispatching. Nothing
+  lands on GitHub before it.
+- The escalation line is scope. Within the signed-off scope and acceptance
+  criteria the advisor decides and logs the decision on the batch issue.
+  Scope or acceptance-criteria changes, new dependencies or costs,
+  irreversible or outward-facing actions, and conflicts with
+  `docs/architecture/` park as `needs-human`.
+- Each batch has a tracking issue (title `Batch: <slug>`): the approved
+  contract, the decision log, parked questions, the final report. Dropped
+  sessions resume from it.
+
 ## Model policy
 
 A strong orchestrator with efficient workers. The lever is where each model
 runs, not raw effort everywhere.
 
-- Orchestrator (the lead session, including `/kickoff`): Opus 4.8 at max
+- Orchestrator (the lead session, including `/tm-kickoff`): Opus 4.8 at max
   effort. Opus does not over-spawn under ultracode the way Fable 5 does, and it
   weighs less against Max-plan quota. Keep the lead here.
 - `ultracode`: use it as a per-prompt keyword, never as a session-wide effort
@@ -296,10 +325,15 @@ runs, not raw effort everywhere.
   `tester` run `sonnet` (efficient implementation and verification);
   `architect` and `reviewer` run `opus` (the judgment roles).
 - Workflows: pin worker stages to a cheap model in the script and reserve the
-  strong model for synthesis or critique. The `review-changes` workflow in
+  strong model for synthesis or critique. The `tm-review-changes` workflow in
   `.claude/workflows/` is the worked example: a fixed set of Sonnet reviewers
   plus one Opus critic, bounded by construction so it cannot fan out into the
   100-agent review that an unpinned session model produces.
+  `tm-review-codebase` applies the same discipline to a whole-repo audit: a Sonnet
+  scout splits the repo into N areas (sized to the repo, capped at a ceiling),
+  Sonnet workers review each area plus repo-wide structure, and one Opus critic
+  consolidates. The agent count is N + 3, so it scales with repo size up to the
+  ceiling and never fans out unboundedly.
 - Do not set `CLAUDE_CODE_SUBAGENT_MODEL`. It overrides both the per-call model
   and the frontmatter `model:`, flattening every subagent to one model and
   defeating the split above. Use it only as a temporary per-session seatbelt
@@ -330,7 +364,7 @@ forecasts into an expected ranked report.
   tests including the golden e2e).
 - Don't bypass git hooks (`--no-verify`). If a hook fails, fix the cause.
 - Don't improve `.claude/` machinery only in this repo. Change the template
-  (sv-tmueller/claude-template) first, then `/sync-template` it back here;
+  (sv-tmueller/claude-template) first, then `/tm-sync-template` it back here;
   local-only edits are overwritten by the next sync.
 - Don't introduce a new dependency without saying why in the PR body.
 

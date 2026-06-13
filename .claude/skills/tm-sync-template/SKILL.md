@@ -1,5 +1,5 @@
 ---
-name: sync-template
+name: tm-sync-template
 description: Pull the latest claude-template machinery and process updates into this repo and open a PR. Works in repos created from any template version, including repos with no .claude/ at all. User-invocable only.
 disable-model-invocation: true
 argument-hint: "[template-repo]"
@@ -13,7 +13,11 @@ Template repo: $ARGUMENTS (default `sv-tmueller/claude-template`).
 
 ## 1. Get the delta
 
-Clone the template to /tmp (full history; it is small). Read
+Clone the template to a fresh temp dir: run `mktemp -d` and clone into the
+path it prints (full history; it is small). This skill's steps run as
+separate shell commands, and shell variables do not persist across them, so
+note the literal path (call it CLONE below) and substitute it verbatim in
+every later reference; do not rely on `$CLONE` still being set. Read
 `.claude/template-version` here:
 
 - Stamp present and valid in the clone's history: the delta is
@@ -26,11 +30,16 @@ If the delta is empty, say so and stop.
 
 ## 2. File classes, in scope only
 
-- Machinery (`.claude/agents/`, `.claude/skills/`, `.claude/workflows/`): copy the template
-  version over the local file. Guard first: if the local file differs from
-  BOTH the old template version (from the stamp) and the new one, it was
-  modified locally; do not overwrite, list it in the PR as a conflict for
-  the user. Never delete local agents or skills the template does not have.
+- Machinery (`.claude/agents/`, `.claude/skills/`, `.claude/workflows/`): three-way
+  guard before copying. Get the three versions: old = `git show <stamp>:<path>` in
+  the clone (CLONE); new = the checked-out file in the clone at HEAD;
+  local = the file in this repo. If local == old, overwrite with new. If local
+  differs from BOTH old and new, the file was modified locally; do not overwrite,
+  list it in the PR as a conflict for the user. (If local already matches new, no
+  action needed.) In unknown-base mode (no stamp), the old version does not exist
+  so the three-way test cannot run; treat every machinery file as a conflict, do
+  not overwrite, list it in the PR. Never delete local agents or skills the
+  template does not have.
 - `.claude/settings.json`: merge by key. Template-shipped keys (such as its
   `enabledPlugins` entries) update; project keys (permissions, hooks, env)
   stay.
@@ -46,9 +55,14 @@ If the delta is empty, say so and stop.
 - Ensure the workflow labels exist (`size:S/M/L/XL`, `in-progress`,
   `needs-human`); create missing ones with `gh label create`.
 - If a user-scope copy of this skill exists on this machine (under
-  `$CLAUDE_CONFIG_DIR/skills/` or `~/.claude/skills/`) and is older than the
-  template's copy, update it too; it is the bootstrap for repos that do not
-  carry this skill yet.
+  `$CLAUDE_CONFIG_DIR/skills/` or `~/.claude/skills/`), apply the same
+  three-way guard as Section 2: old = `git show <stamp>:<path>` in the clone
+  (CLONE), new = the file in CLONE at HEAD, local = the user-scope copy. If
+  local == old, overwrite with new. If local differs from both old and new,
+  the user-scope copy was customized; do not overwrite, note it in the PR.
+  If local already matches new, no action needed. In unknown-base mode (no
+  stamp), do not overwrite; note it in the PR. This copy is the bootstrap
+  for repos that do not carry this skill yet.
 
 ## 4. Ship it
 
@@ -60,3 +74,6 @@ If the delta is empty, say so and stop.
 4. Open a PR with `Closes #<n>`. The body lists the template commits
    applied, the files touched per class, and any conflicts or skipped prose
    from the guards above. Merging stays with the user.
+5. Remove the clone: `rm -rf` the recorded CLONE path. If an earlier step
+   failed before reaching here, still remove it; mktemp makes the path
+   unique, so a leftover never collides, but clean it up anyway.
