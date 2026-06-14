@@ -48,6 +48,26 @@ def test_unknown_strike_type_raises():
         parse_kalshi_bucket(_mkt(strike_type="weird"))
 
 
+def test_yes_price_prefers_last_price():
+    # last_price present -> used directly, ignoring the bid/ask mid.
+    b = parse_kalshi_bucket(_mkt(last_price_dollars="0.1000"))
+    assert b.yes_price == pytest.approx(0.10)
+
+
+def test_yes_price_falls_back_to_mid_when_last_none():
+    # no last trade -> mid of yes_ask 0.12 and yes_bid 0.09 = 0.105.
+    b = parse_kalshi_bucket(_mkt(last_price_dollars=None))
+    assert b.yes_price == pytest.approx(0.105)
+
+
+def test_yes_price_zero_when_all_none():
+    # no last, no ask, no bid -> 0.0.
+    b = parse_kalshi_bucket(
+        _mkt(last_price_dollars=None, yes_ask_dollars=None, yes_bid_dollars=None)
+    )
+    assert b.yes_price == 0.0
+
+
 def _event_markets():
     rule = (
         "If the highest temperature recorded in Central Park, New York for "

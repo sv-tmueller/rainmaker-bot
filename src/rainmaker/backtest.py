@@ -173,7 +173,7 @@ def backtest_synthetic(
 
     Returns None if no day has both a forecast and an actual.
     """
-    forecasts = fetch_historical_forecasts(station, start, end, client)
+    forecasts = fetch_historical_forecasts(station, start, end, client, variable)
     actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)
     days = [
         score_day(g, standard_buckets(g.mu, width=width, span=span), actuals[d])

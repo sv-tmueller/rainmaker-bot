@@ -71,6 +71,18 @@ def test_settles_below_and_above_thresholds():
     assert not settles("above", None, None, 78, 77.4)  # rounds to 77
 
 
+def test_exhaustive_partition_settles_exactly_one_bucket_per_integer():
+    # A contiguous below/range/above partition must settle exactly one bucket for
+    # every integer actual, with no gaps and no overlaps.
+    buckets = [
+        _bucket("below", threshold=59),
+        *[_bucket("range", lo=lo, hi=lo + 1) for lo in range(60, 78, 2)],
+        _bucket("above", threshold=78),
+    ]
+    for actual in range(50, 90):
+        assert sum(settles(b.kind, b.lo, b.hi, b.threshold, float(actual)) for b in buckets) == 1
+
+
 def test_settles_uses_half_to_even_rounding():
     # Python round() is banker's rounding: 70.5 -> 70 (not 71), 72.5 -> 72.
     assert settles("range", 70, 71, None, 70.5)  # 70.5 -> 70, in [70, 71]

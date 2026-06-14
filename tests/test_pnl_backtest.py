@@ -284,7 +284,9 @@ def _clob_history() -> dict[str, Any]:
 def _clob_callback(request: httpx.Request) -> httpx.Response:
     # The same flat 0.15 series for any requested token; the per-bucket forecast,
     # not the price, decides which buckets clear the gates.
-    assert request.url.params["market"]  # keyed on the token, per the fixture pattern
+    # the price-history request must carry the token in the 'market' param
+    assert "market" in request.url.params
+    assert request.url.params["market"]
     return httpx.Response(200, json=_clob_history())
 
 

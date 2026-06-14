@@ -61,6 +61,22 @@ def test_run_settlement_records_outcome(httpx_mock):
     assert row["settled_at"] == "2026-06-03T00:00:00Z"
 
 
+def test_run_settlement_records_tmin_outcome(httpx_mock):
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "m1", "NYC", "TMIN", "2026-05-30")
+    httpx_mock.add_response(
+        url=re.compile(re.escape(NCEI_URL)),
+        json=[{"DATE": "2026-05-30", "STATION": "USW00014732", "TMIN": "45"}],
+    )
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
+    row = conn.execute("SELECT actual_value FROM outcomes WHERE market_id = ?", ("m1",)).fetchone()
+    conn.close()
+    assert (settled, waiting) == (1, 0)
+    assert row["actual_value"] == 45.0
+
+
 def test_run_settlement_skips_when_no_data(httpx_mock):
     conn = connect(":memory:")
     init_schema(conn)

@@ -1,8 +1,11 @@
 import pytest
 
 from rainmaker.backtest import (
+    BacktestResult,
     DayScore,
+    ReliabilityBin,
     aggregate,
+    combine,
     reliability_bins,
     score_day,
     standard_buckets,
@@ -98,3 +101,47 @@ def test_aggregate_rolls_up_metrics():
 def test_aggregate_empty_raises():
     with pytest.raises(ValueError):
         aggregate([])
+
+
+def _result(n: int, *, bin_lo: float, predicted: float, observed: float, bin_n: int):
+    return BacktestResult(
+        n=n,
+        modal_hit_rate=0.5,
+        mean_modal_p=0.6,
+        mean_brier=0.2,
+        coverage={0.5: 0.4, 0.8: 0.7, 0.9: 0.8},
+        reliability=[
+            ReliabilityBin(
+                lo=bin_lo,
+                hi=bin_lo + 0.1,
+                predicted_mean=predicted,
+                observed_freq=observed,
+                count=bin_n,
+            )
+        ],
+    )
+
+
+def test_combine_n_weights_metrics_and_merges_bins():
+    r1 = _result(10, bin_lo=0.5, predicted=0.52, observed=0.6, bin_n=10)
+    r2 = _result(30, bin_lo=0.5, predicted=0.56, observed=0.4, bin_n=30)
+    out = combine([r1, r2])
+    assert out.n == 40
+    # all per-result metrics are equal here, so the n-weighted mean is unchanged
+    assert out.modal_hit_rate == pytest.approx(0.5)
+    assert out.mean_modal_p == pytest.approx(0.6)
+    assert out.mean_brier == pytest.approx(0.2)
+    assert out.coverage[0.5] == pytest.approx(0.4)
+    assert out.coverage[0.8] == pytest.approx(0.7)
+    assert out.coverage[0.9] == pytest.approx(0.8)
+    # the two bins at the same lo merge into one, count-weighted
+    assert len(out.reliability) == 1
+    merged = out.reliability[0]
+    assert merged.lo == 0.5 and merged.count == 40
+    assert merged.predicted_mean == pytest.approx((0.52 * 10 + 0.56 * 30) / 40)
+    assert merged.observed_freq == pytest.approx((0.6 * 10 + 0.4 * 30) / 40)
+
+
+def test_combine_empty_raises():
+    with pytest.raises(ValueError):
+        combine([])

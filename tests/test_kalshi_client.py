@@ -10,7 +10,11 @@ from rainmaker.config import (
     KALSHI_LOW_SERIES,
     KALSHI_RAIN_SERIES,
 )
-from rainmaker.kalshi.client import discover_kalshi_markets, discover_kalshi_precip_markets
+from rainmaker.kalshi.client import (
+    _fetch_open_markets,
+    discover_kalshi_markets,
+    discover_kalshi_precip_markets,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 FIXTURE = json.loads((FIXTURES / "kalshi_high_temp_nyc.json").read_text())
@@ -91,6 +95,20 @@ def _fixture_with_keyless_market():
     del keyless["event_ticker"]
     fixture["markets"] = [keyless, valid_market]
     return fixture
+
+
+def test_fetch_open_markets_follows_cursor(httpx_mock):
+    # First page returns a non-empty cursor, so the client fetches a second page
+    # carrying that cursor, then stops when the second page's cursor is empty.
+    httpx_mock.add_response(url=_URL, json={"cursor": "PAGE2", "markets": [{"ticker": "A"}]})
+    httpx_mock.add_response(url=_URL, json={"cursor": "", "markets": [{"ticker": "B"}]})
+    with httpx.Client() as client:
+        out = _fetch_open_markets(client, "KXHIGHNY")
+    assert [m["ticker"] for m in out] == ["A", "B"]
+    requests = httpx_mock.get_requests()
+    assert len(requests) == 2
+    assert "cursor" not in requests[0].url.params
+    assert requests[1].url.params["cursor"] == "PAGE2"
 
 
 def test_discover_skips_market_missing_event_ticker(httpx_mock):
