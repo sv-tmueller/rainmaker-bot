@@ -163,3 +163,38 @@ def test_run_settlement_skips_unknown_precip_city():
         settled, waiting = run_settlement(conn, client, date(2026, 7, 3), "2026-07-03T00:00:00Z")
     conn.close()
     assert (settled, waiting) == (0, 0)
+
+
+def test_run_settlement_continues_past_http_error(httpx_mock):
+    # One station's NCEI HTTP error must not abort the loop: that market waits and
+    # every other market is still attempted. (Scheduled-run robustness.)
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "m1", "NYC", "TMAX", "2026-05-30")
+    _market(conn, "m2", "NYC", "TMAX", "2026-05-30")
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), status_code=500)
+    httpx_mock.add_response(
+        url=re.compile(re.escape(NCEI_URL)),
+        json=[{"DATE": "2026-05-30", "TMAX": "71"}],
+    )
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
+    n = conn.execute("SELECT count(*) AS n FROM outcomes").fetchone()["n"]
+    conn.close()
+    assert (settled, waiting) == (1, 1)
+    assert n == 1
+
+
+def test_run_settlement_precip_waits_on_http_error(httpx_mock):
+    # The precip fetch path (fetch_monthly_precip) also raises on HTTP error; the
+    # market must wait, not crash the run.
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "p1", "NYC", "PRCP", "2026-06-30")
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), status_code=500)
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 7, 3), "2026-07-03T00:00:00Z")
+    n = conn.execute("SELECT count(*) AS n FROM outcomes").fetchone()["n"]
+    conn.close()
+    assert (settled, waiting) == (0, 1)
+    assert n == 0
