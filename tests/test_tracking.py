@@ -507,3 +507,53 @@ def test_compute_live_accuracy_skips_bad_rows():
     # both bad rows are skipped; only the good m1 sample remains
     assert len(rows) == 1
     assert rows[0]["accuracy"].n == 1
+
+
+def test_write_snapshot_snapshot_after_accuracy(monkeypatch):
+    # The tracking_snapshot INSERT must come after the save_accuracy loop so that
+    # a failure mid-loop does not leave a committed snapshot without all accuracy rows.
+    # If save_accuracy raises on the second call, no snapshot row should be committed.
+    import rainmaker.tracking as tracking_mod
+    from rainmaker.store.record import save_accuracy as real_save_accuracy
+    from rainmaker.tracking import write_snapshot
+
+    call_count = 0
+
+    def save_accuracy_bomb(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            raise RuntimeError("simulated save_accuracy failure")
+        return real_save_accuracy(*args, **kwargs)
+
+    conn = connect(":memory:")
+    _setup_live(conn)
+    # Add a second accuracy group (different city, so compute_live_accuracy returns two rows).
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        ("m2", "Miami", "TMAX", "2026-05-31"),
+    )
+    dist = json.dumps({"mu": 55.0, "sigma": 2.0, "n_sources": 2})
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, dist_params, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "m2", "54-55°F", 0.5, dist, 0.1, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("m2", 57.0, "t"),
+    )
+    conn.commit()
+
+    # Patch where it is used (the name bound in tracking.py after the import).
+    monkeypatch.setattr(tracking_mod, "save_accuracy", save_accuracy_bomb)
+    with pytest.raises(RuntimeError, match="simulated save_accuracy failure"):
+        write_snapshot(conn, "2026-06-04", "t")
+
+    # With the fix (snapshot INSERT after the loop), the snapshot is not committed
+    # when save_accuracy raises on the second call. Without the fix it would already
+    # be committed (the first save_accuracy commit flushes the pending snapshot INSERT).
+    n = conn.execute("SELECT count(*) AS n FROM tracking_snapshot").fetchone()["n"]
+    conn.close()
+    assert n == 0, "snapshot was committed before all accuracy rows - ordering bug"
