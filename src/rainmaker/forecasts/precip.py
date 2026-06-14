@@ -18,10 +18,10 @@ from pydantic import BaseModel
 
 from rainmaker.backfill import fetch_actuals
 from rainmaker.config import OPENMETEO_ENSEMBLE_MODELS, OPENMETEO_FORECAST_DAYS, OPENMETEO_MODELS
+from rainmaker.domain import PrecipTarget
 from rainmaker.forecasts.base import SourceCoverage
 from rainmaker.forecasts.nws import NWS_BASE
 from rainmaker.forecasts.openmeteo import ENSEMBLE_URL, FORECAST_URL
-from rainmaker.polymarket.precip_markets import PrecipTarget
 
 _PRECIP_FIELD = "precipitation_sum"
 _MM_PER_INCH = 25.4

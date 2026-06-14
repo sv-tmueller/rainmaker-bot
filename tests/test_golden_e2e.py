@@ -11,9 +11,10 @@ from rainmaker.config import (
     PRECIP_VAR_FLOOR,
     build_target,
 )
+from rainmaker.domain import Bucket, Market
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.forecasts.precip import PrecipForecastSet
-from rainmaker.polymarket.markets import Bucket, Market, parse_market
+from rainmaker.polymarket.markets import parse_market
 from rainmaker.polymarket.precip_markets import parse_precip_event
 from rainmaker.ranking.edge import evaluate_market, evaluate_precip_market
 from rainmaker.report.render import Report, render_markdown

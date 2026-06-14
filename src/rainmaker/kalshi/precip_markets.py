@@ -12,9 +12,8 @@ from datetime import date
 from typing import Any
 
 from rainmaker.config import PrecipStation
+from rainmaker.domain import BucketKind, PrecipBracket, PrecipMonthlyMarket, PrecipTarget
 from rainmaker.kalshi.markets import _MONTHS, _price, _yes_price
-from rainmaker.polymarket.markets import BucketKind
-from rainmaker.polymarket.precip_markets import PrecipBracket, PrecipMonthlyMarket, PrecipTarget
 
 _MONTH_TOKEN_RE = re.compile(r"-(\d{2})([A-Z]{3})(?:-|$)")
 

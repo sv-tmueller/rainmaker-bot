@@ -1,7 +1,6 @@
 from scipy.stats import gamma as _gamma
 
-from rainmaker.polymarket.markets import BucketKind
-from rainmaker.polymarket.precip_markets import SETTLEMENT_DECIMALS, PrecipBracket
+from rainmaker.domain import SETTLEMENT_DECIMALS, BucketKind, PrecipBracket
 from rainmaker.probability.precip_distribution import Gamma
 
 

@@ -7,9 +7,8 @@ rendered report, so every run is fully reconstructable.
 import json
 from collections import defaultdict
 
+from rainmaker.domain import Market, PrecipMonthlyMarket
 from rainmaker.forecasts.base import ForecastSet
-from rainmaker.polymarket.markets import Market
-from rainmaker.polymarket.precip_markets import PrecipMonthlyMarket
 from rainmaker.probability.calibration import Accuracy, Calibration
 from rainmaker.ranking.edge import MarketReport
 from rainmaker.store.db import Conn

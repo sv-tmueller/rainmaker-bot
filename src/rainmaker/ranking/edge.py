@@ -4,10 +4,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from rainmaker.domain import Market, PrecipMonthlyMarket
 from rainmaker.forecasts.base import ForecastSet, SourceCoverage
 from rainmaker.forecasts.precip import PrecipForecastSet
-from rainmaker.polymarket.markets import Market
-from rainmaker.polymarket.precip_markets import PrecipMonthlyMarket
 from rainmaker.probability.calibration import Calibration, apply_calibration
 from rainmaker.probability.distribution import fit_gaussian
 from rainmaker.probability.outcomes import bucket_probability

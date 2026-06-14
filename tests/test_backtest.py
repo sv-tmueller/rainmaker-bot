@@ -10,7 +10,7 @@ from rainmaker.backtest import (
     score_day,
     standard_buckets,
 )
-from rainmaker.polymarket.markets import parse_bucket_label
+from rainmaker.domain import parse_bucket_label
 from rainmaker.probability.distribution import Gaussian
 from rainmaker.probability.outcomes import bucket_probability
 

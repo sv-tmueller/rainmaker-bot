@@ -12,7 +12,7 @@ from datetime import date
 from typing import Any
 
 from rainmaker.config import Station, Target, Variable
-from rainmaker.polymarket.markets import Bucket, BucketKind, Market
+from rainmaker.domain import Bucket, BucketKind, Market
 
 # The phrase each daily-temperature rule uses for its quantity. High-temp rules
 # also name the exact station ("Central Park, New York"); low-temp rules name only

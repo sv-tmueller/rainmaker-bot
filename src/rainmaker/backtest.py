@@ -20,7 +20,8 @@ from scipy.stats import norm
 
 from rainmaker.backfill import fetch_actuals, fetch_historical_forecasts
 from rainmaker.config import Station
-from rainmaker.polymarket.markets import Bucket, BucketKind, Market, parse_market
+from rainmaker.domain import Bucket, BucketKind, Market
+from rainmaker.polymarket.markets import parse_market
 from rainmaker.probability.distribution import Gaussian
 from rainmaker.probability.outcomes import bucket_probability, settles
 

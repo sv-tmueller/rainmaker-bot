@@ -1,6 +1,6 @@
 from scipy.stats import norm
 
-from rainmaker.polymarket.markets import Bucket, BucketKind
+from rainmaker.domain import Bucket, BucketKind
 from rainmaker.probability.distribution import Gaussian
 
 

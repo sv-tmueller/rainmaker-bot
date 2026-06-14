@@ -1,62 +1,13 @@
 import json
 import re
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict
+from rainmaker.config import STATIONS, Variable, build_target
+from rainmaker.domain import Bucket, Market, parse_bucket_label
 
-from rainmaker.config import STATIONS, Target, Variable, build_target
-
-BucketKind = Literal["below", "range", "above"]
-
-_RANGE_RE = re.compile(r"(-?\d+)\s*-\s*(-?\d+)")
-_THRESHOLD_RE = re.compile(r"(-?\d+)")
-
-
-def parse_bucket_label(label: str) -> tuple[BucketKind, int | None, int | None, int | None]:
-    """Parse a Polymarket bucket title into (kind, lo, hi, threshold).
-
-    "59°F or below" -> ("below", None, None, 59)
-    "70-71°F"       -> ("range", 70, 71, None)
-    "78°F or higher" -> ("above", None, None, 78)
-    """
-    lowered = label.lower()
-    if "below" in lowered:
-        match = _THRESHOLD_RE.search(label)
-        if match is None:
-            raise ValueError(f"no threshold in below-bucket label: {label!r}")
-        return ("below", None, None, int(match.group(1)))
-    if "higher" in lowered or "above" in lowered:
-        match = _THRESHOLD_RE.search(label)
-        if match is None:
-            raise ValueError(f"no threshold in above-bucket label: {label!r}")
-        return ("above", None, None, int(match.group(1)))
-    match = _RANGE_RE.search(label)
-    if match is None:
-        raise ValueError(f"unrecognized bucket label: {label!r}")
-    lo, hi = int(match.group(1)), int(match.group(2))
-    if lo >= hi:
-        raise ValueError(f"inverted range bucket label: {label!r}")
-    return ("range", lo, hi, None)
-
-
-class Bucket(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    label: str
-    kind: BucketKind
-    lo: int | None
-    hi: int | None
-    threshold: int | None
-    yes_token_id: str
-    best_ask: float | None
-    best_bid: float | None
-    yes_price: float
-    # NO side. Gamma exposes only the YES book, so the NO ask is the complement of
-    # the YES bid (buying NO == selling YES). None when there is no YES bid to take.
-    no_token_id: str = ""
-    no_ask: float | None = None
+_TITLE_RE = re.compile(r"(highest|lowest) temperature in (.+?) on .+", re.IGNORECASE)
 
 
 def parse_bucket(market: dict[str, Any]) -> Bucket:
@@ -79,20 +30,6 @@ def parse_bucket(market: dict[str, Any]) -> Bucket:
         no_token_id=token_ids[1],
         no_ask=None if best_bid is None else 1 - best_bid,
     )
-
-
-_TITLE_RE = re.compile(r"(highest|lowest) temperature in (.+?) on .+", re.IGNORECASE)
-
-
-class Market(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    id: str
-    slug: str
-    title: str
-    target: Target
-    buckets: list[Bucket]
-    venue: str = "polymarket"  # "kalshi" when discovered from Kalshi
 
 
 def parse_variable(title: str) -> Variable:

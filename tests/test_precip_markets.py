@@ -6,12 +6,10 @@ from typing import Any
 
 import pytest
 
+from rainmaker.domain import SETTLEMENT_DECIMALS, PrecipMonthlyMarket, parse_precip_bracket_label
 from rainmaker.polymarket.precip_markets import (
     ROUND_BETWEEN_BRACKETS_UP,
-    SETTLEMENT_DECIMALS,
-    PrecipMonthlyMarket,
     parse_precip_bracket,
-    parse_precip_bracket_label,
     parse_precip_event,
 )
 
