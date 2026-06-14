@@ -1,5 +1,5 @@
-from rainmaker.store.db import connect, init_schema
-from rainmaker.store.migrate import apply_migrations
+from rainmaker.store.db import _SQLITE_SCHEMA, connect, init_schema
+from rainmaker.store.migrate import _MIGRATIONS, apply_migrations
 
 
 def test_migration_adds_predictions_bucket_column():
@@ -62,3 +62,34 @@ def test_apply_migrations_is_idempotent():
     n = conn.execute("SELECT count(*) AS n FROM schema_migrations").fetchone()["n"]
     conn.close()
     assert n == 5
+
+
+def test_apply_migrations_crash_safe_when_alter_already_applied():
+    """apply_migrations must succeed when a column was added but never recorded.
+
+    Simulates a crash after the 0001 ALTER TABLE ran but before its
+    schema_migrations INSERT committed.  The column exists; no tracking row
+    does.  apply_migrations must recover (skip duplicate, record 0001) then
+    apply 0002-0005 normally - testing both paths in one call.
+    """
+    # Create the base tables only (no migration columns, no schema_migrations).
+    conn = connect(":memory:")
+    for stmt in _SQLITE_SCHEMA.split(";"):
+        if stmt.strip():
+            conn.execute(stmt)
+    conn.commit()
+
+    # Simulate: 0001 ALTER ran but the process crashed before the INSERT.
+    # Apply the first migration's SQL manually without recording it.
+    first_id, first_stmts = _MIGRATIONS[0]
+    for stmt in first_stmts:
+        conn.execute(stmt)
+    conn.commit()
+
+    # apply_migrations must not raise 'duplicate column name' for 0001 and must
+    # apply 0002-0005 forward normally.
+    apply_migrations(conn)
+
+    rows = {r["id"] for r in conn.execute("SELECT id FROM schema_migrations").fetchall()}
+    conn.close()
+    assert rows == {mid for mid, _ in _MIGRATIONS}

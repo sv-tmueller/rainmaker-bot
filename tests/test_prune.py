@@ -99,6 +99,36 @@ def test_prune_keeps_runs_on_different_days():
     conn.close()
 
 
+def _add_run_prices_only(conn, market_id, run_id, started_at):
+    """A run that records only prices - no predictions or forecasts (precip market path)."""
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, 'ok')",
+        (run_id, started_at),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, side, price, implied_prob, captured_at) "
+        "VALUES (?, ?, 'under', 'YES', 0.55, 0.55, 't')",
+        (run_id, market_id),
+    )
+
+
+def test_prune_reclaims_prices_for_settled_market_with_no_predictions():
+    """A precip market writes prices but not predictions; its redundant intraday
+    prices must still be pruned when the market settles."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    _add_market(conn, "m2", settled=True)
+    _add_run_prices_only(conn, "m2", "r1", "2026-06-06T09:00:00Z")
+    _add_run_prices_only(conn, "m2", "r2", "2026-06-06T12:00:00Z")
+    conn.commit()
+    deleted = prune_settled(conn)
+    conn.commit()
+    assert _rows_for(conn, "prices", "r1", "m2") == 0  # older run pruned
+    assert _rows_for(conn, "prices", "r2", "m2") == 1  # latest run kept
+    assert deleted >= 1
+    conn.close()
+
+
 def test_prune_is_idempotent():
     conn = connect(":memory:")
     init_schema(conn)
