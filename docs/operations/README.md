@@ -4,11 +4,12 @@ How to run and operate the bot. MVP 1.0/2.0 are advisory and tracking: the bot
 tells you what to bet and scores itself afterwards, but never trades. You place
 bets on Polymarket yourself.
 
-## The daily cloud run
+## The scheduled cloud run
 
-GitHub Actions runs `.github/workflows/daily-run.yml` at 13:00 UTC daily (and on
-manual `workflow_dispatch`): `rainmaker run`, then `rainmaker settle`, then
-`rainmaker snapshot`, all against Supabase Postgres via the `DATABASE_URL`
+GitHub Actions runs `.github/workflows/daily-run.yml` every 3 hours, on the hour
+(and on manual `workflow_dispatch`): `rainmaker run`, then `rainmaker settle`,
+then `rainmaker prune`, then `rainmaker snapshot`, all against Supabase Postgres
+via the `DATABASE_URL`
 repository secret (the Supabase session-pooler connection string). Each step
 refuses to run unless that secret is a Postgres DSN, so a misconfigured secret
 fails loud instead of silently writing to a throwaway SQLite file in the runner.
@@ -26,6 +27,8 @@ you mean to touch prod.
   into `outcomes`. NOAA is a documented proxy for Weather Underground, the true
   resolution source. Idempotent catch-up: NCEI lags a day or two, so unsettled
   markets are simply retried on later runs.
+- `uv run rainmaker prune`: drop all-but-latest intraday rows per settled
+  (market, UTC day) from prices/predictions/forecasts, to bound storage.
 - `uv run rainmaker track`: print P&L and calibration over settled markets.
   P&L is hypothetical: one unit staked on every recommended bet at its listed
   ask, so a market re-recommended on several days counts as several bets.
@@ -65,7 +68,7 @@ Each bet shows:
 - `edge`: `P(win) - ask`. Positive edge is expected value in your favour.
 
 A bet is recommended only if it clears the gates: `P(win)` at or above the
-confidence floor (`CONFIDENCE_FLOOR`, currently 0.90) and at least
+confidence floor (`CONFIDENCE_FLOOR`, currently 0.80) and at least
 `MIN_SOURCES` forecast sources. Ranking is by edge, never by confidence alone:
 a 95% outcome priced at 0.97 loses money; an 80% outcome at 0.55 is a good bet.
 The per-market tables below the summary show every bucket if you want the full
@@ -158,7 +161,7 @@ Done when the custom hostname prompts for Cloudflare Access login and no
 
 ## Automation status
 
-The daily cron is the automation for 1.0/2.0. `reports/<date>.json` and the
+The scheduled cron is the automation for 1.0/2.0. `reports/<date>.json` and the
 Supabase tables (`predictions`, `prices`, `outcomes`, `tracking_snapshot`) are
 the integration points. Order placement stays manual; automated trading via the
 CLOB API is MVP 3.0.
