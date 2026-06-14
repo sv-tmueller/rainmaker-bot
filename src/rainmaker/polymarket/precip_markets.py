@@ -2,9 +2,8 @@
 
 A parallel path to markets.py: the temperature parser reads whole-degree
 buckets keyed on an ICAO station, this reads inch brackets keyed on a NOAA
-monthly station. The types mirror Market/Bucket field-for-field (with float
-bracket bounds) so the recorder can duck-type over them later, but the two
-paths share no parsing code beyond the BucketKind literal.
+monthly station. The shared types (PrecipBracket, PrecipMonthlyMarket, etc.)
+live in rainmaker.domain; this module owns only the Polymarket-specific parser.
 """
 
 import calendar
