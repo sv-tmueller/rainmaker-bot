@@ -198,3 +198,38 @@ def test_run_settlement_precip_waits_on_http_error(httpx_mock):
     conn.close()
     assert (settled, waiting) == (0, 1)
     assert n == 0
+
+
+def test_run_settlement_skips_unknown_variable(capsys):
+    # A market with an unrecognised variable (neither TMAX, TMIN, nor PRCP) is
+    # skipped with a stderr warning - not sent to NCEI (which would stall it).
+    # No httpx mock: any HTTP call would raise here, proving no call was made.
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "w1", "NYC", "WIND", "2026-05-30")
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
+    n = conn.execute("SELECT count(*) AS n FROM outcomes").fetchone()["n"]
+    conn.close()
+    assert (settled, waiting) == (0, 0)
+    assert n == 0
+    captured = capsys.readouterr()
+    assert "WIND" in captured.err
+
+
+def test_run_settlement_unknown_variable_does_not_block_rest(httpx_mock):
+    # The unknown-variable market is skipped; markets later in the loop still settle.
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "w1", "NYC", "WIND", "2026-05-30")
+    _market(conn, "m1", "NYC", "TMAX", "2026-05-30")
+    httpx_mock.add_response(
+        url=re.compile(re.escape(NCEI_URL)),
+        json=[{"DATE": "2026-05-30", "TMAX": "72"}],
+    )
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
+    n = conn.execute("SELECT count(*) AS n FROM outcomes").fetchone()["n"]
+    conn.close()
+    assert (settled, waiting) == (1, 0)
+    assert n == 1

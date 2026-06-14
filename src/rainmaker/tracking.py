@@ -219,6 +219,20 @@ def write_snapshot(conn: Conn, on_date: str, created_at: str) -> dict[str, Any]:
     """Compute the current P&L/calibration and upsert a snapshot row for on_date."""
     pnl = compute_pnl(conn)
     cal = compute_calibration(conn)
+    # save_accuracy commits internally after each row; insert the snapshot only
+    # after the loop so a mid-loop failure cannot leave a committed snapshot row
+    # without its corresponding accuracy rows.
+    for row in compute_live_accuracy(conn):
+        save_accuracy(
+            conn,
+            station=row["station"],
+            city=row["city"],
+            variable=row["variable"],
+            lead_time=row["lead_time"],
+            kind="live",
+            accuracy=row["accuracy"],
+            updated_at=created_at,
+        )
     conn.execute(
         "INSERT INTO tracking_snapshot "
         "(snapshot_date, n_bets, wins, losses, total_pnl, roi, brier, hit_rate, "
@@ -242,18 +256,5 @@ def write_snapshot(conn: Conn, on_date: str, created_at: str) -> dict[str, Any]:
             created_at,
         ),
     )
-    # save_accuracy commits internally after each row; when there are no accuracy
-    # rows, the snapshot upsert above is committed by conn.commit() below.
-    for row in compute_live_accuracy(conn):
-        save_accuracy(
-            conn,
-            station=row["station"],
-            city=row["city"],
-            variable=row["variable"],
-            lead_time=row["lead_time"],
-            kind="live",
-            accuracy=row["accuracy"],
-            updated_at=created_at,
-        )
     conn.commit()
     return {"pnl": pnl, "calibration": cal}

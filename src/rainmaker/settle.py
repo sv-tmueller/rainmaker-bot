@@ -42,6 +42,12 @@ def run_settlement(
         if ghcnd is None:
             print(f"skipping {m['market_id']}: no station for {m['city']!r}", file=sys.stderr)
             continue
+        if m["variable"] not in {"TMAX", "TMIN", "PRCP"}:
+            print(
+                f"skipping {m['market_id']}: unknown variable {m['variable']!r}",
+                file=sys.stderr,
+            )
+            continue
         try:
             if m["variable"] == "PRCP":
                 value = fetch_monthly_precip(ghcnd, day.year, day.month, client)
