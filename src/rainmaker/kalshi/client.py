@@ -52,7 +52,10 @@ def _open_events(client: httpx.Client, series: str) -> dict[str, list[dict[str, 
         return None
     by_event: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for m in raw:
-        by_event[m["event_ticker"]].append(m)
+        ticker = m.get("event_ticker")
+        if not ticker:
+            continue
+        by_event[ticker].append(m)
     return by_event
 
 

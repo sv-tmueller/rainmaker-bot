@@ -81,3 +81,29 @@ def test_discover_precip_parses_nyc(httpx_mock):
     assert nyc[0].target.variable == "PRCP"
     assert nyc[0].target.station.ghcnd_id == "USW00094728"
     assert len(nyc[0].buckets) == 2
+
+
+def _fixture_with_keyless_market():
+    """The NYC high-temp fixture with one market missing 'event_ticker'."""
+    fixture = json.loads(json.dumps(FIXTURE))  # deep copy
+    valid_market = fixture["markets"][0]
+    keyless = dict(valid_market)
+    del keyless["event_ticker"]
+    fixture["markets"] = [keyless, valid_market]
+    return fixture
+
+
+def test_discover_skips_market_missing_event_ticker(httpx_mock):
+    # A market that lacks 'event_ticker' should not abort the grouping loop for
+    # the whole series.  Pre-fix: m["event_ticker"] raises KeyError which
+    # propagates uncaught, aborting _open_events.  Post-fix: the keyless market
+    # is skipped and the rest of the series parses normally.
+    for city in KALSHI_HIGH_SERIES:
+        body = _fixture_with_keyless_market() if city == "NYC" else _EMPTY
+        httpx_mock.add_response(url=_URL, json=body)
+    for _city in KALSHI_LOW_SERIES:
+        httpx_mock.add_response(url=_URL, json=_EMPTY)
+    with httpx.Client() as client:
+        markets = discover_kalshi_markets(client)
+    # The valid NYC market still parses; the keyless one is silently skipped.
+    assert any(m.id == "KXHIGHNY-26JUN08" for m in markets)

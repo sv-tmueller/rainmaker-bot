@@ -127,3 +127,11 @@ def test_parse_market_tmin():
 def test_parse_bucket_label_unrecognized_raises():
     with pytest.raises(ValueError, match="unrecognized"):
         parse_bucket_label("total nonsense")
+
+
+def test_parse_bucket_label_zero_width_range_raises():
+    # A zero-width range like "70-70 deg F" has no probability mass and must be
+    # rejected.  Pre-fix: lo > hi is False (70 == 70), so it silently returns a
+    # degenerate bucket.  Post-fix: lo >= hi triggers ValueError.
+    with pytest.raises(ValueError, match="inverted range"):
+        parse_bucket_label("70-70°F")

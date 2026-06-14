@@ -81,7 +81,7 @@ def discover_markets(client: httpx.Client) -> list[Market]:
             continue
         try:
             markets.append(parse_market(ev))
-        except ValueError as exc:
+        except (ValueError, KeyError) as exc:
             print(f"skipping market {ev.get('id')}: {exc}", file=sys.stderr)
     return markets
 
@@ -107,6 +107,6 @@ def discover_precip_markets(client: httpx.Client) -> list[PrecipMonthlyMarket]:
             continue
         try:
             markets.append(parse_precip_event(ev))
-        except ValueError as exc:
+        except (ValueError, KeyError) as exc:
             print(f"skipping precip market {ev.get('id')}: {exc}", file=sys.stderr)
     return markets
