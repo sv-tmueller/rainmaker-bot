@@ -26,6 +26,7 @@ from rainmaker.config import (
     Station,
     Target,
 )
+from rainmaker.domain import PrecipTarget
 from rainmaker.forecasts.aggregate import aggregate
 from rainmaker.forecasts.base import ForecastSet
 from rainmaker.forecasts.nws import NwsSource
@@ -38,7 +39,6 @@ from rainmaker.polymarket.client import (
     discover_precip_markets,
     fetch_closed_weather_events,
 )
-from rainmaker.polymarket.precip_markets import PrecipTarget
 from rainmaker.ranking.edge import evaluate_market, evaluate_precip_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
 from rainmaker.settle import run_settlement

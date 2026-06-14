@@ -1,6 +1,6 @@
 import pytest
 
-from rainmaker.polymarket.markets import Bucket
+from rainmaker.domain import Bucket
 from rainmaker.probability.distribution import Gaussian
 from rainmaker.probability.outcomes import bucket_probability, settles
 

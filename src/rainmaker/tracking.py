@@ -14,8 +14,7 @@ from datetime import date
 from typing import Any
 
 from rainmaker.config import KALSHI_STATIONS, STATIONS
-from rainmaker.polymarket.markets import parse_bucket_label
-from rainmaker.polymarket.precip_markets import parse_precip_bracket_label
+from rainmaker.domain import parse_bucket_label, parse_precip_bracket_label
 from rainmaker.probability.calibration import CalibrationPair, compute_accuracy
 from rainmaker.probability.outcomes import settles
 from rainmaker.probability.precip_outcomes import precip_settles

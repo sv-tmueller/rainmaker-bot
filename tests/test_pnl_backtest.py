@@ -14,6 +14,7 @@ from rainmaker.backfill import (
     fetch_historical_samples,
 )
 from rainmaker.config import MIN_SIGMA_F, OPENMETEO_MODELS, STATIONS, build_target
+from rainmaker.domain import Bucket, Market
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.pnl_backtest import (
     Bet,
@@ -26,7 +27,6 @@ from rainmaker.pnl_backtest import (
     replay_market,
     score,
 )
-from rainmaker.polymarket.markets import Bucket, Market
 from rainmaker.polymarket.prices import CLOB_PRICES_URL, PricePoint
 from rainmaker.probability.distribution import fit_gaussian
 

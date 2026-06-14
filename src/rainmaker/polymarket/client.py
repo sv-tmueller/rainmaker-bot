@@ -4,9 +4,9 @@ from typing import Any, cast
 import httpx
 
 from rainmaker.config import PRECIP_STATIONS, STATIONS
-from rainmaker.polymarket.markets import Market, parse_city, parse_market
+from rainmaker.domain import Market, PrecipMonthlyMarket
+from rainmaker.polymarket.markets import parse_city, parse_market
 from rainmaker.polymarket.precip_markets import (
-    PrecipMonthlyMarket,
     parse_precip_city,
     parse_precip_event,
 )

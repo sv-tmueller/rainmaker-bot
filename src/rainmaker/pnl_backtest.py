@@ -25,8 +25,9 @@ from pydantic import BaseModel, ConfigDict
 
 from rainmaker.backfill import fetch_actuals, fetch_historical_samples
 from rainmaker.config import CONFIDENCE_FLOOR, MIN_EDGE, MIN_SIGMA_F, Target
+from rainmaker.domain import Market, parse_bucket_label
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
-from rainmaker.polymarket.markets import Market, parse_bucket_label, parse_market
+from rainmaker.polymarket.markets import parse_market
 from rainmaker.polymarket.prices import PricePoint, fetch_price_history, snap_price
 from rainmaker.probability.distribution import fit_gaussian
 from rainmaker.probability.outcomes import bucket_probability, settles

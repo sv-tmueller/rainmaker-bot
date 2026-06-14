@@ -6,8 +6,8 @@ import pytest
 
 from rainmaker import cli
 from rainmaker.config import build_target
+from rainmaker.domain import Bucket, Market
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
-from rainmaker.polymarket.markets import Bucket, Market
 from rainmaker.probability.calibration import Calibration
 from rainmaker.store.db import connect
 from rainmaker.store.query import count_rows, load_calibration

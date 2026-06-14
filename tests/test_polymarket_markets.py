@@ -5,10 +5,9 @@ from typing import Any
 
 import pytest
 
+from rainmaker.domain import Market, parse_bucket_label
 from rainmaker.polymarket.markets import (
-    Market,
     parse_bucket,
-    parse_bucket_label,
     parse_market,
     parse_variable,
 )

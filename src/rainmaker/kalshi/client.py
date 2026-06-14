@@ -13,10 +13,9 @@ from rainmaker.config import (
     KALSHI_STATIONS,
     Variable,
 )
+from rainmaker.domain import Market, PrecipMonthlyMarket
 from rainmaker.kalshi.markets import parse_kalshi_event
 from rainmaker.kalshi.precip_markets import parse_kalshi_precip_event
-from rainmaker.polymarket.markets import Market
-from rainmaker.polymarket.precip_markets import PrecipMonthlyMarket
 
 
 def _fetch_open_markets(
