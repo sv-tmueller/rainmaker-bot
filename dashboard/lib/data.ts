@@ -1,4 +1,5 @@
 import { serverClient } from "./supabase";
+import { settledIn, type BucketSpec } from "./settle";
 
 export type Bet = {
   title: string;
@@ -47,27 +48,6 @@ export type SettledBet = {
   won: boolean;
   pnl: number;
 };
-
-// Python round() is half-to-even, Math.round is half-up. NOAA actuals can land
-// exactly on .5°F (7.5°C is 45.5°F), so mirror the settlement math exactly.
-function roundHalfEven(x: number): number {
-  const f = Math.floor(x);
-  if (x - f === 0.5) return f % 2 === 0 ? f : f + 1;
-  return Math.round(x);
-}
-
-// Mirrors _won in src/rainmaker/tracking.py (parse_bucket_label + comparison).
-// Returns null for an unparsable label so the row is skipped, not miscounted.
-function wonBucket(label: string, actual: number): boolean | null {
-  const lowered = label.toLowerCase();
-  const v = roundHalfEven(actual);
-  const t = label.match(/-?\d+/);
-  if (lowered.includes("below")) return t ? v <= +t[0] : null;
-  if (lowered.includes("higher") || lowered.includes("above")) return t ? v >= +t[0] : null;
-  const m = label.match(/(-?\d+)\s*-\s*(-?\d+)/);
-  if (!m || +m[1] > +m[2]) return null;
-  return +m[1] <= v && v <= +m[2];
-}
 
 export async function getDashboardData() {
   const db = serverClient();
@@ -121,7 +101,7 @@ export async function getDashboardData() {
     neededIds.length > 0
       ? db
           .from("markets")
-          .select("id, title, slug, settlement_date, city, venue, variable")
+          .select("id, title, slug, settlement_date, city, venue, variable, outcome_spec")
           .in("id", neededIds)
       : Promise.resolve({ data: [] }),
     settledRunIds.length > 0
@@ -145,6 +125,17 @@ export async function getDashboardData() {
   const settleDateOf = new Map(
     (marketsQ.data ?? []).map((m) => [m.id, (m.settlement_date as string | null) ?? null]),
   );
+  // Structured bucket bounds per market (from outcome_spec), keyed by label. Used
+  // to grade settled bets from real bounds instead of re-parsing the display label.
+  const specOf = new Map<string, Map<string, BucketSpec>>();
+  for (const m of marketsQ.data ?? []) {
+    try {
+      const spec = JSON.parse(m.outcome_spec as string) as BucketSpec[];
+      specOf.set(m.id as string, new Map(spec.map((b) => [b.label, b])));
+    } catch {
+      // no parsable spec -> bets on this market cannot be graded and are skipped
+    }
+  }
 
   // Assemble run health.
   let run: RunInfo | null = null;
@@ -255,10 +246,14 @@ export async function getDashboardData() {
         const side = sideOf(p.side);
         const ask = priceOf.get(`${p.run_id}|${p.market_id}|${p.bucket}|${side}`);
         if (!o || ask === undefined) return [];
-        const settledIn = wonBucket(p.bucket as string, o.actual_value as number);
-        if (settledIn === null) return [];
+        const spec = specOf.get(p.market_id)?.get(p.bucket as string);
+        const inBucket =
+          spec === undefined
+            ? null
+            : settledIn(spec, variableOf.get(p.market_id) ?? "", o.actual_value as number);
+        if (inBucket === null) return [];
         // A NO bet wins when the bucket does not settle.
-        const won = side === "NO" ? !settledIn : settledIn;
+        const won = side === "NO" ? !inBucket : inBucket;
         return [
           {
             settledAt: o.settled_at as string,
