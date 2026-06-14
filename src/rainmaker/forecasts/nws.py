@@ -11,6 +11,8 @@ NWS_BASE = "https://api.weather.gov"
 
 
 def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]:
+    if target.variable not in ("TMAX", "TMIN"):
+        raise NotImplementedError(f"unsupported variable {target.variable!r}")
     props = forecast_json["properties"]
     issued_at = datetime.fromisoformat(props["updateTime"])
     tz = ZoneInfo(target.station.timezone)

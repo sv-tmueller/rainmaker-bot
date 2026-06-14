@@ -112,7 +112,12 @@ def _fetch_archive_daily(
         },
     )
     resp.raise_for_status()
-    daily: dict[str, Any] = resp.json()["daily"]
+    body = resp.json()
+    if "daily" not in body:
+        raise ValueError(
+            f"'daily' key missing from Open-Meteo response: {body.get('reason', body)!r}"
+        )
+    daily: dict[str, Any] = body["daily"]
     return daily
 
 
@@ -164,7 +169,12 @@ def fetch_historical_point_forecasts(
         },
     )
     resp.raise_for_status()
-    hourly: dict[str, Any] = resp.json()["hourly"]
+    body = resp.json()
+    if "hourly" not in body:
+        raise ValueError(
+            f"'hourly' key missing from Open-Meteo response: {body.get('reason', body)!r}"
+        )
+    hourly: dict[str, Any] = body["hourly"]
     times = hourly["time"]
     reduce = max if variable == "TMAX" else min
     out: dict[int, dict[date, float]] = {}

@@ -121,6 +121,8 @@ def parse_nws_qpf(grid_json: dict[str, Any], tz: str) -> dict[date, float]:
     zone = ZoneInfo(tz)
     totals: dict[date, float] = defaultdict(float)
     for entry in qpf["values"]:
+        if entry["value"] is None:
+            continue
         start = datetime.fromisoformat(entry["validTime"].split("/")[0])
         local_date = start.astimezone(zone).date()
         totals[local_date] += float(entry["value"]) / _MM_PER_INCH
