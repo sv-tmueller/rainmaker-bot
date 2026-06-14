@@ -55,7 +55,7 @@ def evaluate_market(
     min_edge: float,
     calibration: Calibration | None = None,
 ) -> MarketReport:
-    n_sources = sum(1 for c in forecast_set.coverage if c.ok)
+    n_sources = sum(1 for c in forecast_set.coverage if c.ok and c.n_samples > 0)
     common: dict[str, Any] = dict(
         market_id=market.id,
         title=market.title,
@@ -140,7 +140,7 @@ def evaluate_precip_market(
     The parallel of evaluate_market for the precip path: same YES/NO gates
     (confidence floor, min sources, min edge), same MarketReport, but the
     distribution is a method-of-moments gamma and calibration is not applied."""
-    n_sources = sum(1 for c in forecast_set.coverage if c.ok)
+    n_sources = sum(1 for c in forecast_set.coverage if c.ok and c.n_samples > 0)
     gamma = fit_gamma(forecast_set.mean, forecast_set.var, floor=var_floor)
     outcomes: list[RankedOutcome] = []
     excluded: list[str] = []

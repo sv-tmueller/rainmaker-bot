@@ -257,6 +257,68 @@ def _precip_forecast_set(target, *, mean=2.5, var=0.6):
     )
 
 
+def test_stale_source_ok_zero_samples_does_not_count_toward_min_sources():
+    # A source that responded but had all samples filtered as stale is
+    # recorded ok=True, n_samples=0 by aggregate.  It must not count as a
+    # live source for the min-source gate in evaluate_market.
+    market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.05)])
+    # Two coverage entries: one genuinely live, one stale (ok=True, n_samples=0).
+    coverage = [
+        SourceCoverage(source="nws", ok=True, n_samples=4),
+        SourceCoverage(source="open-meteo", ok=True, n_samples=0),
+    ]
+    fs = ForecastSet(
+        target=build_target("NYC", "TMAX", date(2026, 5, 31)),
+        samples=[
+            ForecastSample(
+                source="nws",
+                model="m",
+                member=None,
+                station="KLGA",
+                variable="TMAX",
+                target_date=date(2026, 5, 31),
+                lead_time_days=1,
+                value_f=v,
+                issued_at=None,
+            )
+            for v in [69, 70, 71, 72]
+        ],
+        coverage=coverage,
+    )
+    # min_sources=2: under the bug both ok=True entries count (n_sources=2, recommended True).
+    # After the fix only the entry with n_samples>0 counts (n_sources=1, recommended False).
+    report = evaluate_market(market, fs, floor=0.45, min_sources=2, min_sigma=1.5, min_edge=0.0)
+    assert report.n_sources == 1
+    assert report.outcomes[0].recommended is False
+
+
+def test_stale_source_ok_zero_samples_does_not_count_for_precip_gate():
+    # Same gate on the precip path: ok=True, n_samples=0 must not satisfy min-source count.
+    market = _precip_market()
+    fs = PrecipForecastSet(
+        target=market.target,
+        mean=2.5,
+        var=0.6,
+        coverage=[
+            SourceCoverage(source="open-meteo", ok=True, n_samples=40),
+            SourceCoverage(source="nws", ok=True, n_samples=0),
+        ],
+        n_observed_days=5,
+        n_forecast_days=7,
+        n_clim_days=18,
+    )
+    report = evaluate_precip_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_edge=MIN_EDGE,
+        var_floor=PRECIP_VAR_FLOOR,
+    )
+    assert report.n_sources == 1
+    assert not any(o.recommended for o in report.outcomes)
+
+
 def test_evaluate_precip_market_ranks_brackets():
     market = _precip_market()
     fs = _precip_forecast_set(market.target)

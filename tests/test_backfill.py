@@ -236,6 +236,25 @@ def test_fetch_historical_point_forecasts_uses_min_for_tmin(httpx_mock):
     assert "daily=" not in str(httpx_mock.get_requests()[0].url)
 
 
+def test_fetch_historical_forecasts_raises_value_error_on_open_meteo_error_body(httpx_mock):
+    # Open-Meteo returns 200 with {"error": true, "reason": "..."} for bad params.
+    # resp.json()["daily"] raises KeyError; the fix converts it to ValueError.
+    error_body = {"error": True, "reason": "Parameter out of range"}
+    httpx_mock.add_response(url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=error_body)
+    with httpx.Client() as client:
+        with pytest.raises(ValueError, match="daily"):
+            fetch_historical_forecasts(KLGA, date(2026, 3, 1), date(2026, 3, 5), client)
+
+
+def test_fetch_historical_point_forecasts_raises_value_error_on_open_meteo_error_body(httpx_mock):
+    # Same guard for the Previous Runs API: 200 error body raises ValueError, not KeyError.
+    error_body = {"error": True, "reason": "Parameter out of range"}
+    httpx_mock.add_response(url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=error_body)
+    with httpx.Client() as client:
+        with pytest.raises(ValueError, match="hourly"):
+            fetch_historical_point_forecasts(KLGA, (2,), date(2026, 3, 1), date(2026, 3, 1), client)
+
+
 # 'NYC' now resolves to two settlement stations (LaGuardia and Kalshi's Central
 # Park), so the same mocked endpoints are hit once per station; allow reuse.
 @pytest.mark.httpx_mock(can_send_already_matched_responses=True)

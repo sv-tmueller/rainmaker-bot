@@ -11,6 +11,7 @@ from rainmaker.forecasts.openmeteo import ENSEMBLE_URL, FORECAST_URL
 from rainmaker.forecasts.precip import (
     build_precip_forecast_set,
     monthly_total_moments,
+    parse_nws_qpf,
     parse_precip_open_meteo,
 )
 from rainmaker.polymarket.precip_markets import parse_precip_event
@@ -100,6 +101,29 @@ def test_parse_precip_open_meteo_rejects_non_inch_units():
     }
     with pytest.raises(ValueError, match="inch"):
         parse_precip_open_meteo(data)
+
+
+def test_parse_nws_qpf_skips_null_value_entries():
+    # NWS allows null in the value field; float(None) raises TypeError.
+    # Null entries must be skipped without crashing.
+    grid_json = {
+        "properties": {
+            "quantitativePrecipitation": {
+                "uom": "wmoUnit:mm",
+                "values": [
+                    {"validTime": "2026-06-10T06:00:00+00:00/PT6H", "value": None},
+                    {"validTime": "2026-06-10T12:00:00+00:00/PT6H", "value": 5.08},
+                    {"validTime": "2026-06-11T00:00:00+00:00/PT6H", "value": None},
+                ],
+            }
+        }
+    }
+    result = parse_nws_qpf(grid_json, "America/New_York")
+    # Only the non-null entry contributes: 5.08 mm / 25.4 = 0.2 inches on June 10.
+    assert date(2026, 6, 10) in result
+    assert result[date(2026, 6, 10)] == pytest.approx(0.2)
+    # June 11 had only a null entry; it must not appear in the result.
+    assert date(2026, 6, 11) not in result
 
 
 def _mock_build(httpx_mock):
