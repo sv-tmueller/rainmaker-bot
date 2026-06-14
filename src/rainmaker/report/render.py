@@ -13,9 +13,14 @@ class Report(BaseModel):
 
 
 def _coverage_str(report: MarketReport) -> str:
-    return ", ".join(
-        f"{c.source}={'ok' if c.ok else 'FAILED'}({c.n_samples})" for c in report.coverage
-    )
+    parts = []
+    for c in report.coverage:
+        if c.ok:
+            parts.append(f"{c.source}=ok({c.n_samples})")
+        else:
+            reason = f"({c.error})" if c.error else ""
+            parts.append(f"{c.source}=FAILED{reason}({c.n_samples})")
+    return ", ".join(parts)
 
 
 def _recommended_pairs(report: Report) -> list[RecommendedPair]:
@@ -73,6 +78,8 @@ def render_terminal(report: Report) -> str:
                 lines.append(f"  forecast: mu={m.mu:.2f}in sigma={m.sigma:.2f}in ({cal})")
             else:
                 lines.append(f"  forecast: mu={m.mu:.1f}F sigma={m.sigma:.1f}F ({cal})")
+        elif (m.mu is None) != (m.sigma is None):
+            lines.append("  forecast: partial data (only one of mu/sigma available)")
         lines.append(f"  coverage: {_coverage_str(m)}")
         if not m.outcomes:
             lines.append("  no tradeable outcomes (insufficient forecast data)")
@@ -132,6 +139,8 @@ def render_markdown(report: Report) -> str:
                 lines.append(f"- forecast: mu={m.mu:.2f}in sigma={m.sigma:.2f}in ({cal})")
             else:
                 lines.append(f"- forecast: mu={m.mu:.1f}F sigma={m.sigma:.1f}F ({cal})")
+        elif (m.mu is None) != (m.sigma is None):
+            lines.append("- forecast: partial data (only one of mu/sigma available)")
         lines.append(f"- coverage: {_coverage_str(m)}")
         lines.append("")
         if m.outcomes:

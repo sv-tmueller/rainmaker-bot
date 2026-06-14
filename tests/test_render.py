@@ -244,3 +244,128 @@ def test_render_summary_says_none_when_no_recommendations():
     report = Report(run_date=date(2026, 5, 31), markets=[no_rec])
     assert "No bets pass the gates today." in render_terminal(report)
     assert "No bets pass the gates today." in render_markdown(report)
+
+
+def test_coverage_str_includes_error_for_failed_source():
+    """A failed source must show its error reason, not just FAILED(n)."""
+    failed = MarketReport(
+        market_id="m5",
+        title="Highest temperature in NYC on May 31?",
+        city="NYC",
+        station="KLGA",
+        variable="TMAX",
+        settlement_date=date(2026, 5, 31),
+        mu=None,
+        sigma=None,
+        n_sources=0,
+        calibrated=False,
+        coverage=[
+            SourceCoverage(source="nws", ok=False, n_samples=0, error="timeout"),
+            SourceCoverage(source="open-meteo", ok=True, n_samples=80),
+        ],
+        outcomes=[],
+        excluded_no_ask=[],
+    )
+    report = Report(run_date=date(2026, 5, 31), markets=[failed])
+    text = render_terminal(report)
+    md = render_markdown(report)
+    # error reason must appear in coverage string in both renderers
+    assert "timeout" in text
+    assert "timeout" in md
+    # ok source is not affected
+    assert "open-meteo=ok" in text
+    assert "open-meteo=ok" in md
+
+
+def test_coverage_str_error_none_still_renders_gracefully():
+    """A failed source with no error string set should not crash."""
+    no_error = MarketReport(
+        market_id="m6",
+        title="Highest temperature in NYC on May 31?",
+        city="NYC",
+        station="KLGA",
+        variable="TMAX",
+        settlement_date=date(2026, 5, 31),
+        mu=None,
+        sigma=None,
+        n_sources=0,
+        calibrated=False,
+        coverage=[SourceCoverage(source="nws", ok=False, n_samples=0, error=None)],
+        outcomes=[],
+        excluded_no_ask=[],
+    )
+    report = Report(run_date=date(2026, 5, 31), markets=[no_error])
+    text = render_terminal(report)
+    assert "nws=FAILED" in text
+
+
+def test_render_shows_partial_data_note_when_only_mu_set():
+    """If mu is set but sigma is None, render a partial data note instead of silently skipping."""
+    partial = MarketReport(
+        market_id="m7",
+        title="Highest temperature in NYC on May 31?",
+        city="NYC",
+        station="KLGA",
+        variable="TMAX",
+        settlement_date=date(2026, 5, 31),
+        mu=70.5,
+        sigma=None,
+        n_sources=1,
+        calibrated=False,
+        coverage=[SourceCoverage(source="nws", ok=True, n_samples=1)],
+        outcomes=[],
+        excluded_no_ask=[],
+    )
+    report = Report(run_date=date(2026, 5, 31), markets=[partial])
+    text = render_terminal(report)
+    md = render_markdown(report)
+    assert "partial" in text
+    assert "partial" in md
+
+
+def test_render_shows_partial_data_note_when_only_sigma_set():
+    """If sigma is set but mu is None, render a partial data note."""
+    partial = MarketReport(
+        market_id="m8",
+        title="Highest temperature in NYC on May 31?",
+        city="NYC",
+        station="KLGA",
+        variable="TMAX",
+        settlement_date=date(2026, 5, 31),
+        mu=None,
+        sigma=2.0,
+        n_sources=1,
+        calibrated=False,
+        coverage=[SourceCoverage(source="nws", ok=True, n_samples=1)],
+        outcomes=[],
+        excluded_no_ask=[],
+    )
+    report = Report(run_date=date(2026, 5, 31), markets=[partial])
+    text = render_terminal(report)
+    md = render_markdown(report)
+    assert "partial" in text
+    assert "partial" in md
+
+
+def test_render_partial_data_precip_path():
+    """Partial data note also appears in the precipitation path (variable=PRCP)."""
+    partial = MarketReport(
+        market_id="m9",
+        title="Precipitation in NYC in June?",
+        city="NYC",
+        station="Central Park NY",
+        variable="PRCP",
+        settlement_date=date(2026, 6, 30),
+        mu=3.06,
+        sigma=None,
+        n_sources=1,
+        calibrated=False,
+        coverage=[SourceCoverage(source="open-meteo", ok=True, n_samples=40)],
+        outcomes=[],
+        excluded_no_ask=[],
+    )
+    report = Report(run_date=date(2026, 6, 6), markets=[partial])
+    text = render_terminal(report)
+    md = render_markdown(report)
+    assert "partial" in text
+    assert "partial" in md
