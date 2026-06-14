@@ -42,10 +42,16 @@ def run_settlement(
         if ghcnd is None:
             print(f"skipping {m['market_id']}: no station for {m['city']!r}", file=sys.stderr)
             continue
-        if m["variable"] == "PRCP":
-            value = fetch_monthly_precip(ghcnd, day.year, day.month, client)
-        else:
-            value = fetch_actuals(ghcnd, day, day, client, m["variable"]).get(day)
+        try:
+            if m["variable"] == "PRCP":
+                value = fetch_monthly_precip(ghcnd, day.year, day.month, client)
+            else:
+                value = fetch_actuals(ghcnd, day, day, client, m["variable"]).get(day)
+        except httpx.HTTPError as exc:
+            # One station's transient NCEI error must not abort the rest of the loop.
+            print(f"waiting on {m['market_id']}: NCEI fetch failed: {exc}", file=sys.stderr)
+            waiting += 1
+            continue
         if value is None:
             waiting += 1
             continue
