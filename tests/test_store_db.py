@@ -18,6 +18,8 @@ EXPECTED_TABLES = {
     "predictions",
     "outcomes",
     "calibration",
+    "forecast_accuracy",
+    "tracking_snapshot",
 }
 
 
@@ -29,7 +31,9 @@ def _table_names(conn: sqlite3.Connection) -> set[str]:
 def test_init_schema_creates_all_tables():
     conn = connect(":memory:")
     init_schema(conn)
-    assert EXPECTED_TABLES <= _table_names(conn)
+    # exact equality (not a subset) so a future table omitted from the schema or
+    # from EXPECTED_TABLES is caught. schema_migrations is created by the migrator.
+    assert _table_names(conn) == EXPECTED_TABLES | {"schema_migrations"}
     conn.close()
 
 

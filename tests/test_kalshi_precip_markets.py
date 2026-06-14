@@ -107,3 +107,17 @@ def test_precip_less_strike_none_cap_raises_value_error():
         parse_kalshi_precip_bracket(
             _rain_bracket(strike_type="less", floor_strike=None, cap_strike=None)
         )
+
+
+def test_precip_between_strike_none_floor_raises_value_error():
+    with pytest.raises(ValueError, match="floor_strike"):
+        parse_kalshi_precip_bracket(
+            _rain_bracket(strike_type="between", floor_strike=None, cap_strike=3)
+        )
+
+
+def test_precip_between_strike_none_cap_raises_value_error():
+    with pytest.raises(ValueError, match="cap_strike"):
+        parse_kalshi_precip_bracket(
+            _rain_bracket(strike_type="between", floor_strike=2, cap_strike=None)
+        )
