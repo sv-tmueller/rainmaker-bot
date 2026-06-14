@@ -144,3 +144,16 @@ def test_parse_event_variable_mismatch_raises():
     # a high-temp ladder parsed as TMIN must be rejected by the quantity guard
     with pytest.raises(ValueError, match="not a TMIN"):
         parse_kalshi_event("NYC", KALSHI_STATIONS["NYC"], _event_markets(), variable="TMIN")
+
+
+def test_greater_strike_with_none_floor_raises_value_error():
+    # int(None) raises TypeError pre-fix; post-fix the parser raises ValueError
+    # explicitly so the except ValueError in the client catch clause fires.
+    with pytest.raises(ValueError, match="floor_strike"):
+        parse_kalshi_bucket(_mkt(floor_strike=None))
+
+
+def test_less_strike_with_none_cap_raises_value_error():
+    # int(None) raises TypeError pre-fix; post-fix raises ValueError explicitly.
+    with pytest.raises(ValueError, match="cap_strike"):
+        parse_kalshi_bucket(_mkt(strike_type="less", floor_strike=None, cap_strike=None))

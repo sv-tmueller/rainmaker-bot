@@ -76,3 +76,34 @@ def test_parse_precip_event_rejects_non_precip():
         mk["rules_primary"] = "If the highest temperature is greater than 80, then Yes."
     with pytest.raises(ValueError, match="not a precipitation"):
         parse_kalshi_precip_event("NYC", KALSHI_PRECIP_STATIONS["NYC"], markets)
+
+
+def _rain_bracket(**over):
+    base = {
+        "ticker": "KXRAINNYCM-26JUN-4",
+        "strike_type": "greater",
+        "floor_strike": 4,
+        "cap_strike": None,
+        "subtitle": "greater than 4in",
+        "yes_bid_dollars": "0.1000",
+        "yes_ask_dollars": "0.1200",
+        "no_ask_dollars": "0.8800",
+        "last_price_dollars": "0.1100",
+    }
+    base.update(over)
+    return base
+
+
+def test_precip_greater_strike_none_floor_raises_value_error():
+    # float(None) raises TypeError pre-fix; post-fix raises ValueError explicitly
+    # so the except ValueError in the client catch clause fires.
+    with pytest.raises(ValueError, match="floor_strike"):
+        parse_kalshi_precip_bracket(_rain_bracket(floor_strike=None))
+
+
+def test_precip_less_strike_none_cap_raises_value_error():
+    # float(None) raises TypeError pre-fix; post-fix raises ValueError explicitly.
+    with pytest.raises(ValueError, match="cap_strike"):
+        parse_kalshi_precip_bracket(
+            _rain_bracket(strike_type="less", floor_strike=None, cap_strike=None)
+        )

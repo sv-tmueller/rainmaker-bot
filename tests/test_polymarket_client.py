@@ -80,3 +80,48 @@ def test_discover_precip_markets_filters_and_skips_unparseable(httpx_mock, capsy
     assert sorted(m.id for m in markets) == ["531291", "531299"]
     err = capsys.readouterr().err
     assert "999999" in err and "skip" in err.lower()
+
+
+def test_discover_markets_skips_event_missing_required_key(httpx_mock, capsys):
+    # A title-matched event that passes _is_us_temp_event but is missing a key
+    # that parse_market indexes directly (e.g. 'description') should be skipped
+    # with a warning, not crash the whole discovery run.
+    # Pre-fix: KeyError propagates past except ValueError and aborts discovery.
+    nyc_event = next(e for e in _events_body() if e.get("id") == "533147")
+    keyless = {
+        "id": "888001",
+        "title": "Highest temperature in NYC on May 30?",
+        "slug": "highest-temperature-nyc-may-30",
+        "endDate": "2026-05-30T12:00:00Z",
+        "markets": [],
+        # 'description' is intentionally absent so parse_market raises KeyError
+    }
+    httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[keyless, nyc_event])
+    with httpx.Client() as client:
+        markets = discover_markets(client)
+    assert len(markets) == 1
+    assert markets[0].id == "533147"
+    err = capsys.readouterr().err
+    assert "888001" in err and "skip" in err.lower()
+
+
+def test_discover_precip_markets_skips_event_missing_required_key(httpx_mock, capsys):
+    # A title-matched precip event missing the 'markets' key should be skipped
+    # with a warning, not crash the whole precip discovery run.
+    # Pre-fix: KeyError propagates past except ValueError and aborts discovery.
+    nyc = json.loads((FIXTURES / "polymarket_precip_monthly_nyc.json").read_text())
+    keyless = {
+        "id": "888002",
+        "title": nyc["title"],
+        "slug": "nyc-precip-missing-markets",
+        "description": nyc["description"],
+        "endDate": nyc["endDate"],
+        # 'markets' is intentionally absent so parse_precip_event raises KeyError
+    }
+    httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[keyless, nyc])
+    with httpx.Client() as client:
+        markets = discover_precip_markets(client)
+    assert len(markets) == 1
+    assert markets[0].id == "531291"
+    err = capsys.readouterr().err
+    assert "888002" in err and "skip" in err.lower()

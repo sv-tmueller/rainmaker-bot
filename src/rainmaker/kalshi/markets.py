@@ -63,10 +63,18 @@ def parse_kalshi_bucket(market: dict[str, Any]) -> Bucket:
     hi: int | None = None
     threshold: int | None = None
     if strike_type == "greater":
+        if floor is None:
+            raise ValueError(f"floor_strike is None for 'greater' market {market.get('ticker')!r}")
         kind, threshold = "above", int(floor)
     elif strike_type == "less":
+        if cap is None:
+            raise ValueError(f"cap_strike is None for 'less' market {market.get('ticker')!r}")
         kind, threshold = "below", int(cap)
     elif strike_type == "between":
+        if floor is None:
+            raise ValueError(f"floor_strike is None for 'between' market {market.get('ticker')!r}")
+        if cap is None:
+            raise ValueError(f"cap_strike is None for 'between' market {market.get('ticker')!r}")
         kind, lo, hi = "range", int(floor), int(cap)
     else:
         raise ValueError(f"unknown Kalshi strike_type: {strike_type!r}")

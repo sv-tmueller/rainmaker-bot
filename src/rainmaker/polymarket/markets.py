@@ -36,7 +36,7 @@ def parse_bucket_label(label: str) -> tuple[BucketKind, int | None, int | None, 
     if match is None:
         raise ValueError(f"unrecognized bucket label: {label!r}")
     lo, hi = int(match.group(1)), int(match.group(2))
-    if lo > hi:
+    if lo >= hi:
         raise ValueError(f"inverted range bucket label: {label!r}")
     return ("range", lo, hi, None)
 
