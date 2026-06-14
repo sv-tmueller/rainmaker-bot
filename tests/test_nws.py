@@ -91,6 +91,14 @@ def test_fetch_returns_tmin(httpx_mock):
     assert samples[0].variable == "TMIN"
 
 
+def test_parse_raises_not_implemented_for_unsupported_variable():
+    # PRCP falls through to the TMIN branch and returns a mislabeled result.
+    # The guard must raise NotImplementedError for anything other than TMAX/TMIN.
+    target = build_target("NYC", "PRCP", date(2026, 5, 31))
+    with pytest.raises(NotImplementedError):
+        parse(_forecast_fixture(), target)
+
+
 def test_fetch_raises_on_http_error(httpx_mock):
     httpx_mock.add_response(url="https://api.weather.gov/points/40.7792,-73.8803", status_code=500)
     client = httpx.Client()
