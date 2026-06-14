@@ -302,7 +302,13 @@ def test_coverage_str_error_none_still_renders_gracefully():
     )
     report = Report(run_date=date(2026, 5, 31), markets=[no_error])
     text = render_terminal(report)
+    md = render_markdown(report)
     assert "nws=FAILED" in text
+    assert "nws=FAILED" in md
+    # a buggy FAILED(None)(0) would pass the assertion above; pin that no literal
+    # "None" leaks into either renderer.
+    assert "None" not in text
+    assert "None" not in md
 
 
 def test_render_shows_partial_data_note_when_only_mu_set():

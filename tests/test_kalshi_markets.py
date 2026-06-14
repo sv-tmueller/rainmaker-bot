@@ -48,6 +48,18 @@ def test_unknown_strike_type_raises():
         parse_kalshi_bucket(_mkt(strike_type="weird"))
 
 
+def test_between_strike_none_floor_raises_value_error():
+    # float(None) would raise TypeError; the guard raises ValueError so the
+    # discovery catch clause skips the bad strike instead of crashing.
+    with pytest.raises(ValueError, match="floor_strike"):
+        parse_kalshi_bucket(_mkt(strike_type="between", floor_strike=None, cap_strike=79))
+
+
+def test_between_strike_none_cap_raises_value_error():
+    with pytest.raises(ValueError, match="cap_strike"):
+        parse_kalshi_bucket(_mkt(strike_type="between", floor_strike=78, cap_strike=None))
+
+
 def test_yes_price_prefers_last_price():
     # last_price present -> used directly, ignoring the bid/ask mid.
     b = parse_kalshi_bucket(_mkt(last_price_dollars="0.1000"))

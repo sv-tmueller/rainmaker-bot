@@ -30,9 +30,10 @@ def _is_duplicate_column(exc: Exception) -> bool:
     # We check via getattr so this file does not import psycopg at the top level.
     if getattr(exc, "sqlstate", None) == "42701":
         return True
-    # Fallback: some DB drivers surface 'already exists' without a sqlstate.
-    if "already exists" in str(exc).lower() or "duplicate column" in str(exc).lower():
-        return True
+    # No broad string fallback: these two exact signals cover every ADD COLUMN
+    # migration, and a looser match would swallow genuine duplicate_table or
+    # duplicate_index errors from a future CREATE TABLE/INDEX and falsely record
+    # the migration as applied.
     return False
 
 

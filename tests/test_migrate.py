@@ -1,5 +1,7 @@
+import sqlite3
+
 from rainmaker.store.db import _SQLITE_SCHEMA, connect, init_schema
-from rainmaker.store.migrate import _MIGRATIONS, apply_migrations
+from rainmaker.store.migrate import _MIGRATIONS, _is_duplicate_column, apply_migrations
 
 
 def test_migration_adds_predictions_bucket_column():
@@ -61,7 +63,28 @@ def test_apply_migrations_is_idempotent():
     apply_migrations(conn)  # second pass must not error
     n = conn.execute("SELECT count(*) AS n FROM schema_migrations").fetchone()["n"]
     conn.close()
-    assert n == 5
+    assert n == len(_MIGRATIONS)
+
+
+def test_is_duplicate_column_only_matches_the_two_exact_signals():
+    # SQLite's duplicate-column message and Postgres SQLSTATE 42701 are the only
+    # signals; both cover every ADD COLUMN migration.
+    assert _is_duplicate_column(sqlite3.OperationalError("duplicate column name: venue")) is True
+
+    class _PgDuplicateColumn(Exception):
+        sqlstate = "42701"
+
+    assert _is_duplicate_column(_PgDuplicateColumn()) is True
+
+    # A future CREATE TABLE/INDEX "already exists" error must NOT be swallowed and
+    # falsely recorded as applied: only the two exact signals count.
+    assert _is_duplicate_column(sqlite3.OperationalError("table foo already exists")) is False
+    assert _is_duplicate_column(sqlite3.OperationalError("index ix already exists")) is False
+
+    class _PgDuplicateTable(Exception):
+        sqlstate = "42P07"  # duplicate_table, not duplicate_column
+
+    assert _is_duplicate_column(_PgDuplicateTable()) is False
 
 
 def test_apply_migrations_crash_safe_when_alter_already_applied():
