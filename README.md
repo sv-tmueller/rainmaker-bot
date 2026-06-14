@@ -8,18 +8,19 @@ report and places every bet manually.
 
 ## Status
 
-MVP 1.0 (advisory) and MVP 2.0 (tracking) are live for 11 US cities on
-temperature (TMAX) markets:
+MVP 1.0 (advisory) and MVP 2.0 (tracking) are live for 11 US cities across
+temperature (TMAX and TMIN) and monthly-precipitation markets, on both Polymarket
+and Kalshi:
 
-- A daily GitHub Actions run discovers live markets, forecasts, ranks by edge,
-  and writes a report.
+- A scheduled GitHub Actions run (every 3h) discovers live markets, forecasts,
+  ranks by edge, and writes a report.
 - It settles past markets against NOAA actuals and records a daily
   P&L/calibration snapshot to Supabase Postgres.
 - A read-only dashboard (in `dashboard/`) shows the recommended bets and the
   track record, deployed on Vercel behind Cloudflare Access.
 
-Remaining MVP 1.0 slices: precipitation and TMIN markets. MVP 3.0 (automated
-trading) has not started.
+Remaining MVP 1.0 slice: the daily-binary precipitation form (will it rain on a
+given day). MVP 3.0 (automated trading) has not started.
 
 ## How it decides
 
@@ -49,11 +50,12 @@ sets it from a secret). Checks: `uv run pytest`, `uv run ruff check .`,
 
 ## Roadmap
 
-- MVP 1.0: advisory. Done for temperature (11 cities); precipitation and TMIN
-  slices remain. Free sources only (NWS/NOAA and Open-Meteo), Polymarket
-  read-only, bets placed by hand.
+- MVP 1.0: advisory. Done for temperature (TMAX and TMIN) and monthly
+  precipitation, on Polymarket and Kalshi; only the daily-binary precipitation
+  form remains. Free sources only (NWS/NOAA and Open-Meteo), read-only access,
+  bets placed by hand.
 - MVP 2.0: tracking. Done. Settle against NOAA actuals, log P&L, report
-  calibration over time, daily cloud run, web dashboard.
+  calibration over time, scheduled cloud run, web dashboard.
 - MVP 3.0: automated trading via Polymarket's CLOB API. Not started.
 
 ## For contributors
