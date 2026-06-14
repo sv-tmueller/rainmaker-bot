@@ -14,7 +14,7 @@ from datetime import date
 from typing import Any
 
 from rainmaker.config import KALSHI_STATIONS, STATIONS
-from rainmaker.domain import parse_bucket_label, parse_precip_bracket_label
+from rainmaker.domain import BucketKind, parse_bucket_label, parse_precip_bracket_label
 from rainmaker.probability.calibration import CalibrationPair, compute_accuracy
 from rainmaker.probability.outcomes import settles
 from rainmaker.probability.precip_outcomes import precip_settles
@@ -22,7 +22,34 @@ from rainmaker.store.db import Conn
 from rainmaker.store.record import save_accuracy
 
 
-def _won(variable: str, bucket_label: str, actual_value: float) -> bool:
+def _won(
+    variable: str,
+    bucket_label: str,
+    actual_value: float,
+    outcome_spec: str | None = None,
+) -> bool:
+    # Try to grade from the structured spec stored at record time. This handles
+    # Kalshi labels ("74° to 75°", '2" to 3"') that the Polymarket-style parsers
+    # cannot read. Fall back to the label parsers for legacy rows (NULL spec) or
+    # rows where the label is absent from the spec.
+    if outcome_spec:
+        try:
+            spec_list: list[dict[str, Any]] = json.loads(outcome_spec)
+            for entry in spec_list:
+                if entry.get("label") == bucket_label:
+                    kind: BucketKind = entry["kind"]
+                    if variable == "PRCP":
+                        lo: float | None = entry["lo"]
+                        hi: float | None = entry["hi"]
+                        threshold: float | None = entry["threshold"]
+                        return precip_settles(kind, lo, hi, threshold, actual_value)
+                    else:
+                        lo_i: int | None = entry["lo"]
+                        hi_i: int | None = entry["hi"]
+                        threshold_i: int | None = entry["threshold"]
+                        return settles(kind, lo_i, hi_i, threshold_i, actual_value)
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass  # unparseable spec: fall through to label parser
     if variable == "PRCP":
         return precip_settles(*parse_precip_bracket_label(bucket_label), actual_value)
     return settles(*parse_bucket_label(bucket_label), actual_value)
@@ -30,7 +57,7 @@ def _won(variable: str, bucket_label: str, actual_value: float) -> bool:
 
 def _bet_won(row: dict[str, Any]) -> bool:
     """A YES bet wins when the bucket settles; a NO bet wins when it does not."""
-    settled = _won(row["variable"], row["bucket"], row["actual_value"])
+    settled = _won(row["variable"], row["bucket"], row["actual_value"], row.get("outcome_spec"))
     return (not settled) if (row.get("side") or "YES") == "NO" else settled
 
 
@@ -59,7 +86,7 @@ def _settled_rows(conn: Conn) -> list[dict[str, Any]]:
         "SELECT p.market_id AS market_id, p.run_id AS run_id, p.bucket AS bucket, "
         "p.side AS side, p.p_win AS p_win, p.edge AS edge, "
         "p.recommended AS recommended, m.variable AS variable, m.venue AS venue, "
-        "r.started_at AS started_at, "
+        "m.outcome_spec AS outcome_spec, r.started_at AS started_at, "
         "pr.price AS ask, o.actual_value AS actual_value "
         "FROM predictions p "
         "JOIN markets m ON m.id = p.market_id "
@@ -143,7 +170,14 @@ def compute_calibration(conn: Conn, venue: str | None = None) -> dict[str, Any]:
     yes_rows = [r for r in rows if (r.get("side") or "YES") == "YES"]
     brier = (
         sum(
-            (r["p_win"] - (1.0 if _won(r["variable"], r["bucket"], r["actual_value"]) else 0.0))
+            (
+                r["p_win"]
+                - (
+                    1.0
+                    if _won(r["variable"], r["bucket"], r["actual_value"], r.get("outcome_spec"))
+                    else 0.0
+                )
+            )
             ** 2
             for r in yes_rows
         )

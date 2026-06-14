@@ -590,3 +590,136 @@ def test_write_snapshot_snapshot_after_accuracy(monkeypatch):
     n = conn.execute("SELECT count(*) AS n FROM tracking_snapshot").fetchone()["n"]
     conn.close()
     assert n == 0, "snapshot was committed before all accuracy rows - ordering bug"
+
+
+# ---------------------------------------------------------------------------
+# Kalshi label grading: grade from outcome_spec, not from re-parsing the label
+# ---------------------------------------------------------------------------
+
+
+def _setup_kalshi_temp(conn, actual: float, bucket_label: str):
+    """One Kalshi YES bet on a Kalshi-format temperature bucket."""
+    init_schema(conn)
+    conn.execute("INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)", ("r1", "t", "ok"))
+    spec = json.dumps(
+        [{"label": bucket_label, "kind": "range", "lo": 74, "hi": 75, "threshold": None}]
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue, outcome_spec) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("mk1", "NYC", "TMAX", "2026-05-30", "kalshi", spec),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("r1", "mk1", bucket_label, 0.40, 0.40, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "mk1", bucket_label, 0.80, 0.30, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("mk1", actual, "t"),
+    )
+    conn.commit()
+
+
+def test_kalshi_temp_label_grade_win():
+    """A Kalshi '74° to 75°' bucket with actual=74 grades as a win from outcome_spec."""
+    conn = connect(":memory:")
+    _setup_kalshi_temp(conn, actual=74.0, bucket_label="74° to 75°")
+    # Prior to the fix this raises ValueError: unrecognized bucket label: '74° to 75°'
+    pnl = compute_pnl(conn)
+    cal = compute_calibration(conn)
+    conn.close()
+    assert (pnl["wins"], pnl["losses"]) == (1, 0)
+    assert pnl["total_pnl"] == pytest.approx(1 - 0.40)
+    # Brier path in compute_calibration also calls _won: it must not raise.
+    assert cal["brier"] == pytest.approx((0.80 - 1.0) ** 2)
+    assert cal["hit_rate"] == pytest.approx(1.0)
+
+
+def test_kalshi_temp_label_grade_loss():
+    """A Kalshi '74° to 75°' bucket with actual=80 grades as a loss from outcome_spec."""
+    conn = connect(":memory:")
+    _setup_kalshi_temp(conn, actual=80.0, bucket_label="74° to 75°")
+    pnl = compute_pnl(conn)
+    cal = compute_calibration(conn)
+    conn.close()
+    assert (pnl["wins"], pnl["losses"]) == (0, 1)
+    assert pnl["total_pnl"] == pytest.approx(-0.40)
+    # Brier: 0.80 predicted YES but outcome was 0 (did not settle).
+    assert cal["brier"] == pytest.approx((0.80 - 0.0) ** 2)
+    assert cal["hit_rate"] == pytest.approx(0.0)
+
+
+def test_kalshi_precip_label_grade():
+    """A Kalshi '2" to 3"' precip bucket with actual=2.5 grades as a win from outcome_spec."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute("INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)", ("r1", "t", "ok"))
+    bucket_label = '2" to 3"'
+    spec = json.dumps(
+        [{"label": bucket_label, "kind": "range", "lo": 2.0, "hi": 3.0, "threshold": None}]
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue, outcome_spec) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("pm1", "NYC", "PRCP", "2026-06-30", "kalshi", spec),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("r1", "pm1", bucket_label, 0.35, 0.35, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "pm1", bucket_label, 0.70, 0.35, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("pm1", 2.5, "t"),
+    )
+    conn.commit()
+    # Prior to the fix this raises ValueError via parse_precip_bracket_label.
+    pnl = compute_pnl(conn)
+    conn.close()
+    # 2.5 is in [2.0, 3.0) -> YES wins
+    assert (pnl["wins"], pnl["losses"]) == (1, 0)
+    assert pnl["total_pnl"] == pytest.approx(1 - 0.35)
+
+
+def test_legacy_fallback_null_outcome_spec():
+    """When outcome_spec is NULL, the label parser fallback grades correctly (legacy rows)."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute("INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)", ("r1", "t", "ok"))
+    # NULL outcome_spec - the old rows before this fix was shipped
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        ("m1", "NYC", "TMAX", "2026-05-30"),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("r1", "m1", "70-71°F", 0.40, 0.40, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "m1", "70-71°F", 0.80, 0.30, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("m1", 71.0, "t"),  # 71 in 70-71 -> YES wins
+    )
+    conn.commit()
+    pnl = compute_pnl(conn)
+    conn.close()
+    assert (pnl["wins"], pnl["losses"]) == (1, 0)
