@@ -62,6 +62,12 @@ def test_render_markdown_has_table_and_settlement_date():
     assert "2026-05-31" in md
 
 
+def test_render_markdown_shows_excluded_no_ask_note():
+    report = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
+    md = render_markdown(report)
+    assert "Excluded (no ask): 59°F or below" in md
+
+
 def test_render_shows_venue():
     poly = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
     assert "polymarket" in render_terminal(poly)

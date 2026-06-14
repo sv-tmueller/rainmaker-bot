@@ -343,3 +343,24 @@ def test_evaluate_precip_market_ranks_brackets():
     assert abs(sum(o.p_win for o in yes) - 1.0) < 1e-6  # partition sums to one
     edges = [o.edge for o in report.outcomes]
     assert edges == sorted(edges, reverse=True)  # ranked by edge desc
+
+
+def test_evaluate_precip_market_emits_no_side_complement():
+    # Every fixture bracket carries a YES bid (no_ask = 1 - bid), so a NO outcome
+    # is emitted per bracket with p_win the complement of the matching YES.
+    market = _precip_market()
+    fs = _precip_forecast_set(market.target)
+    report = evaluate_precip_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_edge=MIN_EDGE,
+        var_floor=PRECIP_VAR_FLOOR,
+    )
+    yes_by_label = {o.bucket_label: o.p_win for o in report.outcomes if o.side == "YES"}
+    no = [o for o in report.outcomes if o.side == "NO"]
+    assert len(no) == 6  # every bracket has a YES bid -> a NO ask
+    for o in no:
+        assert o.p_win == pytest.approx(1 - yes_by_label[o.bucket_label])
+    assert report.excluded_no_ask == []

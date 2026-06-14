@@ -76,6 +76,20 @@ def test_apply_none_falls_back():
     out, calibrated = apply_calibration(Gaussian(mu=70.0, sigma=2.0), None, min_sigma=1.5)
     assert calibrated is False
     assert out.mu == 70.0
+    assert out.sigma == pytest.approx(2.5)  # 2.0 * UNCALIBRATED_WIDEN 1.25, above min_sigma 1.5
+
+
+def test_fit_detects_underdispersion():
+    # d = +/-0.2, sigma = 2 -> standardized residuals +/-0.1 -> spread_scale 0.1 (too wide)
+    cal = fit_calibration("KLGA", "TMAX", 1, _pairs(0.0, [0.2, -0.2, 0.2, -0.2], 2.0))
+    assert 0 < cal.spread_scale < 1
+    assert cal.spread_scale == pytest.approx(0.1)
+
+
+def test_fit_perfect_floors_spread_scale():
+    # zero residuals would give spread_scale 0; the 1e-6 floor keeps it positive.
+    cal = fit_calibration("KLGA", "TMAX", 1, _pairs(0.0, [0, 0, 0, 0], 2.0))
+    assert cal.spread_scale == pytest.approx(1e-6)
 
 
 def test_calibration_save_load_round_trip():

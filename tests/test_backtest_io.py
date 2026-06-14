@@ -47,6 +47,19 @@ def test_backtest_synthetic_scores_the_overlapping_window(httpx_mock):
     assert sum(b.count for b in result.reliability) == result.n * n_buckets
 
 
+def test_backtest_synthetic_tmin_fetches_min_field(httpx_mock):
+    # A TMIN backtest must request the min field from the archive, not TMAX.
+    # Pre-fix backtest_synthetic dropped the variable and always fetched TMAX.
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+    )
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    with httpx.Client() as client:
+        backtest_synthetic(KLGA, "TMIN", date(2026, 3, 1), date(2026, 3, 5), client)
+    archive = next(r for r in httpx_mock.get_requests() if HISTORICAL_FORECAST_URL in str(r.url))
+    assert archive.url.params["daily"] == "temperature_2m_min"
+
+
 def test_backtest_synthetic_returns_none_without_overlap(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()

@@ -106,3 +106,29 @@ def test_fetch_raises_on_http_error(httpx_mock):
     with pytest.raises(httpx.HTTPStatusError):
         NwsSource(client).fetch(target)
     client.close()
+
+
+def test_fetch_raises_when_forecast_call_fails(httpx_mock):
+    # points lookup succeeds, but the second call (the forecast product) errors.
+    points_body = {
+        "properties": {"forecast": "https://api.weather.gov/gridpoints/OKX/37,46/forecast"}
+    }
+    httpx_mock.add_response(url="https://api.weather.gov/points/40.7792,-73.8803", json=points_body)
+    httpx_mock.add_response(
+        url="https://api.weather.gov/gridpoints/OKX/37,46/forecast", status_code=500
+    )
+    client = httpx.Client()
+    target = build_target("NYC", "TMAX", date(2026, 5, 31))
+    with pytest.raises(httpx.HTTPStatusError):
+        NwsSource(client).fetch(target)
+    client.close()
+
+
+def test_parse_rejects_non_fahrenheit_unit():
+    # NWS reports degrees C in some products; the matching period must be guarded.
+    data = _forecast_fixture()
+    target = build_target("NYC", "TMAX", date(2026, 5, 31))
+    for period in data["properties"]["periods"]:
+        period["temperatureUnit"] = "C"
+    with pytest.raises(ValueError, match="Fahrenheit"):
+        parse(data, target)

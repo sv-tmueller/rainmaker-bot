@@ -13,6 +13,7 @@ from rainmaker.forecasts.openmeteo import (
     FORECAST_URL,
     OpenMeteoSource,
     _common_params,
+    fetch_raw_multimodel,
     parse_ensemble,
     parse_multimodel,
 )
@@ -145,6 +146,24 @@ def test_common_params_requests_min_field_for_tmin():
     assert _common_params(build_target("NYC", "TMAX", date(2026, 5, 31)))["daily"] == (
         "temperature_2m_max"
     )
+
+
+def test_source_raises_when_ensemble_call_fails(httpx_mock):
+    # multimodel succeeds, but the first ensemble fetch errors; the source aborts.
+    httpx_mock.add_response(url=re.compile(re.escape(FORECAST_URL)), json=_multimodel_fixture())
+    httpx_mock.add_response(url=re.compile(re.escape(ENSEMBLE_URL)), status_code=503)
+    target = build_target("NYC", "TMAX", date(2026, 5, 31))
+    with httpx.Client() as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            OpenMeteoSource(client).fetch(target)
+
+
+def test_fetch_raw_multimodel_raises_on_http_error(httpx_mock):
+    httpx_mock.add_response(url=re.compile(re.escape(FORECAST_URL)), status_code=502)
+    target = build_target("NYC", "TMAX", date(2026, 5, 31))
+    with httpx.Client() as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            fetch_raw_multimodel(target, client)
 
 
 def test_parse_multimodel_rejects_non_fahrenheit():

@@ -145,6 +145,31 @@ def _mock_build(httpx_mock):
     )
 
 
+def test_build_precip_forecast_set_climatology_only_when_both_sources_fail(httpx_mock):
+    # Both live forecast sources down: coverage degrades but observed-to-date plus
+    # climatology still yield a usable monthly total (the run does not abort).
+    daily = json.loads((FIXTURES / "ncei_daily_precip_nyc.json").read_text())
+    clim = json.loads((FIXTURES / "ncei_climatology_precip_nyc.json").read_text())
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=daily)
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=clim)
+    httpx_mock.add_response(url=re.compile(re.escape(FORECAST_URL)), status_code=500)
+    httpx_mock.add_response(url="https://api.weather.gov/points/40.779,-73.9692", status_code=500)
+    with httpx.Client() as client:
+        fs = build_precip_forecast_set(
+            _nyc_target(),
+            today=date(2026, 6, 6),
+            client=client,
+            var_floor=0.01,
+            lookback_years=20,
+        )
+    assert all(not c.ok and c.error is not None for c in fs.coverage)
+    assert fs.n_forecast_days == 0
+    assert fs.n_observed_days > 0
+    assert fs.n_clim_days > 0
+    assert fs.mean > 0
+    assert fs.var > 0
+
+
 def test_build_precip_forecast_set_pools_all_sources(httpx_mock):
     _mock_build(httpx_mock)
     with httpx.Client() as client:
