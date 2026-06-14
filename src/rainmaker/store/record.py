@@ -33,27 +33,36 @@ def record_run(
     precip_evaluated: list[PrecipEvaluatedMarket] | None = None,
 ) -> None:
     """Persist a run and everything it produced, in one transaction."""
+    pe = precip_evaluated or []
     conn.execute(
         "INSERT INTO runs (id, started_at, finished_at, status, coverage) VALUES (?, ?, ?, ?, ?)",
-        (run_id, started_at, finished_at, status, json.dumps(_run_coverage(evaluated))),
+        (run_id, started_at, finished_at, status, json.dumps(_run_coverage(evaluated, pe))),
     )
     for market, forecast_set, report in evaluated:
         _record_market(conn, market, started_at)
         _record_prices(conn, run_id, market, started_at)
         _record_forecasts(conn, run_id, market.id, forecast_set, started_at)
         _record_predictions(conn, run_id, market.id, report, finished_at)
-    for precip_market, precip_report in precip_evaluated or []:
+    for precip_market, precip_report in pe:
         _record_precip_market(conn, precip_market, started_at)
         _record_prices(conn, run_id, precip_market, started_at)
         _record_predictions(conn, run_id, precip_market.id, precip_report, finished_at)
     conn.commit()
 
 
-def _run_coverage(evaluated: list[EvaluatedMarket]) -> dict[str, object]:
+def _run_coverage(
+    evaluated: list[EvaluatedMarket],
+    precip_evaluated: list[PrecipEvaluatedMarket],
+) -> dict[str, object]:
     sources: set[str] = set()
     for _, forecast_set, _ in evaluated:
         sources.update(c.source for c in forecast_set.coverage if c.ok)
-    return {"n_markets": len(evaluated), "ok_sources": sorted(sources)}
+    for _, report in precip_evaluated:
+        sources.update(c.source for c in report.coverage if c.ok)
+    return {
+        "n_markets": len(evaluated) + len(precip_evaluated),
+        "ok_sources": sorted(sources),
+    }
 
 
 def _record_market(conn: Conn, market: Market, captured_at: str) -> None:

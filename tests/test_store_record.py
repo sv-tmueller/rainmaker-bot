@@ -233,6 +233,28 @@ def test_record_run_persists_precip_market():
     conn.close()
 
 
+def test_precip_only_run_coverage_counts_markets_and_sources():
+    """A run with only precip markets must record n_markets >= 1 and non-empty ok_sources."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    market, report = _precip_evaluated()
+    record_run(
+        conn,
+        run_id="run-cov",
+        started_at="2026-06-06T10:00:00Z",
+        finished_at="2026-06-06T10:00:05Z",
+        status="ok",
+        evaluated=[],
+        precip_evaluated=[(market, report)],
+    )
+    run = get_run(conn, "run-cov")
+    assert run is not None
+    coverage = json.loads(run["coverage"])
+    assert coverage["n_markets"] >= 1
+    assert len(coverage["ok_sources"]) >= 1
+    conn.close()
+
+
 def test_accuracy_save_and_upsert_round_trip():
     conn = connect(":memory:")
     init_schema(conn)

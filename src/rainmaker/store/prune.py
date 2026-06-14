@@ -19,13 +19,21 @@ _PRUNE_TABLES = ("prices", "predictions", "forecasts")
 
 
 def _runs_to_prune(conn: Conn) -> list[tuple[str, str]]:
-    """(run_id, market_id) pairs that are not the latest run for a settled (market, day)."""
+    """(run_id, market_id) pairs that are not the latest run for a settled (market, day).
+
+    Anchors on both prices and predictions so markets that write only prices
+    (precip path: no per-sample forecast rows) are not missed.
+    """
     rows = conn.execute(
-        "SELECT DISTINCT p.market_id AS market_id, p.run_id AS run_id, "
+        "SELECT DISTINCT sub.market_id AS market_id, sub.run_id AS run_id, "
         "r.started_at AS started_at "
-        "FROM predictions p "
-        "JOIN runs r ON r.id = p.run_id "
-        "JOIN outcomes o ON o.market_id = p.market_id"
+        "FROM ("
+        "  SELECT market_id, run_id FROM prices"
+        "  UNION"
+        "  SELECT market_id, run_id FROM predictions"
+        ") sub "
+        "JOIN runs r ON r.id = sub.run_id "
+        "JOIN outcomes o ON o.market_id = sub.market_id"
     ).fetchall()
     members: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
     for row in (dict(r) for r in rows):
