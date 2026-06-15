@@ -7,8 +7,11 @@ from rainmaker.config import (
     KALSHI_PRECIP_STATIONS,
     KALSHI_RAIN_SERIES,
     KALSHI_STATIONS,
+    MIN_SIGMA_C,
+    MIN_SIGMA_F,
     PRECIP_STATIONS,
     STATIONS,
+    Station,
     build_target,
 )
 
@@ -122,3 +125,72 @@ def test_kalshi_rain_registry_aligned():
         assert st.resolution_name, city
         assert st.ghcnd_id.startswith("USW"), city
         zoneinfo.ZoneInfo(st.timezone)
+
+
+def test_all_us_stations_default_unit_f():
+    for city, s in STATIONS.items():
+        assert s.unit == "F", f"{city} should default to F"
+
+
+def test_station_unit_f_is_default():
+    # A Station can be created without specifying unit and it defaults to "F".
+    s = Station(
+        city="Test",
+        icao="KTST",
+        name="Test Airport",
+        lat=0.0,
+        lon=0.0,
+        timezone="UTC",
+        wunderground_url="https://example.com",
+        ghcnd_id="USW00000000",
+    )
+    assert s.unit == "F"
+
+
+def test_station_unit_c_accepted():
+    s = Station(
+        city="Jeddah",
+        icao="OEJN",
+        name="King Abdulaziz International Airport",
+        lat=21.67,
+        lon=39.16,
+        timezone="Asia/Riyadh",
+        wunderground_url="https://example.com",
+        ghcnd_id=None,
+    )
+    assert s.unit == "F"  # default still F; C must be explicit
+    s2 = Station(
+        city="Jeddah",
+        icao="OEJN",
+        name="King Abdulaziz International Airport",
+        lat=21.67,
+        lon=39.16,
+        timezone="Asia/Riyadh",
+        wunderground_url="https://example.com",
+        ghcnd_id=None,
+        unit="C",
+    )
+    assert s2.unit == "C"
+
+
+def test_station_ghcnd_id_optional():
+    # International advisory rows have no NCEI proxy yet.
+    s = Station(
+        city="Jeddah",
+        icao="OEJN",
+        name="King Abdulaziz International Airport",
+        lat=21.67,
+        lon=39.16,
+        timezone="Asia/Riyadh",
+        wunderground_url="https://example.com",
+        ghcnd_id=None,
+        unit="C",
+    )
+    assert s.ghcnd_id is None
+
+
+def test_min_sigma_c_is_fahrenheit_floor_times_five_ninths():
+    # MIN_SIGMA_C = MIN_SIGMA_F * 5/9: the same physical spread in Celsius.
+    import pytest
+
+    assert MIN_SIGMA_C == pytest.approx(MIN_SIGMA_F * 5 / 9, abs=1e-9)

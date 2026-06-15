@@ -6,9 +6,12 @@ from pathlib import Path
 from rainmaker.config import (
     CONFIDENCE_FLOOR,
     MIN_EDGE,
+    MIN_SIGMA_C,
     MIN_SIGMA_F,
     MIN_SOURCES,
     PRECIP_VAR_FLOOR,
+    Station,
+    Target,
     build_target,
 )
 from rainmaker.domain import Bucket, Market
@@ -221,3 +224,124 @@ def test_golden_precip_pipeline_on_fixture_market():
     assert "Central Park NY" in md  # the resolution station, not the temperature ICAO
     assert "2026-06-30" in md  # the month's settlement date
     assert "in (uncalibrated)" in md  # the inch unit label
+
+
+# ---------------------------------------------------------------------------
+# Celsius-core golden e2e (#167): synthetic Jeddah-style high-temp C market
+# ---------------------------------------------------------------------------
+
+_JEDDAH_STATION = Station(
+    city="Jeddah",
+    icao="OEJN",
+    name="King Abdulaziz International Airport",
+    lat=21.67,
+    lon=39.16,
+    timezone="Asia/Riyadh",
+    wunderground_url="https://example.com/jeddah",
+    ghcnd_id=None,
+    unit="C",
+)
+
+
+def _jeddah_c_market() -> Market:
+    """Synthetic 1-degree-C ladder (37-41C) for a Jeddah-style high-temp market."""
+
+    def bucket(label: str, kind: str, lo, hi, threshold, best_ask: float) -> Bucket:
+        return Bucket(
+            label=label,
+            kind=kind,
+            lo=lo,
+            hi=hi,
+            threshold=threshold,
+            yes_token_id="t",
+            best_ask=best_ask,
+            best_bid=None,
+            yes_price=0.0,
+        )
+
+    target = Target(
+        station=_JEDDAH_STATION,
+        variable="TMAX",
+        local_date=date(2026, 7, 1),
+    )
+    return Market(
+        id="jeddah1",
+        slug="highest-temperature-jeddah",
+        title="Highest temperature in Jeddah on Jul 1?",
+        target=target,
+        buckets=[
+            bucket("36C or below", "below", None, None, 36, 0.10),
+            bucket("37C", "range", 37, 37, None, 0.15),
+            bucket("38C", "range", 38, 38, None, 0.40),
+            bucket("39C", "range", 39, 39, None, 0.25),
+            bucket("40C or higher", "above", None, None, 40, 0.10),
+        ],
+    )
+
+
+def _jeddah_forecast_set(target: Target) -> ForecastSet:
+    # Forecast values are always in F (the sources only produce F).
+    # 38C = 100.4F; pool centered there so the 38C bucket is the mode.
+    f_center = 38 * 9 / 5 + 32  # 100.4F
+    samples = [
+        ForecastSample(
+            source="nws",
+            model="m",
+            member=None,
+            station="OEJN",
+            variable="TMAX",
+            target_date=target.local_date,
+            lead_time_days=1,
+            value_f=f_center + offset,
+            issued_at=None,
+        )
+        for offset in (-3.6, -1.8, 0.0, 1.8, 3.6)  # 2C spread in F-space
+    ]
+    return ForecastSet(
+        target=target,
+        samples=samples,
+        coverage=[
+            SourceCoverage(source="nws", ok=True, n_samples=5),
+            SourceCoverage(source="open-meteo", ok=True, n_samples=5),
+        ],
+    )
+
+
+def test_golden_pipeline_on_celsius_market():
+    """C-unit market: forecast -> probability (whole-C rounding) -> edge -> report."""
+    market = _jeddah_c_market()
+    assert market.target.station.unit == "C"
+
+    fs = _jeddah_forecast_set(market.target)
+    report = evaluate_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_C,
+        min_edge=MIN_EDGE,
+    )
+
+    # All buckets carry an ask, so none are excluded.
+    assert report.excluded_no_ask == []
+    yes_outcomes = [o for o in report.outcomes if o.side == "YES"]
+    assert len(yes_outcomes) == 5
+    # YES partition sums to ~1.
+    assert abs(sum(o.p_win for o in yes_outcomes) - 1.0) < 1e-6
+    # Mode bucket is 38C (pool centered there).
+    mode = max(yes_outcomes, key=lambda o: o.p_win)
+    assert mode.bucket_label == "38C"
+    # Ranking is sorted by edge descending.
+    edges = [o.edge for o in report.outcomes]
+    assert edges == sorted(edges, reverse=True)
+
+    # report.mu and report.sigma are in C (not F).
+    assert report.mu is not None and report.sigma is not None
+    assert 36 < report.mu < 41, f"mu should be near 38C, got {report.mu}"
+    assert report.sigma < 5, f"sigma in C should be < 5, got {report.sigma}"
+
+    # The render labels the unit as C, not F.
+    md = render_markdown(Report(run_date=date(2026, 7, 1), markets=[report]))
+    assert "C (uncalibrated)" in md
+    assert "F (uncalibrated)" not in md
+    assert "OEJN" in md

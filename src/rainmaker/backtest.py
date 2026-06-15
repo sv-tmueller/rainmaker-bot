@@ -211,7 +211,7 @@ def backtest_synthetic(
     Returns None if no day has both a forecast and an actual.
     """
     forecasts = fetch_historical_forecasts(station, start, end, client, variable)
-    actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)
+    actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)  # type: ignore[arg-type]
     pairs = build_pairs(forecasts, actuals)
     if not pairs:
         return None
@@ -389,7 +389,7 @@ def backtest_real(
         station = group[0].target.station
         dates = [m.target.local_date for m in group]
         forecasts = fetch_historical_forecasts(station, min(dates), max(dates), client)
-        actuals = fetch_actuals(station.ghcnd_id, min(dates), max(dates), client, "TMAX")
+        actuals = fetch_actuals(station.ghcnd_id, min(dates), max(dates), client, "TMAX")  # type: ignore[arg-type]
         for market in group:
             g = forecasts.get(market.target.local_date)
             actual = actuals.get(market.target.local_date)

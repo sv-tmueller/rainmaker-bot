@@ -482,7 +482,7 @@ def run_spike(
         ncei_in_bucket: bool | None = None
         ncei_gap: float | None = None
         try:
-            actuals = fetch_actuals(station.ghcnd_id, local_date, local_date, client, variable)
+            actuals = fetch_actuals(station.ghcnd_id, local_date, local_date, client, variable)  # type: ignore[arg-type]
             ncei_value = actuals.get(local_date)
             if ncei_value is not None:
                 ncei_in_bucket = temperature_in_bucket(ncei_value, resolved)

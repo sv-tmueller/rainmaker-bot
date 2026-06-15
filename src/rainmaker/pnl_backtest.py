@@ -296,7 +296,7 @@ def backtest_pnl(
         station = group[0][0].target.station
         dates = [m.target.local_date for m, _ in group]
         samples_by_date = fetch_historical_samples(station, min(dates), max(dates), client)
-        actuals = fetch_actuals(station.ghcnd_id, min(dates), max(dates), client, "TMAX")
+        actuals = fetch_actuals(station.ghcnd_id, min(dates), max(dates), client, "TMAX")  # type: ignore[arg-type]
         for market, settlement_dt in group:
             samples = samples_by_date.get(market.target.local_date)
             actual = actuals.get(market.target.local_date)

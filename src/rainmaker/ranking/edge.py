@@ -5,13 +5,18 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict
 
 from rainmaker.domain import Market, PrecipMonthlyMarket
-from rainmaker.forecasts.base import ForecastSet, SourceCoverage
+from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.forecasts.precip import PrecipForecastSet
 from rainmaker.probability.calibration import Calibration, apply_calibration
 from rainmaker.probability.distribution import fit_gaussian
 from rainmaker.probability.outcomes import bucket_probability
 from rainmaker.probability.precip_distribution import fit_gamma
 from rainmaker.probability.precip_outcomes import bracket_probability
+
+
+def _f_to_c(sample: ForecastSample) -> ForecastSample:
+    """Return a copy of the sample with value_f converted from F to C."""
+    return sample.model_copy(update={"value_f": (sample.value_f - 32) * 5 / 9})
 
 
 class RankedOutcome(BaseModel):
@@ -33,6 +38,7 @@ class MarketReport(BaseModel):
     city: str
     station: str
     variable: str
+    unit: str = "F"  # settlement unit of the market ("F" or "C")
     settlement_date: date
     mu: float | None
     sigma: float | None
@@ -54,6 +60,7 @@ def evaluate_market(
     min_edge: float,
     calibration: Calibration | None = None,
 ) -> MarketReport:
+    unit = market.target.station.unit
     n_sources = sum(1 for c in forecast_set.coverage if c.ok and c.n_samples > 0)
     common: dict[str, Any] = dict(
         market_id=market.id,
@@ -61,6 +68,7 @@ def evaluate_market(
         city=market.target.station.city,
         station=market.target.station.icao,
         variable=market.target.variable,
+        unit=unit,
         settlement_date=market.target.local_date,
         n_sources=n_sources,
         coverage=forecast_set.coverage,
@@ -71,7 +79,10 @@ def evaluate_market(
             **common, calibrated=False, mu=None, sigma=None, outcomes=[], excluded_no_ask=[]
         )
 
-    gaussian = fit_gaussian(forecast_set.samples, min_sigma=min_sigma)
+    # Forecast sources always produce F values. For C markets, convert to C so
+    # the fitted Gaussian lives in the same unit as the bucket edges.
+    samples = [_f_to_c(s) for s in forecast_set.samples] if unit == "C" else forecast_set.samples
+    gaussian = fit_gaussian(samples, min_sigma=min_sigma)
     # Apply calibration only when a cell is provided; with none, use the raw fit.
     calibrated = False
     if calibration is not None:
