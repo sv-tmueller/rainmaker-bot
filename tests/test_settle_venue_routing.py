@@ -19,6 +19,7 @@ from rainmaker.backfill import NCEI_URL
 from rainmaker.forecasts.asos import MESONET_ASOS_URL
 from rainmaker.settle import regrade_polymarket_settlements, run_settlement
 from rainmaker.store.db import connect, init_schema
+from rainmaker.store.migrate import _backfill_venue
 from rainmaker.store.record import record_outcome
 
 # ---------------------------------------------------------------------------
@@ -429,3 +430,82 @@ def test_regrade_waits_when_asos_returns_empty(httpx_mock):
     conn.close()
     assert regraded == 0  # not regraded (no data)
     assert row["actual_value"] == pytest.approx(65.0)  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# finding 1: backfill_venue ensures legacy NULL-venue numeric rows are
+# re-graded onto ASOS; Kalshi-ticker rows are NOT re-graded
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_numeric_id_backfilled_and_regraded(httpx_mock):
+    """A legacy NULL-venue market with a numeric id is backfilled to 'polymarket'
+    and subsequently re-graded onto ASOS by regrade_polymarket_settlements."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    # Simulate a pre-0005 row: numeric Polymarket-style id, venue IS NULL
+    # Use raw SQL to bypass record_market (which would set venue).
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, outcome_spec) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("700001", "NYC", "TMAX", "2026-05-30", json.dumps(_TMAX_SPEC)),
+    )
+    conn.commit()
+    # Pre-seed with an old NCEI value (65F -> "65°F or higher")
+    record_outcome(conn, "700001", 65.0, "2026-05-31T00:00:00Z")
+
+    # Backfill venue: 700001 is numeric -> 'polymarket'
+    _backfill_venue(conn)
+
+    row_venue = conn.execute("SELECT venue FROM markets WHERE id = ?", ("700001",)).fetchone()
+    assert row_venue["venue"] == "polymarket", "backfill did not set venue"
+
+    # ASOS returns 64.4F -> rounds to 64 -> "60-64°F"
+    httpx_mock.add_response(
+        url=re.compile(re.escape(MESONET_ASOS_URL)),
+        text=_ASOS_CSV_64F,
+    )
+    with httpx.Client() as client:
+        regraded = regrade_polymarket_settlements(conn, client, "2026-06-15T00:00:00Z")
+
+    row = conn.execute(
+        "SELECT actual_value FROM outcomes WHERE market_id = ?", ("700001",)
+    ).fetchone()
+    conn.close()
+    assert regraded == 1
+    # ASOS value overwrites the old NCEI value
+    assert row["actual_value"] == pytest.approx(18.0 * 9 / 5 + 32, abs=0.1)
+
+
+def test_legacy_kalshi_ticker_not_regraded(httpx_mock):
+    """A legacy NULL-venue market with a Kalshi-style ticker id is backfilled to
+    'kalshi' and NOT touched by regrade_polymarket_settlements."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    # Simulate a pre-0005 Kalshi row: alphanumeric ticker, venue IS NULL
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, outcome_spec) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("KXHIGHNY-26JUN08", "NYC", "TMAX", "2026-06-08", json.dumps(_TMAX_SPEC)),
+    )
+    conn.commit()
+    record_outcome(conn, "KXHIGHNY-26JUN08", 79.0, "2026-06-09T00:00:00Z")
+
+    # Backfill venue: ticker is non-numeric -> 'kalshi'
+    _backfill_venue(conn)
+
+    row_venue = conn.execute(
+        "SELECT venue FROM markets WHERE id = ?", ("KXHIGHNY-26JUN08",)
+    ).fetchone()
+    assert row_venue["venue"] == "kalshi", "backfill did not set venue"
+
+    # No ASOS mock: any ASOS call would raise (unmocked URL)
+    with httpx.Client() as client:
+        regraded = regrade_polymarket_settlements(conn, client, "2026-06-15T00:00:00Z")
+
+    row = conn.execute(
+        "SELECT actual_value FROM outcomes WHERE market_id = ?", ("KXHIGHNY-26JUN08",)
+    ).fetchone()
+    conn.close()
+    assert regraded == 0  # Kalshi row must not be regraded
+    assert row["actual_value"] == pytest.approx(79.0)  # unchanged

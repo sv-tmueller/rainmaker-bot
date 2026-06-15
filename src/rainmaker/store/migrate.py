@@ -25,6 +25,24 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
 ]
 
 
+def _backfill_venue(conn: Conn) -> None:
+    """Infer and set venue for markets where venue IS NULL.
+
+    Polymarket market ids are numeric strings (e.g. '700001').
+    Kalshi market ids are alphanumeric tickers (e.g. 'KXHIGHNY-26JUN08').
+    The inference is str.isdigit() which is portable across SQLite and Postgres;
+    no GLOB or regex function is used.
+
+    Idempotent: only rows with venue IS NULL are updated.
+    """
+    rows = conn.execute("SELECT id FROM markets WHERE venue IS NULL").fetchall()
+    for row in rows:
+        market_id = str(row["id"])
+        venue = "polymarket" if market_id.isdigit() else "kalshi"
+        conn.execute("UPDATE markets SET venue = ? WHERE id = ?", (venue, market_id))
+    conn.commit()
+
+
 def _is_duplicate_column(exc: Exception) -> bool:
     """Return True if exc is a 'column already exists' error from either backend."""
     # SQLite raises OperationalError with 'duplicate column name' in the message.
@@ -71,5 +89,15 @@ def apply_migrations(conn: Conn) -> None:
         conn.execute(
             "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
             (migration_id, datetime.now(UTC).isoformat()),
+        )
+        conn.commit()
+
+    # 0007: backfill venue for legacy NULL rows (Python, not SQL, for portability).
+    # Polymarket ids are numeric strings; Kalshi ids are alphanumeric tickers.
+    if "0007_backfill_venue" not in applied:
+        _backfill_venue(conn)
+        conn.execute(
+            "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
+            ("0007_backfill_venue", datetime.now(UTC).isoformat()),
         )
         conn.commit()
