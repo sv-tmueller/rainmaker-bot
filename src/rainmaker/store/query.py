@@ -18,7 +18,7 @@ def get_run(conn: Conn, run_id: str) -> dict[str, Any] | None:
 
 def get_predictions(conn: Conn, run_id: str) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT market_id, p_win, edge, recommended FROM predictions "
+        "SELECT market_id, p_win, edge, recommended, won FROM predictions "
         "WHERE run_id = ? ORDER BY edge DESC",
         (run_id,),
     ).fetchall()

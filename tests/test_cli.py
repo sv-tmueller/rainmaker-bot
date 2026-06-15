@@ -65,7 +65,7 @@ def test_run_builds_report_and_writes_files(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMAX")])
     monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
     monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set())
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 5, 31))
     db = tmp_path / "t.db"
 
@@ -130,7 +130,7 @@ def test_run_processes_tmin_market(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMIN")])
     monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
     monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set("TMIN"))
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 5, 31))
     db = tmp_path / "t.db"
 
@@ -149,7 +149,7 @@ def test_run_skips_when_variable_unsupported(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "SUPPORTED_VARIABLES", {"TMAX"})
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMIN")])
     monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
 
     cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(tmp_path / "t.db")])
 
@@ -164,7 +164,7 @@ def test_run_skips_settled_market(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMAX")])
     monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
     monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set())
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 1))
 
     db = tmp_path / "t.db"
@@ -184,7 +184,7 @@ def test_run_aborts_when_polymarket_down(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(cli, "discover_markets", _boom)
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
 
     with pytest.raises(SystemExit) as exc:
         cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(tmp_path / "t.db")])
@@ -199,7 +199,7 @@ def test_backfill_fits_and_saves_calibration_and_accuracy(monkeypatch, tmp_path,
     )
     acc = Accuracy(n=42, mae_f=2.5, bias_f=-2.0)
     monkeypatch.setattr(cli, "run_backfill", lambda *a, **k: (cal, acc))
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     db = tmp_path / "t.db"
 
     cli.main(["backfill", "--db", str(db), "--leads", "1"])
@@ -235,7 +235,7 @@ def test_backfill_all_covers_every_city(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "run_backfill", _fake)
     monkeypatch.setattr(cli, "run_backfill_accuracy", _fake_acc)
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     db = tmp_path / "t.db"
 
     cli.main(["backfill", "--city", "all", "--db", str(db)])
@@ -253,7 +253,7 @@ def test_backfill_exits_nonzero_when_all_cities_fail(monkeypatch, tmp_path, caps
 
     monkeypatch.setattr(cli, "run_backfill", _boom)
     monkeypatch.setattr(cli, "run_backfill_accuracy", _boom)
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
 
     with pytest.raises(SystemExit) as exc:
         cli.main(["backfill", "--city", "all", "--db", str(tmp_path / "t.db")])
@@ -287,7 +287,7 @@ def test_backfill_partial_failure_exits_zero(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(cli, "run_backfill", _mixed)
     monkeypatch.setattr(cli, "run_backfill_accuracy", _mixed_acc)
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     db = tmp_path / "t.db"
 
     cli.main(["backfill", "--city", "all", "--db", str(db)])  # must not raise SystemExit
@@ -403,7 +403,7 @@ def test_prune_command_reports_rows_pruned(monkeypatch, tmp_path, capsys):
 
 def test_settle_command_reports_summary(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "run_settlement", lambda conn, client, today, settled_at: (2, 1))
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     cli.main(["settle", "--db", str(tmp_path / "t.db")])
     out = capsys.readouterr().out
     assert "settled 2 market(s); 1 waiting" in out
@@ -427,7 +427,7 @@ def test_backtest_command_writes_report(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "backtest_synthetic", lambda *a, **k: pair)
     monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
     monkeypatch.setattr(cli, "backtest_real", lambda *a, **k: None)
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 5))
 
     cli.main(["backtest", "--city", "NYC", "--days", "365", "--reports-dir", str(tmp_path)])
@@ -440,7 +440,7 @@ def test_backtest_command_writes_report(monkeypatch, tmp_path, capsys):
 
 def test_backtest_exits_when_no_data(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "backtest_synthetic", lambda *a, **k: None)
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     with pytest.raises(SystemExit) as exc:
         cli.main(["backtest", "--city", "NYC", "--no-real", "--reports-dir", str(tmp_path)])
     assert exc.value.code == 1
@@ -468,7 +468,7 @@ def test_backtest_pnl_command_writes_report(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(cli, "backtest_pnl", _fake_backtest_pnl)
     monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 5))
 
     cli.main(
@@ -496,7 +496,7 @@ def test_backtest_pnl_command_writes_report(monkeypatch, tmp_path, capsys):
 def test_backtest_pnl_exits_when_no_data(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "backtest_pnl", lambda *a, **k: None)
     monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     with pytest.raises(SystemExit) as exc:
         cli.main(["backtest-pnl", "--city", "NYC", "--reports-dir", str(tmp_path)])
     assert exc.value.code == 1
@@ -617,7 +617,7 @@ def test_run_routes_precip_market(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "discover_markets", lambda client: [])
     monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [market])
     monkeypatch.setattr(cli, "_precip_forecast_for", lambda target, today, client: fs)
-    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 6))
     db = tmp_path / "t.db"
 
