@@ -171,6 +171,40 @@ def temperature_in_bucket(value: float, bucket_label: str) -> bool:
     return lo <= v <= hi
 
 
+def _bucket_edge_gap(value: float, bucket_label: str) -> float | None:
+    """Return the degrees-F distance from the nearest bucket edge when value is outside.
+
+    Returns None when value is inside the bucket (no gap).
+    Uses the same banker's rounding as temperature_in_bucket.
+
+    For a range bucket lo-hi: gap = lo - v if v < lo, else v - hi if v > hi.
+    For a 'below' bucket (threshold): gap = v - threshold when v > threshold.
+    For an 'above' bucket (threshold): gap = threshold - v when v < threshold.
+    """
+    kind: BucketKind
+    lo: int | None
+    hi: int | None
+    threshold: int | None
+    kind, lo, hi, threshold = parse_bucket_label(bucket_label)
+    v = round(value)
+    if kind == "below":
+        assert threshold is not None
+        if v <= threshold:
+            return None
+        return float(v - threshold)
+    if kind == "above":
+        assert threshold is not None
+        if v >= threshold:
+            return None
+        return float(threshold - v)
+    assert lo is not None and hi is not None
+    if lo <= v <= hi:
+        return None
+    if v < lo:
+        return float(lo - v)
+    return float(v - hi)
+
+
 # ---------------------------------------------------------------------------
 # ISD hourly fetch -> daily extreme
 # ---------------------------------------------------------------------------
@@ -365,25 +399,30 @@ class CityResult:
 
 
 def summarise(rows: list[DivergenceRow]) -> dict[str, CityResult]:
-    """Group rows by city and compute per-city flip rates."""
-    by_city: dict[str, list[DivergenceRow]] = {}
+    """Group rows by (city, variable) and compute flip rates per group.
+
+    Keys are "city/variable" strings (e.g. "NYC/TMAX") so TMAX and TMIN for the
+    same city are tracked separately.
+    """
+    by_group: dict[str, list[DivergenceRow]] = {}
     for row in rows:
-        by_city.setdefault(row.city, []).append(row)
+        key = f"{row.city}/{row.variable}"
+        by_group.setdefault(key, []).append(row)
 
     results: dict[str, CityResult] = {}
-    for city, city_rows in sorted(by_city.items()):
+    for key, group_rows in sorted(by_group.items()):
+        city, variable_str = key.split("/", 1)
+        variable: Variable = variable_str  # type: ignore[assignment]
         # Only count rows where both arms produced a value
         scored = [
-            r for r in city_rows if r.ncei_in_bucket is not None and r.asos_in_bucket is not None
+            r for r in group_rows if r.ncei_in_bucket is not None and r.asos_in_bucket is not None
         ]
         n = len(scored)
         if n == 0:
             continue
         ncei_flips = sum(1 for r in scored if not r.ncei_in_bucket)
         asos_flips = sum(1 for r in scored if not r.asos_in_bucket)
-        # Determine the variable (all rows for a city have the same variable in practice)
-        variable: Variable = scored[0].variable
-        results[city] = CityResult(
+        results[key] = CityResult(
             city=city,
             variable=variable,
             n=n,
@@ -391,7 +430,7 @@ def summarise(rows: list[DivergenceRow]) -> dict[str, CityResult]:
             asos_flips=asos_flips,
             ncei_flip_rate=ncei_flips / n,
             asos_flip_rate=asos_flips / n,
-            rows=city_rows,
+            rows=group_rows,
         )
     return results
 
@@ -446,6 +485,8 @@ def run_spike(
             ncei_value = actuals.get(local_date)
             if ncei_value is not None:
                 ncei_in_bucket = temperature_in_bucket(ncei_value, resolved)
+                if not ncei_in_bucket:
+                    ncei_gap = _bucket_edge_gap(ncei_value, resolved)
         except httpx.HTTPError:
             pass
 
@@ -462,6 +503,8 @@ def run_spike(
                 asos_value = mesonet_actuals.get(local_date)
                 if asos_value is not None:
                     asos_in_bucket = temperature_in_bucket(asos_value, resolved)
+                    if not asos_in_bucket:
+                        asos_gap = _bucket_edge_gap(asos_value, resolved)
             except httpx.HTTPError:
                 pass
 
@@ -540,10 +583,35 @@ def render_divergence_report(
         asos_v = f"{row.asos_value:.1f}F" if row.asos_value is not None else "n/a"
         ncei_m = "n/a" if row.ncei_in_bucket is None else ("yes" if row.ncei_in_bucket else "NO")
         asos_m = "n/a" if row.asos_in_bucket is None else ("yes" if row.asos_in_bucket else "NO")
+        ncei_gap_s = f" (+{row.ncei_gap:.1f}F)" if row.ncei_gap is not None else ""
+        asos_gap_s = f" (+{row.asos_gap:.1f}F)" if row.asos_gap is not None else ""
         lines.append(
             f"| {row.city} | {row.local_date} | {row.variable} | {row.resolved_label} "
-            f"| {ncei_v} | {ncei_m} | {asos_v} | {asos_m} |"
+            f"| {ncei_v} | {ncei_m}{ncei_gap_s} | {asos_v} | {asos_m}{asos_gap_s} |"
         )
+
+    # Degree-gap distribution where computable
+    ncei_gaps = [r.ncei_gap for r in rows if r.ncei_gap is not None]
+    asos_gaps = [r.asos_gap for r in rows if r.asos_gap is not None]
+    lines += ["", "## Degree-gap distribution (flips only)", ""]
+    if ncei_gaps:
+        ncei_mean = sum(ncei_gaps) / len(ncei_gaps)
+        ncei_max = max(ncei_gaps)
+        lines.append(
+            f"NCEI GHCND (Arm A): {len(ncei_gaps)} flip(s), "
+            f"mean gap {ncei_mean:.1f}F, max gap {ncei_max:.1f}F"
+        )
+    else:
+        lines.append("NCEI GHCND (Arm A): no flips with computable gap")
+    if asos_gaps:
+        asos_mean = sum(asos_gaps) / len(asos_gaps)
+        asos_max = max(asos_gaps)
+        lines.append(
+            f"Iowa State Mesonet ASOS (Arm B): {len(asos_gaps)} flip(s), "
+            f"mean gap {asos_mean:.1f}F, max gap {asos_max:.1f}F"
+        )
+    else:
+        lines.append("Iowa State Mesonet ASOS (Arm B): no flips with computable gap")
 
     lines += [
         "",
