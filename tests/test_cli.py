@@ -410,19 +410,21 @@ def test_settle_command_reports_summary(monkeypatch, tmp_path, capsys):
 
 
 def test_backtest_command_writes_report(monkeypatch, tmp_path, capsys):
-    from rainmaker.backtest import BacktestResult, ReliabilityBin
+    from rainmaker.backtest import BacktestPair, BacktestResult, ReliabilityBin
 
     result = BacktestResult(
         n=100,
         modal_hit_rate=0.55,
         mean_modal_p=0.50,
         mean_brier=0.20,
+        mean_crps=0.15,
         coverage={0.5: 0.5, 0.8: 0.8, 0.9: 0.9},
         reliability=[
             ReliabilityBin(lo=0.5, hi=0.6, predicted_mean=0.55, observed_freq=0.6, count=20)
         ],
     )
-    monkeypatch.setattr(cli, "backtest_synthetic", lambda *a, **k: result)
+    pair = BacktestPair(uncalibrated=result, calibrated=result)
+    monkeypatch.setattr(cli, "backtest_synthetic", lambda *a, **k: pair)
     monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
     monkeypatch.setattr(cli, "backtest_real", lambda *a, **k: None)
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())

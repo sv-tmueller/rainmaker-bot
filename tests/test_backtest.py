@@ -6,6 +6,7 @@ from rainmaker.backtest import (
     ReliabilityBin,
     aggregate,
     combine,
+    crps_gaussian,
     reliability_bins,
     score_day,
     standard_buckets,
@@ -13,6 +14,29 @@ from rainmaker.backtest import (
 from rainmaker.domain import parse_bucket_label
 from rainmaker.probability.distribution import Gaussian
 from rainmaker.probability.outcomes import bucket_probability
+
+# ---------------------------------------------------------------------------
+# CRPS tests (TDD: these must fail before crps_gaussian is implemented)
+# ---------------------------------------------------------------------------
+
+
+def test_crps_gaussian_at_mean():
+    # CRPS(N(0,1), 0) = sigma * (2*phi(0) - 1/sqrt(pi)) = 1*(0.79788 - 0.56419) = 0.23369
+    result = crps_gaussian(mu=0.0, sigma=1.0, actual=0.0)
+    assert result == pytest.approx(0.23369, abs=1e-5)
+
+
+def test_crps_gaussian_scales_with_sigma():
+    # At z=0, CRPS = sigma*(2*phi(0)-1/sqrt(pi)); doubling sigma doubles CRPS.
+    crps1 = crps_gaussian(mu=0.0, sigma=1.0, actual=0.0)
+    crps2 = crps_gaussian(mu=0.0, sigma=2.0, actual=0.0)
+    assert crps2 == pytest.approx(2 * crps1, abs=1e-9)
+
+
+def test_crps_gaussian_shrinks_to_abs_error_as_sigma_approaches_zero():
+    # CRPS -> |y - mu| as sigma -> 0.
+    result = crps_gaussian(mu=10.0, sigma=1e-6, actual=12.0)
+    assert result == pytest.approx(2.0, abs=1e-4)
 
 
 def test_standard_buckets_partition_sums_to_one():
@@ -76,6 +100,7 @@ def test_aggregate_rolls_up_metrics():
         modal_p=0.6,
         modal_won=True,
         brier=0.2,
+        crps=0.1,
         coverage={0.5: True, 0.8: True, 0.9: True},
         pairs=[(0.6, True), (0.4, False)],
     )
@@ -83,6 +108,7 @@ def test_aggregate_rolls_up_metrics():
         modal_p=0.5,
         modal_won=False,
         brier=0.5,
+        crps=0.3,
         coverage={0.5: False, 0.8: True, 0.9: True},
         pairs=[(0.5, False), (0.5, True)],
     )
@@ -91,6 +117,7 @@ def test_aggregate_rolls_up_metrics():
     assert res.modal_hit_rate == pytest.approx(0.5)
     assert res.mean_modal_p == pytest.approx(0.55)
     assert res.mean_brier == pytest.approx(0.35)
+    assert res.mean_crps == pytest.approx(0.2)
     assert res.coverage == {
         0.5: pytest.approx(0.5),
         0.8: pytest.approx(1.0),
@@ -109,6 +136,7 @@ def _result(n: int, *, bin_lo: float, predicted: float, observed: float, bin_n: 
         modal_hit_rate=0.5,
         mean_modal_p=0.6,
         mean_brier=0.2,
+        mean_crps=0.15,
         coverage={0.5: 0.4, 0.8: 0.7, 0.9: 0.8},
         reliability=[
             ReliabilityBin(
@@ -131,6 +159,7 @@ def test_combine_n_weights_metrics_and_merges_bins():
     assert out.modal_hit_rate == pytest.approx(0.5)
     assert out.mean_modal_p == pytest.approx(0.6)
     assert out.mean_brier == pytest.approx(0.2)
+    assert out.mean_crps == pytest.approx(0.15)
     assert out.coverage[0.5] == pytest.approx(0.4)
     assert out.coverage[0.8] == pytest.approx(0.7)
     assert out.coverage[0.9] == pytest.approx(0.8)

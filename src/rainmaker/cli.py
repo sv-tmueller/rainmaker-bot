@@ -10,7 +10,7 @@ import httpx
 from pydantic import ValidationError
 
 from rainmaker.backfill import run_backfill, run_backfill_accuracy
-from rainmaker.backtest import BacktestResult, backtest_real, backtest_synthetic, render_report
+from rainmaker.backtest import BacktestPair, backtest_real, backtest_synthetic, render_report
 from rainmaker.config import (
     CONFIDENCE_FLOOR,
     DB_PATH,
@@ -323,7 +323,7 @@ def _backtest(
     end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
     start = end - timedelta(days=days)
     client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=60.0)
-    synthetic: dict[str, BacktestResult] = {}
+    synthetic: dict[str, BacktestPair] = {}
     real = None
     try:
         for name in cities:

@@ -12,20 +12,34 @@ date, so this reports at a single horizon (~lead 1), the same data backfill uses
 
 from collections import defaultdict
 from datetime import date
+from math import pi, sqrt
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, ConfigDict
 from scipy.stats import norm
 
-from rainmaker.backfill import fetch_actuals, fetch_historical_forecasts
-from rainmaker.config import Station
+from rainmaker.backfill import build_pairs, fetch_actuals, fetch_historical_forecasts
+from rainmaker.config import MIN_CAL_SAMPLES, MIN_SIGMA_F, Station
 from rainmaker.domain import Bucket, BucketKind, Market
 from rainmaker.polymarket.markets import parse_market
+from rainmaker.probability.calibration import apply_calibration, fit_calibration
 from rainmaker.probability.distribution import Gaussian
 from rainmaker.probability.outcomes import bucket_probability, settles
 
 COVERAGE_LEVELS = (0.50, 0.80, 0.90)
+
+
+def crps_gaussian(mu: float, sigma: float, actual: float) -> float:
+    """CRPS for a Gaussian predictive distribution (Gneiting et al. 2005).
+
+    Closed form: sigma * [ z*(2*Phi(z)-1) + 2*phi(z) - 1/sqrt(pi) ]
+    where z = (actual - mu) / sigma, Phi is the standard normal CDF, phi is the PDF.
+    """
+    z = (actual - mu) / sigma
+    phi_z = float(norm.pdf(z))
+    Phi_z = float(norm.cdf(z))
+    return sigma * (z * (2 * Phi_z - 1) + 2 * phi_z - 1 / sqrt(pi))
 
 
 def _bucket(
@@ -79,6 +93,7 @@ class DayScore(BaseModel):
     modal_p: float
     modal_won: bool
     brier: float
+    crps: float
     coverage: dict[float, bool]
     pairs: list[tuple[float, bool]]  # (p_win, won) per bucket, for reliability
 
@@ -100,8 +115,18 @@ class BacktestResult(BaseModel):
     modal_hit_rate: float
     mean_modal_p: float
     mean_brier: float
+    mean_crps: float
     coverage: dict[float, float]
     reliability: list[ReliabilityBin]
+
+
+class BacktestPair(BaseModel):
+    """Uncalibrated and calibrated backtest results for one station."""
+
+    model_config = ConfigDict(frozen=True)
+
+    uncalibrated: BacktestResult
+    calibrated: BacktestResult
 
 
 def score_day(g: Gaussian, buckets: list[Bucket], actual: float) -> DayScore:
@@ -116,6 +141,7 @@ def score_day(g: Gaussian, buckets: list[Bucket], actual: float) -> DayScore:
         modal_p=probs[modal_i],
         modal_won=wins[modal_i],
         brier=brier,
+        crps=crps_gaussian(g.mu, g.sigma, actual),
         coverage=coverage,
         pairs=list(zip(probs, wins, strict=True)),
     )
@@ -155,6 +181,7 @@ def aggregate(days: list[DayScore]) -> BacktestResult:
         modal_hit_rate=sum(1 for d in days if d.modal_won) / n,
         mean_modal_p=sum(d.modal_p for d in days) / n,
         mean_brier=sum(d.brier for d in days) / n,
+        mean_crps=sum(d.crps for d in days) / n,
         coverage={q: sum(1 for d in days if d.coverage[q]) / n for q in COVERAGE_LEVELS},
         reliability=reliability_bins(all_pairs),
     )
@@ -169,19 +196,42 @@ def backtest_synthetic(
     *,
     width: int = 2,
     span: int = 10,
-) -> BacktestResult | None:
+) -> BacktestPair | None:
     """Backtest one station over history with a synthetic bucket ladder per day.
+
+    Fits a calibration cell in-sample from the same window, then scores both the
+    raw and calibrated Gaussian per day. The calibrated table should sit closer to
+    the diagonal than the uncalibrated one, but this is in-sample (same data used
+    to fit and to evaluate), so "closer to the diagonal" is partly circular. The
+    meaningful comparison is the CRPS before/after, which rewards sharpness as
+    well as calibration.
 
     Returns None if no day has both a forecast and an actual.
     """
     forecasts = fetch_historical_forecasts(station, start, end, client, variable)
     actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)
-    days = [
-        score_day(g, standard_buckets(g.mu, width=width, span=span), actuals[d])
-        for d, g in sorted(forecasts.items())
-        if d in actuals
-    ]
-    return aggregate(days) if days else None
+    pairs = build_pairs(forecasts, actuals)
+    if not pairs:
+        return None
+
+    cal = (
+        fit_calibration(station.icao, variable, 1, pairs) if len(pairs) >= MIN_CAL_SAMPLES else None
+    )
+
+    uncal_days: list[DayScore] = []
+    cal_days: list[DayScore] = []
+    for d, g in sorted(forecasts.items()):
+        if d not in actuals:
+            continue
+        actual = actuals[d]
+        buckets = standard_buckets(g.mu, width=width, span=span)
+        uncal_days.append(score_day(g, buckets, actual))
+        g_cal, _ = apply_calibration(g, cal, min_sigma=MIN_SIGMA_F, min_samples=MIN_CAL_SAMPLES)
+        cal_days.append(score_day(g_cal, buckets, actual))
+
+    if not uncal_days:
+        return None
+    return BacktestPair(uncalibrated=aggregate(uncal_days), calibrated=aggregate(cal_days))
 
 
 def combine(results: list[BacktestResult]) -> BacktestResult:
@@ -215,6 +265,7 @@ def combine(results: list[BacktestResult]) -> BacktestResult:
         modal_hit_rate=weighted("modal_hit_rate"),
         mean_modal_p=weighted("mean_modal_p"),
         mean_brier=weighted("mean_brier"),
+        mean_crps=weighted("mean_crps"),
         coverage={q: sum(r.coverage[q] * r.n for r in results) / n for q in COVERAGE_LEVELS},
         reliability=reliability,
     )
@@ -227,43 +278,60 @@ def _pct(x: float) -> str:
 def _row(label: str, r: BacktestResult) -> str:
     return (
         f"| {label} | {r.n} | {_pct(r.modal_hit_rate)} | {_pct(r.mean_modal_p)} | "
-        f"{r.mean_brier:.3f} | {_pct(r.coverage[0.5])} | {_pct(r.coverage[0.8])} | "
-        f"{_pct(r.coverage[0.9])} |"
+        f"{r.mean_brier:.3f} | {r.mean_crps:.3f} | {_pct(r.coverage[0.5])} | "
+        f"{_pct(r.coverage[0.8])} | {_pct(r.coverage[0.9])} |"
     )
 
 
+def _reliability_table(label: str, result: BacktestResult) -> list[str]:
+    lines = [
+        f"### Reliability ({label}): does a claimed probability happen that often?",
+        "",
+        "| Predicted bin | Predicted mean | Observed | n |",
+        "| --- | --- | --- | --- |",
+    ]
+    for b in result.reliability:
+        lines.append(
+            f"| {_pct(b.lo)}-{_pct(b.hi)} | {_pct(b.predicted_mean)} | "
+            f"{_pct(b.observed_freq)} | {b.count} |"
+        )
+    return lines
+
+
 def render_report(
-    synthetic: dict[str, BacktestResult], real: BacktestResult | None
+    synthetic: dict[str, BacktestPair], real: BacktestResult | None
 ) -> tuple[str, dict[str, Any]]:
     """Markdown report plus a JSON-able payload. Terminal prints the markdown."""
-    overall = combine(list(synthetic.values()))
-    header = "| {} | n | Modal hit | Mean modal p | Brier | Cov50 | Cov80 | Cov90 |"
-    rule = "| --- | --- | --- | --- | --- | --- | --- | --- |"
+    overall_uncal = combine([p.uncalibrated for p in synthetic.values()])
+    overall_cal = combine([p.calibrated for p in synthetic.values()])
+    header = "| {} | n | Modal hit | Mean modal p | Brier | CRPS | Cov50 | Cov80 | Cov90 |"
+    rule = "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
     lines = [
         "# Forecast backtest",
         "",
         "Calibration and win-rate over history at the archive horizon (~lead 1). "
         "No betting P/L; that needs historical market prices (#59 Part 2).",
         "",
-        "## Synthetic ladder (long history)",
+        "## Synthetic ladder - uncalibrated (long history)",
         "",
         header.format("City"),
         rule,
     ]
-    lines += [_row(city, synthetic[city]) for city in sorted(synthetic)]
-    lines.append(_row("ALL", overall))
+    lines += [_row(city, synthetic[city].uncalibrated) for city in sorted(synthetic)]
+    lines.append(_row("ALL", overall_uncal))
+    lines += [""]
+    lines += _reliability_table("overall, uncalibrated", overall_uncal)
     lines += [
         "",
-        "### Reliability (overall): does a claimed probability happen that often?",
+        "## Synthetic ladder - calibrated (in-sample fit, same window)",
         "",
-        "| Predicted bin | Predicted mean | Observed | n |",
-        "| --- | --- | --- | --- |",
+        header.format("City"),
+        rule,
     ]
-    for b in overall.reliability:
-        lines.append(
-            f"| {_pct(b.lo)}-{_pct(b.hi)} | {_pct(b.predicted_mean)} | "
-            f"{_pct(b.observed_freq)} | {b.count} |"
-        )
+    lines += [_row(city, synthetic[city].calibrated) for city in sorted(synthetic)]
+    lines.append(_row("ALL", overall_cal))
+    lines += [""]
+    lines += _reliability_table("overall, calibrated", overall_cal)
     if real is not None:
         lines += [
             "",
@@ -275,8 +343,15 @@ def render_report(
         ]
     md = "\n".join(lines) + "\n"
     payload = {
-        "synthetic": {c: r.model_dump(mode="json") for c, r in synthetic.items()},
-        "overall": overall.model_dump(mode="json"),
+        "synthetic": {
+            c: {
+                "uncalibrated": p.uncalibrated.model_dump(mode="json"),
+                "calibrated": p.calibrated.model_dump(mode="json"),
+            }
+            for c, p in synthetic.items()
+        },
+        "overall_uncalibrated": overall_uncal.model_dump(mode="json"),
+        "overall_calibrated": overall_cal.model_dump(mode="json"),
         "real": real.model_dump(mode="json") if real is not None else None,
     }
     return md, payload
