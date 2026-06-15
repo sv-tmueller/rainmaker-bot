@@ -16,7 +16,8 @@ class Station(BaseModel):
     lon: float
     timezone: str
     wunderground_url: str
-    ghcnd_id: str  # NOAA NCEI GHCND station id, for backfill actuals
+    ghcnd_id: str | None = None  # NOAA NCEI GHCND station id; None for international advisory rows
+    unit: Literal["F", "C"] = "F"  # settlement unit; US stations use F
 
 
 class PrecipStation(BaseModel):
@@ -323,6 +324,7 @@ FRESHNESS_LIMIT_HOURS = 24
 
 # Probability engine + ranking thresholds (uncalibrated; tune in Phase 4)
 MIN_SIGMA_F = 1.5
+MIN_SIGMA_C = MIN_SIGMA_F * 5 / 9  # same physical spread expressed in Celsius (~0.833)
 # 0.80, relaxed from 0.90: the spread-adjusted P/L backtest showed the higher
 # floor suppressed profitable bets (see docs/architecture/recommendation-gate.md, #58).
 CONFIDENCE_FLOOR = 0.80

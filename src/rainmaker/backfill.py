@@ -272,7 +272,7 @@ def run_backfill(
 ) -> tuple[Calibration, Accuracy]:
     """Fetch history, build pairs, fit one calibration cell, measure accuracy."""
     forecasts = fetch_historical_forecasts(station, start, end, client, variable)
-    actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)
+    actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)  # type: ignore[arg-type]
     pairs = build_pairs(forecasts, actuals)
     return fit_calibration(station.icao, variable, lead_time, pairs), compute_accuracy(pairs)
 
@@ -292,7 +292,7 @@ def run_backfill_accuracy(
     overlapping actual are omitted.
     """
     point = fetch_historical_point_forecasts(station, leads, start, end, client, variable)
-    actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)
+    actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)  # type: ignore[arg-type]
     out: dict[int, Accuracy] = {}
     for lead in leads:
         gaussians = {day: Gaussian(mu=mu, sigma=1.0) for day, mu in point[lead].items()}
