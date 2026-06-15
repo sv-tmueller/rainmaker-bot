@@ -357,6 +357,10 @@ def test_same_station_variable_uses_single_asos_request(httpx_mock):
     # Only ONE Mesonet request was made (the batch)
     asos_requests = [r for r in httpx_mock.get_requests() if MESONET_ASOS_URL in str(r.url)]
     assert len(asos_requests) == 1
+    # The batch request must span the full date range (min to max across all markets)
+    params = dict(asos_requests[0].url.params)
+    assert params["year1"] == "2026" and params["month1"] == "6" and params["day1"] == "1"
+    assert params["year2"] == "2026" and params["month2"] == "6" and params["day2"] == "2"
 
 
 def test_different_variables_use_separate_requests(httpx_mock):
