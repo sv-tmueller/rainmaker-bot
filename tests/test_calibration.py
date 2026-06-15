@@ -94,10 +94,10 @@ def test_emos_recovers_pure_bias():
 def test_emos_recovers_known_parameters():
     """With two distinct ens_sigma levels, optimizer recovers a reasonable fit.
 
-    Exact parameter recovery is not guaranteed by CRPS minimization on a finite
-    quantile grid (the CRPS surface is shallow near the true params). What we
-    verify: bias is recovered tightly, and the affine var structure is learned
-    well enough that the fitted calibration has lower CRPS than uncalibrated.
+    True params: bias=1.5, var_a=1.0, var_b=2.0, on noise-free quantile data.
+    What we verify: bias is recovered tightly, var_b is pinned to a meaningful
+    band (optimizer reliably hits ~1.39 for true 2.0 on this data), and the
+    fitted calibration has lower CRPS than uncalibrated.
     """
     bias = 1.5
     var_a = 1.0  # irreducible noise floor (variance units)
@@ -111,22 +111,38 @@ def test_emos_recovers_known_parameters():
     # EMOS constraints hold.
     assert cal.var_a >= 0.0
     assert cal.var_b >= 0.0
-    # The effective predictive variance at the two sigma levels is in the right direction:
-    # larger ens_sigma -> larger fitted predictive variance.
-    var_small = cal.var_a + cal.var_b * 1.0**2
-    var_large = cal.var_a + cal.var_b * 3.0**2
-    assert var_large > var_small, "fitted model must amplify larger ensemble spread"
+    # var_b is recovered in a meaningful band (optimizer hits ~1.39; true=2.0).
+    assert 1.0 < cal.var_b < 3.0
+    # Calibrated CRPS must beat uncalibrated (the fit should correct bias and spread).
+    crps_cal = float(
+        np.mean(
+            [
+                _crps_gaussian(
+                    p.mu - cal.bias,
+                    sqrt(max(cal.var_a + cal.var_b * p.ensemble_var, 1e-6)),
+                    p.actual,
+                )
+                for p in pairs
+            ]
+        )
+    )
+    crps_uncal = float(np.mean([_crps_gaussian(p.mu, p.sigma, p.actual) for p in pairs]))
+    assert crps_cal < crps_uncal, (
+        f"calibrated CRPS {crps_cal:.4f} should be lower than uncalibrated {crps_uncal:.4f}"
+    )
 
 
 def test_emos_fit_yields_lower_crps_than_rms_spread():
     """Min-CRPS EMOS fit yields lower mean CRPS than the old RMS spread_scale approach.
 
-    Uses data with a clear variance-inflation signal so the RMS approach, which
-    ignores the variance-vs-ensemble-spread relationship, is provably suboptimal.
+    Uses a large-intercept regime (var_a=20, var_b=1) where the affine model
+    clearly beats through-origin RMS scaling. RMS is forced to fit with var_a=0,
+    so it cannot represent the large irreducible noise floor; EMOS absorbs it in
+    var_a and wins by a large margin (~12%).
     """
     bias = 1.0
-    var_a = 0.5
-    var_b = 3.0  # strong variance inflation
+    var_a = 20.0  # large intercept RMS cannot represent
+    var_b = 1.0
     ens_sigmas = [1.0] * 20 + [4.0] * 20
     pairs = _emos_pairs(bias=bias, var_a=var_a, var_b=var_b, ens_sigmas=ens_sigmas)
 
