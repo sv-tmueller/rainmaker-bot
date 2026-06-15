@@ -281,9 +281,9 @@ _TMAX_SPEC = [
 ]
 
 _PRCP_SPEC = [
-    {"label": "under 1.00\"", "kind": "below", "lo": None, "hi": None, "threshold": 1.0},
-    {"label": "1.00\"-2.00\"", "kind": "range", "lo": 1.0, "hi": 2.0, "threshold": None},
-    {"label": "2.00\" or over", "kind": "above", "lo": None, "hi": None, "threshold": 2.0},
+    {"label": 'under 1.00"', "kind": "below", "lo": None, "hi": None, "threshold": 1.0},
+    {"label": '1.00"-2.00"', "kind": "range", "lo": 1.0, "hi": 2.0, "threshold": None},
+    {"label": '2.00" or over', "kind": "above", "lo": None, "hi": None, "threshold": 2.0},
 ]
 
 
@@ -304,7 +304,7 @@ def test_run_settlement_grades_predictions_on_settle(httpx_mock):
     q = conn.execute("SELECT bucket, won FROM predictions WHERE market_id = ?", ("m1",))
     rows = {r["bucket"]: r["won"] for r in q.fetchall()}
     conn.close()
-    assert rows["60-64°F"] == 1   # in-bucket YES bet wins
+    assert rows["60-64°F"] == 1  # in-bucket YES bet wins
     assert rows["65°F or higher"] == 0  # out-of-bucket YES bet loses
 
 
@@ -325,7 +325,7 @@ def test_run_settlement_grades_no_side_predictions(httpx_mock):
     q = conn.execute("SELECT bucket, won FROM predictions WHERE market_id = ?", ("m1",))
     rows = {r["bucket"]: r["won"] for r in q.fetchall()}
     conn.close()
-    assert rows["60-64°F"] == 0   # bucket settled, NO loses
+    assert rows["60-64°F"] == 0  # bucket settled, NO loses
     assert rows["65°F or higher"] == 1  # bucket did not settle, NO wins
 
 
@@ -393,8 +393,6 @@ def test_run_settlement_does_not_grade_non_recommended_predictions(httpx_mock):
     )
     with httpx.Client() as client:
         run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
-    row = conn.execute(
-        "SELECT won FROM predictions WHERE market_id = ?", ("m1",)
-    ).fetchone()
+    row = conn.execute("SELECT won FROM predictions WHERE market_id = ?", ("m1",)).fetchone()
     conn.close()
     assert row["won"] is None  # not graded: not recommended

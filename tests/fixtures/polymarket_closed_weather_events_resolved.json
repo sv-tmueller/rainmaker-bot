@@ -1,0 +1,41 @@
+[
+  {
+    "id": "800001",
+    "slug": "highest-temperature-in-nyc-on-june-1-2026",
+    "title": "Highest temperature in NYC on June 1?",
+    "endDate": "2026-06-01T12:00:00Z",
+    "description": "Resolves to the highest temperature at the LaGuardia Airport Station (KLGA) in degrees Fahrenheit.",
+    "markets": [
+      {"groupItemTitle": "65°F or below", "outcomes": "[\"Yes\", \"No\"]", "outcomePrices": "[\"0\", \"1\"]", "bestAsk": null, "bestBid": null, "clobTokenIds": "[\"aa0\", \"aa1\"]"},
+      {"groupItemTitle": "66-67°F", "outcomes": "[\"Yes\", \"No\"]", "outcomePrices": "[\"0\", \"1\"]", "bestAsk": null, "bestBid": null, "clobTokenIds": "[\"ab0\", \"ab1\"]"},
+      {"groupItemTitle": "68-69°F", "outcomes": "[\"Yes\", \"No\"]", "outcomePrices": "[\"1\", \"0\"]", "bestAsk": null, "bestBid": null, "clobTokenIds": "[\"ac0\", \"ac1\"]"},
+      {"groupItemTitle": "70°F or higher", "outcomes": "[\"Yes\", \"No\"]", "outcomePrices": "[\"0\", \"1\"]", "bestAsk": null, "bestBid": null, "clobTokenIds": "[\"ad0\", \"ad1\"]"}
+    ]
+  },
+  {
+    "id": "800002",
+    "slug": "highest-temperature-in-nyc-on-june-2-2026",
+    "title": "Highest temperature in NYC on June 2?",
+    "endDate": "2026-06-02T12:00:00Z",
+    "description": "Resolves to the highest temperature at the LaGuardia Airport Station (KLGA) in degrees Fahrenheit.",
+    "markets": [
+      {"groupItemTitle": "69°F or below", "outcomes": "[\"Yes\", \"No\"]", "outcomePrices": "[\"0\", \"1\"]", "bestAsk": null, "bestBid": null, "clobTokenIds": "[\"ba0\", \"ba1\"]"},
+      {"groupItemTitle": "70-71°F", "outcomes": "[\"Yes\", \"No\"]", "outcomePrices": "[\"0\", \"1\"]", "bestAsk": null, "bestBid": null, "clobTokenIds": "[\"bb0\", \"bb1\"]"},
+      {"groupItemTitle": "72-73°F", "outcomes": "[\"Yes\", \"No\"]", "outcomePrices": "[\"1\", \"0\"]", "bestAsk": null, "bestBid": null, "clobTokenIds": "[\"bc0\", \"bc1\"]"},
+      {"groupItemTitle": "74°F or higher", "outcomes": "[\"Yes\", \"No\"]", "outcomePrices": "[\"0\", \"1\"]", "bestAsk": null, "bestBid": null, "clobTokenIds": "[\"bd0\", \"bd1\"]"}
+    ]
+  },
+  {
+    "id": "800003",
+    "slug": "lowest-temperature-in-nyc-on-june-1-2026",
+    "title": "Lowest temperature in NYC on June 1?",
+    "endDate": "2026-06-01T12:00:00Z",
+    "description": "Resolves to the lowest temperature at the LaGuardia Airport Station (KLGA) in degrees Fahrenheit.",
+    "markets": [
+      {"groupItemTitle": "54°F or below", "outcomes": "[\"Yes\", \"No\"]", "outcomePrices": "[\"0\", \"1\"]", "bestAsk": null, "bestBid": null, "clobTokenIds": "[\"ca0\", \"ca1\"]"},
+      {"groupItemTitle": "55-56°F", "outcomes": "[\"Yes\", \"No\"]", "outcomePrices": "[\"0\", \"1\"]", "bestAsk": null, "bestBid": null, "clobTokenIds": "[\"cb0\", \"cb1\"]"},
+      {"groupItemTitle": "57-58°F", "outcomes": "[\"Yes\", \"No\"]", "outcomePrices": "[\"1\", \"0\"]", "bestAsk": null, "bestBid": null, "clobTokenIds": "[\"cc0\", \"cc1\"]"},
+      {"groupItemTitle": "59°F or higher", "outcomes": "[\"Yes\", \"No\"]", "outcomePrices": "[\"0\", \"1\"]", "bestAsk": null, "bestBid": null, "clobTokenIds": "[\"cd0\", \"cd1\"]"}
+    ]
+  }
+]
