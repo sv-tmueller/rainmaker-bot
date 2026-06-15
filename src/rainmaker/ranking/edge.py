@@ -62,8 +62,8 @@ def evaluate_market(
 ) -> MarketReport:
     unit = market.target.station.unit
     n_sources = sum(1 for c in forecast_set.coverage if c.ok and c.n_samples > 0)
-    # Intl markets (ghcnd_id is None) have no NCEI/ASOS settlement proxy, so NWS —
-    # which is US-only — never returns data. One live source is the maximum available.
+    # Intl markets (ghcnd_id is None) have no NCEI/ASOS settlement proxy, so NWS
+    # (US-only) never returns data. One live source is the maximum available.
     # US markets always require min_sources because they have both NWS and open-meteo.
     effective_min_sources = 1 if market.target.station.ghcnd_id is None else min_sources
     common: dict[str, Any] = dict(
