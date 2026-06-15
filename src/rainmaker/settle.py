@@ -134,7 +134,6 @@ def run_settlement(
     waiting = 0
 
     # Separate Polymarket TMAX/TMIN markets (ASOS path) from everything else.
-    # Also collect markets that are skipped (unknown variable, no station).
     asos_markets: list[dict[str, Any]] = []
     other_markets: list[dict[str, Any]] = []
 
@@ -157,7 +156,6 @@ def run_settlement(
     # --- ASOS batch path ---
     # Group by (asos_code, variable), fetch once per group over [min_date, max_date].
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    skipped_no_station: list[str] = []
 
     for m in asos_markets:
         asos_code = _asos_code_for(m["city"])
@@ -166,7 +164,6 @@ def run_settlement(
                 f"skipping {m['market_id']}: no station for {m['city']!r}",
                 file=sys.stderr,
             )
-            skipped_no_station.append(m["market_id"])
             continue
         groups[(asos_code, m["variable"])].append(m)
 
