@@ -42,6 +42,12 @@ from rainmaker.polymarket.client import (
 from rainmaker.ranking.edge import evaluate_market, evaluate_precip_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
 from rainmaker.settle import run_settlement
+from rainmaker.settlement_divergence import (
+    GhcndToIsdMapping,
+    render_divergence_report,
+    run_spike,
+    summarise,
+)
 from rainmaker.store.db import connect, init_schema
 from rainmaker.store.prune import prune_settled
 from rainmaker.store.query import load_calibration
@@ -471,6 +477,46 @@ def _snapshot(db_path: str) -> None:
     )
 
 
+def _settle_divergence(pages: int, reports_dir: str) -> None:
+    """Fetch closed Polymarket events, run Arm A (GHCND) and Arm B (ISD), write report."""
+    client = httpx.Client(headers={"User-Agent": NWS_USER_AGENT}, timeout=60.0)
+    mapping = GhcndToIsdMapping.default()
+    try:
+        try:
+            events = fetch_closed_weather_events(client, max_pages=pages)
+        except httpx.HTTPError as exc:
+            print(f"Polymarket unavailable, aborting: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+        rows = run_spike(events, client, mapping)
+    finally:
+        client.close()
+
+    if not rows:
+        print(
+            "no resolved US-city temperature markets found in the sampled window",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    city_results = summarise(rows)
+    run_date = _today().isoformat()
+    md = render_divergence_report(rows, city_results, run_date)
+    print(md)
+    out = Path(reports_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    report_path = out / "settlement-divergence-2026-06.md"
+    report_path.write_text(md)
+    n_rows = len(rows)
+    total_n = sum(r.n for r in city_results.values())
+    total_ncei = sum(r.ncei_flips for r in city_results.values())
+    total_asos = sum(r.asos_flips for r in city_results.values())
+    print(
+        f"wrote {report_path}; "
+        f"{n_rows} events sampled, {total_n} both-armed; "
+        f"NCEI flips: {total_ncei}/{total_n}, ASOS flips: {total_asos}/{total_n}"
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="rainmaker")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -526,6 +572,22 @@ def main(argv: list[str] | None = None) -> None:
         "--reports-dir", default=REPORTS_DIR, help="directory for the P/L backtest report"
     )
 
+    sdiv = sub.add_parser(
+        "settle-divergence",
+        help="spike: measure NCEI GHCND vs ASOS/ISD settlement divergence on closed markets",
+    )
+    sdiv.add_argument(
+        "--pages",
+        type=int,
+        default=12,
+        help="max Gamma pages to fetch (100 events/page, most recent first)",
+    )
+    sdiv.add_argument(
+        "--reports-dir",
+        default=REPORTS_DIR,
+        help="directory for the divergence report",
+    )
+
     settle = sub.add_parser("settle", help="settle past markets against NOAA actuals")
     settle.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
@@ -545,6 +607,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "backtest-pnl":
         _backtest_pnl(args.city, args.days, _parse_leads(args.leads), args.spread, args.reports_dir)
+        return
+    if args.command == "settle-divergence":
+        _settle_divergence(args.pages, args.reports_dir)
         return
 
     db = _datastore(args.db)
