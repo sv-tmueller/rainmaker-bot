@@ -10,10 +10,16 @@ Settlement source routing:
   Polymarket PRCP      -> NCEI GSOM: no ASOS precip path.
   Kalshi (all)         -> NCEI GHCND: Kalshi settles on the NOAA daily climate report.
   NULL venue (legacy)  -> NCEI GHCND: safe fallback, does not send legacy rows to ASOS.
+
+Batching (ASOS path):
+  Polymarket TMAX/TMIN markets are grouped by (asos_station, variable). All markets
+  in a group share one Mesonet request covering their full date range. This collapses
+  O(markets) requests to O(distinct station x variable) <= ~22 per run.
 """
 
 import json
 import sys
+from collections import defaultdict
 from datetime import date
 from typing import Any
 
@@ -118,17 +124,23 @@ def run_settlement(
     """Settle every unsettled past market. Returns (settled, waiting).
 
     Routes by venue and variable:
-    - Polymarket TMAX/TMIN -> ASOS (Iowa State Mesonet)
+    - Polymarket TMAX/TMIN -> ASOS (Iowa State Mesonet), batched by station+variable
     - Polymarket PRCP      -> NCEI GSOM
     - Kalshi (all)         -> NCEI GHCND
     - NULL venue (legacy)  -> NCEI GHCND (safe fallback)
     """
+    all_markets = unsettled_markets(conn, today)
     settled = 0
     waiting = 0
-    for m in unsettled_markets(conn, today):
-        day = date.fromisoformat(m["settlement_date"])
-        venue = m.get("venue") or ""
+
+    # Separate Polymarket TMAX/TMIN markets (ASOS path) from everything else.
+    # Also collect markets that are skipped (unknown variable, no station).
+    asos_markets: list[dict[str, Any]] = []
+    other_markets: list[dict[str, Any]] = []
+
+    for m in all_markets:
         variable = m["variable"]
+        venue = m.get("venue") or ""
 
         if variable not in {"TMAX", "TMIN", "PRCP"}:
             print(
@@ -137,29 +149,54 @@ def run_settlement(
             )
             continue
 
-        # Polymarket TMAX/TMIN: fetch from ASOS (Mesonet)
         if venue == "polymarket" and variable in {"TMAX", "TMIN"}:
-            asos_code = _asos_code_for(m["city"])
-            if asos_code is None:
+            asos_markets.append(m)
+        else:
+            other_markets.append(m)
+
+    # --- ASOS batch path ---
+    # Group by (asos_code, variable), fetch once per group over [min_date, max_date].
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    skipped_no_station: list[str] = []
+
+    for m in asos_markets:
+        asos_code = _asos_code_for(m["city"])
+        if asos_code is None:
+            print(
+                f"skipping {m['market_id']}: no station for {m['city']!r}",
+                file=sys.stderr,
+            )
+            skipped_no_station.append(m["market_id"])
+            continue
+        groups[(asos_code, m["variable"])].append(m)
+
+    for (asos_code, variable), group_markets in groups.items():
+        dates = [date.fromisoformat(m["settlement_date"]) for m in group_markets]
+        start = min(dates)
+        end = max(dates)
+        try:
+            lookup = fetch_asos_daily_extreme(asos_code, start, end, client, variable)
+        except httpx.HTTPError as exc:
+            for m in group_markets:
                 print(
-                    f"skipping {m['market_id']}: no station for {m['city']!r}",
+                    f"waiting on {m['market_id']}: ASOS fetch failed: {exc}",
                     file=sys.stderr,
                 )
-                continue
-            try:
-                value = fetch_asos_daily_extreme(asos_code, day, day, client, variable).get(day)
-            except httpx.HTTPError as exc:
-                print(f"waiting on {m['market_id']}: ASOS fetch failed: {exc}", file=sys.stderr)
                 waiting += 1
-                continue
+            continue
+        for m in group_markets:
+            day = date.fromisoformat(m["settlement_date"])
+            value = lookup.get(day)
             if value is None:
                 waiting += 1
                 continue
             record_outcome(conn, m["market_id"], value, settled_at)
             settled += 1
-            continue
 
-        # All other paths: NCEI (Kalshi all, Polymarket PRCP, NULL venue legacy)
+    # --- NCEI path (Kalshi, PRCP, NULL-venue legacy) ---
+    for m in other_markets:
+        day = date.fromisoformat(m["settlement_date"])
+        variable = m["variable"]
         ghcnd = m.get("settlement_ghcnd") or _legacy_ghcnd(m)
         if ghcnd is None:
             print(f"skipping {m['market_id']}: no station for {m['city']!r}", file=sys.stderr)
@@ -178,6 +215,7 @@ def run_settlement(
             continue
         record_outcome(conn, m["market_id"], value, settled_at)
         settled += 1
+
     _grade_predictions(conn)
     return settled, waiting
 
@@ -188,30 +226,47 @@ def regrade_polymarket_settlements(conn: Conn, client: httpx.Client, regraded_at
     Fetches the ASOS daily extreme for every settled Polymarket TMAX/TMIN market,
     overwrites outcomes.actual_value, and re-grades predictions.won.
 
+    Markets are batched by (asos_station, variable): one Mesonet request covers
+    all markets at the same station for the same variable.
+
     Returns the number of markets successfully regraded. Markets where ASOS
     returns no data for the settlement date are skipped (not counted).
 
     Re-runnable: running twice converges to the same ASOS value.
     """
-    regraded = 0
-    for m in settled_polymarket_temp_markets(conn):
-        day = date.fromisoformat(m["settlement_date"])
+    all_markets = settled_polymarket_temp_markets(conn)
+
+    # Group by (asos_code, variable), fetch once per group.
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for m in all_markets:
         asos_code = _asos_code_for(m["city"])
         if asos_code is None:
             # No ASOS mapping for this city: skip silently (should not occur for
             # the 11 known cities, but do not crash if a legacy row appears).
             continue
+        groups[(asos_code, m["variable"])].append(m)
+
+    regraded = 0
+    for (asos_code, variable), group_markets in groups.items():
+        dates = [date.fromisoformat(m["settlement_date"]) for m in group_markets]
+        start = min(dates)
+        end = max(dates)
         try:
-            value = fetch_asos_daily_extreme(asos_code, day, day, client, m["variable"]).get(day)
+            lookup = fetch_asos_daily_extreme(asos_code, start, end, client, variable)
         except httpx.HTTPError as exc:
-            print(
-                f"regrade skipped {m['market_id']}: ASOS fetch failed: {exc}",
-                file=sys.stderr,
-            )
+            for m in group_markets:
+                print(
+                    f"regrade skipped {m['market_id']}: ASOS fetch failed: {exc}",
+                    file=sys.stderr,
+                )
             continue
-        if value is None:
-            continue
-        record_outcome(conn, m["market_id"], value, regraded_at)
-        _grade_predictions_for_market(conn, m["market_id"], value)
-        regraded += 1
+        for m in group_markets:
+            day = date.fromisoformat(m["settlement_date"])
+            value = lookup.get(day)
+            if value is None:
+                continue
+            record_outcome(conn, m["market_id"], value, regraded_at)
+            _grade_predictions_for_market(conn, m["market_id"], value)
+            regraded += 1
+
     return regraded

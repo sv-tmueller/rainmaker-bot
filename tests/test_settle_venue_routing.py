@@ -11,6 +11,7 @@ TMAX/TMIN outcomes using ASOS and re-grades predictions.won.
 import json
 import re
 from datetime import date
+from pathlib import Path
 
 import httpx
 import pytest
@@ -25,6 +26,8 @@ from rainmaker.store.record import record_outcome
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+_FIXTURES = Path(__file__).parent / "fixtures"
 
 _TMAX_SPEC = [
     {"label": "59°F or below", "kind": "below", "lo": None, "hi": None, "threshold": 59},
@@ -261,13 +264,36 @@ def test_polymarket_tmax_waits_when_asos_station_unknown():
 # ---------------------------------------------------------------------------
 
 
-def test_polymarket_tmax_waits_on_asos_http_error(httpx_mock):
-    """An ASOS HTTP error puts the market in waiting, does not crash the loop."""
+def test_polymarket_tmax_waits_on_asos_http_error_same_station(httpx_mock):
+    """An ASOS HTTP error for a (station, variable) group puts ALL markets in that
+    group in waiting. Same-station markets share one batch request; if it fails,
+    all markets in the batch wait together."""
     conn = connect(":memory:")
     init_schema(conn)
-    _market(conn, "poly-err", "NYC", "TMAX", "2026-05-30", venue="polymarket")
-    _market(conn, "poly-ok", "NYC", "TMAX", "2026-05-30", venue="polymarket")
+    # Two NYC TMAX markets on different dates; same station (LGA) -> one batch
+    _market(conn, "poly-err1", "NYC", "TMAX", "2026-05-30", venue="polymarket")
+    _market(conn, "poly-err2", "NYC", "TMAX", "2026-05-31", venue="polymarket")
 
+    # One 503 for the LGA/TMAX batch; both markets wait
+    httpx_mock.add_response(
+        url=re.compile(re.escape(MESONET_ASOS_URL)),
+        status_code=503,
+    )
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
+    conn.close()
+    assert (settled, waiting) == (0, 2)
+
+
+def test_polymarket_tmax_waits_on_asos_http_error_different_stations(httpx_mock):
+    """An ASOS HTTP error for one station/variable group does not prevent other
+    station groups from settling. NYC (LGA) fails; Miami (MIA) succeeds."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "poly-nyc", "NYC", "TMAX", "2026-05-30", venue="polymarket")
+    _market(conn, "poly-mia", "Miami", "TMAX", "2026-05-30", venue="polymarket")
+
+    # LGA batch fails; MIA batch succeeds. Two requests: one per station.
     httpx_mock.add_response(
         url=re.compile(re.escape(MESONET_ASOS_URL)),
         status_code=503,
@@ -279,7 +305,106 @@ def test_polymarket_tmax_waits_on_asos_http_error(httpx_mock):
     with httpx.Client() as client:
         settled, waiting = run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
     conn.close()
+    # One settled (MIA), one waiting (NYC)
     assert (settled, waiting) == (1, 1)
+
+
+def test_polymarket_tmax_waits_when_batch_returns_no_data_for_date(httpx_mock):
+    """Batch succeeds but a specific date has no data; that market waits."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    # NYC TMAX on June 01 (has data in fixture) and June 03 (not in fixture)
+    _market(conn, "poly-june01", "NYC", "TMAX", "2026-06-01", venue="polymarket")
+    _market(conn, "poly-june03", "NYC", "TMAX", "2026-06-03", venue="polymarket")
+
+    # The June fixture has data for June 01 and 02 only, not June 03
+    fixture = (_FIXTURES / "mesonet_asos_klga_2026-06.csv").read_text()
+    httpx_mock.add_response(
+        url=re.compile(re.escape(MESONET_ASOS_URL)),
+        text=fixture,
+    )
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 6, 5), "2026-06-05T00:00:00Z")
+    conn.close()
+    # June 01 settles (has data); June 03 waits (no data in batch response)
+    assert (settled, waiting) == (1, 1)
+
+
+# ---------------------------------------------------------------------------
+# Batching: N markets at same station/variable -> 1 ASOS request
+# ---------------------------------------------------------------------------
+
+
+def test_same_station_variable_uses_single_asos_request(httpx_mock):
+    """Multiple Polymarket TMAX markets for the same city/date-range issue ONE
+    ASOS request (not one per market)."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    # Three NYC TMAX markets on different dates; same station -> one batch
+    _market(conn, "m1", "NYC", "TMAX", "2026-06-01", venue="polymarket")
+    _market(conn, "m2", "NYC", "TMAX", "2026-06-02", venue="polymarket")
+
+    fixture = (_FIXTURES / "mesonet_asos_klga_2026-06.csv").read_text()
+    httpx_mock.add_response(
+        url=re.compile(re.escape(MESONET_ASOS_URL)),
+        text=fixture,
+    )
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 6, 5), "2026-06-05T00:00:00Z")
+    conn.close()
+    # Both dates in the June fixture -> both settle
+    assert (settled, waiting) == (2, 0)
+    # Only ONE Mesonet request was made (the batch)
+    asos_requests = [r for r in httpx_mock.get_requests() if MESONET_ASOS_URL in str(r.url)]
+    assert len(asos_requests) == 1
+
+
+def test_different_variables_use_separate_requests(httpx_mock):
+    """TMAX and TMIN for the same station are separate batches (different variable)."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    # Settlement date matches _ASOS_CSV_68F which has data for 2026-05-30
+    _market(conn, "tmax-m", "NYC", "TMAX", "2026-05-30", venue="polymarket")
+    _market(conn, "tmin-m", "NYC", "TMIN", "2026-05-30", venue="polymarket")
+
+    # One-row CSV gives both TMAX==TMIN==68.0F (only one reading)
+    httpx_mock.add_response(
+        url=re.compile(re.escape(MESONET_ASOS_URL)),
+        text=_ASOS_CSV_68F,
+    )
+    httpx_mock.add_response(
+        url=re.compile(re.escape(MESONET_ASOS_URL)),
+        text=_ASOS_CSV_68F,
+    )
+    with httpx.Client() as client:
+        settled, _waiting = run_settlement(conn, client, date(2026, 6, 5), "2026-06-05T00:00:00Z")
+    conn.close()
+    assert settled == 2
+    asos_requests = [r for r in httpx_mock.get_requests() if MESONET_ASOS_URL in str(r.url)]
+    # Two batches: one TMAX, one TMIN
+    assert len(asos_requests) == 2
+
+
+def test_regrade_same_station_uses_single_asos_request(httpx_mock):
+    """regrade_polymarket_settlements: N markets at same station/variable -> 1 request."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "m1", "NYC", "TMAX", "2026-06-01", _TMAX_SPEC, venue="polymarket")
+    _market(conn, "m2", "NYC", "TMAX", "2026-06-02", _TMAX_SPEC, venue="polymarket")
+    record_outcome(conn, "m1", 65.0, "2026-06-02T00:00:00Z")
+    record_outcome(conn, "m2", 65.0, "2026-06-03T00:00:00Z")
+
+    fixture = (_FIXTURES / "mesonet_asos_klga_2026-06.csv").read_text()
+    httpx_mock.add_response(
+        url=re.compile(re.escape(MESONET_ASOS_URL)),
+        text=fixture,
+    )
+    with httpx.Client() as client:
+        regraded = regrade_polymarket_settlements(conn, client, "2026-06-15T00:00:00Z")
+    conn.close()
+    assert regraded == 2
+    asos_requests = [r for r in httpx_mock.get_requests() if MESONET_ASOS_URL in str(r.url)]
+    assert len(asos_requests) == 1
 
 
 # ---------------------------------------------------------------------------

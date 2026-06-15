@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import io
+import time
 from datetime import date
 
 import httpx
@@ -20,6 +21,13 @@ import httpx
 # Iowa State Mesonet ASOS API - near-real-time hourly ASOS observations.
 # The same source used in the settlement_divergence spike (#101a).
 MESONET_ASOS_URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
+
+# 429 rate-limit handling: retry up to ASOS_MAX_RETRIES times.
+# Sleep for Retry-After seconds (capped at ASOS_429_MAX_WAIT_S) between attempts.
+# Default backoff when Retry-After header is absent.
+ASOS_MAX_RETRIES = 4
+ASOS_429_MAX_WAIT_S = 60.0
+ASOS_429_DEFAULT_WAIT_S = 5.0
 
 # Map ICAO station id (as stored on Station.icao) to the 3-letter FAA code
 # used by Iowa State Mesonet. US stations drop the K prefix.
@@ -50,35 +58,53 @@ def fetch_asos_daily_extreme(
 
     Fetches hourly tmpc (Celsius) observations, skips missing values ('M' or
     empty), and reduces each UTC day to its daily maximum (TMAX) or minimum
-    (TMIN). Raises httpx.HTTPStatusError on HTTP errors.
+    (TMIN). Raises httpx.HTTPStatusError on HTTP errors (including 429 after
+    retries are exhausted).
+
+    On HTTP 429 the function backs off (Retry-After header or default) and
+    retries up to ASOS_MAX_RETRIES times total. A huge Retry-After is capped
+    at ASOS_429_MAX_WAIT_S to avoid hanging the run.
 
     Note: timestamps are UTC. UTC-vs-local alignment is the same as the spike
     (#101a): the same measurement window that produced the calibrated flip rates.
     """
-    resp = client.get(
-        MESONET_ASOS_URL,
-        params={
-            "station": asos_station,
-            "data": "tmpc",
-            "year1": start.year,
-            "month1": start.month,
-            "day1": start.day,
-            "hour1": 0,
-            "minute1": 0,
-            "year2": end.year,
-            "month2": end.month,
-            "day2": end.day,
-            "hour2": 23,
-            "minute2": 59,
-            "tz": "UTC",
-            "format": "onlycomma",
-            "latlon": "no",
-            "elev": "no",
-            "report_type": "3",  # routine hourly METAR only (excludes specials)
-        },
-    )
-    resp.raise_for_status()
+    params: dict[str, str | int] = {
+        "station": asos_station,
+        "data": "tmpc",
+        "year1": start.year,
+        "month1": start.month,
+        "day1": start.day,
+        "hour1": 0,
+        "minute1": 0,
+        "year2": end.year,
+        "month2": end.month,
+        "day2": end.day,
+        "hour2": 23,
+        "minute2": 59,
+        "tz": "UTC",
+        "format": "onlycomma",
+        "latlon": "no",
+        "elev": "no",
+        "report_type": "3",  # routine hourly METAR only (excludes specials)
+    }
 
+    resp: httpx.Response | None = None
+    for attempt in range(ASOS_MAX_RETRIES):
+        resp = client.get(MESONET_ASOS_URL, params=params)
+        if resp.status_code == 429:
+            if attempt + 1 == ASOS_MAX_RETRIES:
+                resp.raise_for_status()
+            retry_after_str = resp.headers.get("Retry-After", "")
+            try:
+                wait = min(float(retry_after_str), ASOS_429_MAX_WAIT_S)
+            except ValueError:
+                wait = ASOS_429_DEFAULT_WAIT_S
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        break
+
+    assert resp is not None  # loop always runs at least once
     reduce = max if variable == "TMAX" else min
     by_day: dict[date, list[float]] = {}
 
