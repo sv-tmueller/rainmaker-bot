@@ -376,7 +376,8 @@ class DivergenceRow:
     # Arm B (ASOS/ISD)
     asos_value: float | None  # daily extreme in degrees F; None if not available
     asos_in_bucket: bool | None  # None when asos_value is None
-    # Signed gap: actual minus bucket midpoint (positive = we over-read)
+    # Unsigned gap from the nearest bucket edge; present only when the arm is
+    # outside the resolved bucket.
     ncei_gap: float | None  # degrees F gap from bucket edge when ncei_in_bucket is False
     asos_gap: float | None  # degrees F gap from bucket edge when asos_in_bucket is False
 

@@ -35,6 +35,8 @@ def crps_gaussian(mu: float, sigma: float, actual: float) -> float:
 
     Closed form: sigma * [ z*(2*Phi(z)-1) + 2*phi(z) - 1/sqrt(pi) ]
     where z = (actual - mu) / sigma, Phi is the standard normal CDF, phi is the PDF.
+
+    Precondition: sigma > 0 (unreachable via the pipeline, which floors sigma at MIN_SIGMA_F=1.5).
     """
     z = (actual - mu) / sigma
     phi_z = float(norm.pdf(z))
