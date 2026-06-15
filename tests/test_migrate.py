@@ -90,9 +90,9 @@ def test_is_duplicate_column_only_matches_the_two_exact_signals():
 def test_migration_adds_predictions_won_column():
     conn = connect(":memory:")
     init_schema(conn)
+    cols = "run_id, market_id, bucket, side, p_win, edge, recommended, won, created_at"
     conn.execute(
-        "INSERT INTO predictions (run_id, market_id, bucket, side, p_win, edge, recommended, won, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        f"INSERT INTO predictions ({cols}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (None, None, "70-71°F", "YES", 0.8, 0.1, 1, 1, "t"),
     )
     conn.commit()

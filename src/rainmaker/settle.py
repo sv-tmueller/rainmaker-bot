@@ -35,10 +35,11 @@ def _legacy_ghcnd(market: dict[str, str]) -> str | None:
 def _grade_won(variable: str, bucket: dict[str, Any], actual_value: float, side: str) -> int:
     """Return 1 if the bet won, 0 if it lost."""
     kind = bucket["kind"]
+    lo, hi, thr = bucket["lo"], bucket["hi"], bucket["threshold"]
     if variable == "PRCP":
-        in_bucket = precip_settles(kind, bucket["lo"], bucket["hi"], bucket["threshold"], actual_value)
+        in_bucket = precip_settles(kind, lo, hi, thr, actual_value)
     else:
-        in_bucket = settles(kind, bucket["lo"], bucket["hi"], bucket["threshold"], actual_value)
+        in_bucket = settles(kind, lo, hi, thr, actual_value)
     # A NO bet wins when the bucket does not settle.
     return int((not in_bucket) if side == "NO" else in_bucket)
 

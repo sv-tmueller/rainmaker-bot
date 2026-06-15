@@ -15,7 +15,8 @@ from rainmaker.store.record import record_outcome
 def _market(conn, market_id, city, variable, settlement_date, outcome_spec=None):
     spec = json.dumps(outcome_spec) if outcome_spec is not None else None
     conn.execute(
-        "INSERT INTO markets (id, city, variable, settlement_date, outcome_spec) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO markets (id, city, variable, settlement_date, outcome_spec) "
+        "VALUES (?, ?, ?, ?, ?)",
         (market_id, city, variable, settlement_date, spec),
     )
     conn.commit()
@@ -31,9 +32,9 @@ def _run(conn, run_id):
 
 def _prediction(conn, run_id, market_id, bucket, side, p_win, recommended=1):
     _run(conn, run_id)
+    cols = "run_id, market_id, bucket, side, p_win, edge, recommended, created_at"
     conn.execute(
-        "INSERT INTO predictions (run_id, market_id, bucket, side, p_win, edge, recommended, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        f"INSERT INTO predictions ({cols}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (run_id, market_id, bucket, side, p_win, 0.1, recommended, "t"),
     )
     conn.commit()
@@ -300,10 +301,8 @@ def test_run_settlement_grades_predictions_on_settle(httpx_mock):
     )
     with httpx.Client() as client:
         run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
-    rows = {
-        r["bucket"]: r["won"]
-        for r in conn.execute("SELECT bucket, won FROM predictions WHERE market_id = ?", ("m1",)).fetchall()
-    }
+    q = conn.execute("SELECT bucket, won FROM predictions WHERE market_id = ?", ("m1",))
+    rows = {r["bucket"]: r["won"] for r in q.fetchall()}
     conn.close()
     assert rows["60-64°F"] == 1   # in-bucket YES bet wins
     assert rows["65°F or higher"] == 0  # out-of-bucket YES bet loses
@@ -323,10 +322,8 @@ def test_run_settlement_grades_no_side_predictions(httpx_mock):
     )
     with httpx.Client() as client:
         run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
-    rows = {
-        r["bucket"]: r["won"]
-        for r in conn.execute("SELECT bucket, won FROM predictions WHERE market_id = ?", ("m1",)).fetchall()
-    }
+    q = conn.execute("SELECT bucket, won FROM predictions WHERE market_id = ?", ("m1",))
+    rows = {r["bucket"]: r["won"] for r in q.fetchall()}
     conn.close()
     assert rows["60-64°F"] == 0   # bucket settled, NO loses
     assert rows["65°F or higher"] == 1  # bucket did not settle, NO wins
@@ -346,10 +343,8 @@ def test_run_settlement_grades_precip_predictions(httpx_mock):
     )
     with httpx.Client() as client:
         run_settlement(conn, client, date(2026, 7, 3), "2026-07-03T00:00:00Z")
-    rows = {
-        r["bucket"]: r["won"]
-        for r in conn.execute("SELECT bucket, won FROM predictions WHERE market_id = ?", ("p1",)).fetchall()
-    }
+    q = conn.execute("SELECT bucket, won FROM predictions WHERE market_id = ?", ("p1",))
+    rows = {r["bucket"]: r["won"] for r in q.fetchall()}
     conn.close()
     # 1.00 is a boundary: precip_settles uses half-open [lo, hi), so 1.00 resolves UP.
     # "under 1.00"" is [0, 1.00) -> 1.00 does NOT land here -> YES loses
