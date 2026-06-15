@@ -22,6 +22,15 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
     # NULL if not yet graded. Populated by the settlement grading pass in settle.py
     # so the dashboard reads persisted values instead of re-deriving them in TS.
     ("0006_predictions_won", ["ALTER TABLE predictions ADD COLUMN won INTEGER"]),
+    # EMOS calibration: replace RMS spread_scale with affine variance model
+    # (var = var_a + var_b * ensemble_var) fit by minimizing mean CRPS.
+    (
+        "0008_calibration_emos",
+        [
+            "ALTER TABLE calibration ADD COLUMN var_a REAL",
+            "ALTER TABLE calibration ADD COLUMN var_b REAL",
+        ],
+    ),
 ]
 
 

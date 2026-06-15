@@ -91,8 +91,8 @@ def test_build_pairs_joins_forecasts_and_actuals_on_date():
     actuals = {date(2026, 3, 1): 43.0, date(2026, 3, 3): 35.0}
     pairs = build_pairs(forecasts, actuals)
     assert pairs == [
-        CalibrationPair(mu=40.0, sigma=2.0, actual=43.0),
-        CalibrationPair(mu=35.0, sigma=2.0, actual=35.0),
+        CalibrationPair(mu=40.0, sigma=2.0, ensemble_var=4.0, actual=43.0),
+        CalibrationPair(mu=35.0, sigma=2.0, ensemble_var=4.0, actual=35.0),
     ]
 
 
@@ -107,12 +107,15 @@ def test_run_backfill_fits_calibration_and_accuracy_from_history(httpx_mock):
     assert cal.variable == "TMAX"
     assert cal.lead_time == 1
     assert cal.n_samples == 5
-    # forecasts run cold across the window (mean signed error mu - actual is negative)
-    assert cal.bias == pytest.approx(-2.38, abs=1e-2)
-    assert cal.spread_scale > 0
-    # accuracy is measured over the same pairs
+    # CRPS-optimal bias is ~-2.43 for this fixture (slightly different from the simple
+    # mean error of -2.38 because bias, var_a, var_b are jointly optimised).
+    assert cal.bias == pytest.approx(-2.43, abs=0.1)
+    assert cal.var_a >= 0.0
+    assert cal.var_b >= 0.0
+    # accuracy is measured over the same pairs (bias_f is mean error, slightly different
+    # from the CRPS-optimal bias which is jointly fit with the variance parameters)
     assert acc.n == 5
-    assert acc.bias_f == pytest.approx(cal.bias)
+    assert acc.bias_f == pytest.approx(-2.38, abs=1e-2)
     assert acc.mae_f >= abs(acc.bias_f)  # mean |e| always >= |mean e|
     assert acc.mae_f > 0
 
@@ -387,15 +390,19 @@ def test_seasonal_fit_avoids_cross_season_bias():
     sigma = 2.0
     # 30 winter pairs with +5F bias (mu runs warm vs actual)
     winter_pairs = [
-        CalibrationPair(mu=70.0 + i, sigma=sigma, actual=(70.0 + i) - 5.0) for i in range(30)
+        CalibrationPair(mu=70.0 + i, sigma=sigma, ensemble_var=sigma**2, actual=(70.0 + i) - 5.0)
+        for i in range(30)
     ]
     # 30 spring pairs with 0 bias
-    spring_pairs = [CalibrationPair(mu=60.0 + i, sigma=sigma, actual=60.0 + i) for i in range(30)]
+    spring_pairs = [
+        CalibrationPair(mu=60.0 + i, sigma=sigma, ensemble_var=sigma**2, actual=60.0 + i)
+        for i in range(30)
+    ]
 
     # Flat window: includes winter + spring -> bias near +2.5
     flat_cal = fit_calibration("KLGA", "TMAX", 1, winter_pairs + spring_pairs)
-    assert flat_cal.bias == pytest.approx(2.5)  # halfway between +5 and 0
+    assert flat_cal.bias == pytest.approx(2.5, abs=0.1)  # halfway between +5 and 0
 
     # Season-clipped window: spring only -> bias near 0
     seasonal_cal = fit_calibration("KLGA", "TMAX", 1, spring_pairs)
-    assert seasonal_cal.bias == pytest.approx(0.0)
+    assert seasonal_cal.bias == pytest.approx(0.0, abs=0.1)

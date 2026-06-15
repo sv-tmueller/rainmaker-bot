@@ -235,7 +235,9 @@ def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
         if lead < 0:
             continue  # a run after settlement is a catch-up, not a forecast: not accuracy
         key = (station.icao, r["city"], r["variable"], lead)
-        groups[key].append(CalibrationPair(mu=mu, sigma=sigma, actual=r["actual_value"]))
+        groups[key].append(
+            CalibrationPair(mu=mu, sigma=sigma, ensemble_var=sigma**2, actual=r["actual_value"])
+        )
     return [
         {
             "station": station,

@@ -110,7 +110,7 @@ def test_calibration_wiring_changes_result_with_enough_pairs():
     n = MIN_CAL_SAMPLES
     raw_g = Gaussian(mu=70.0, sigma=3.0)
     # Actuals are consistently 5F below the forecast -> bias = +5F
-    pairs = [CalibrationPair(mu=70.0, sigma=3.0, actual=65.0) for _ in range(n)]
+    pairs = [CalibrationPair(mu=70.0, sigma=3.0, ensemble_var=9.0, actual=65.0) for _ in range(n)]
     cal = fit_calibration("KLGA", "TMAX", 1, pairs)
     assert abs(cal.bias - 5.0) < 0.01
     g_cal, was_calibrated = apply_calibration(raw_g, cal, min_sigma=MIN_SIGMA_F, min_samples=n)
