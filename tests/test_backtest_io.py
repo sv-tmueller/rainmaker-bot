@@ -33,18 +33,20 @@ def test_backtest_synthetic_scores_the_overlapping_window(httpx_mock):
     )
     httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
     with httpx.Client() as client:
-        result = backtest_synthetic(KLGA, "TMAX", date(2026, 3, 1), date(2026, 3, 5), client)
+        pair = backtest_synthetic(KLGA, "TMAX", date(2026, 3, 1), date(2026, 3, 5), client)
 
-    assert result is not None
-    assert result.n == 5  # five days have both a forecast and an actual
-    assert 0.0 <= result.modal_hit_rate <= 1.0
-    assert 0.0 < result.mean_modal_p <= 1.0
-    assert result.mean_brier >= 0.0
-    for q in (0.5, 0.8, 0.9):
-        assert 0.0 <= result.coverage[q] <= 1.0
-    # every day contributes one (p, won) pair per bucket
-    n_buckets = len(standard_buckets(40.0))
-    assert sum(b.count for b in result.reliability) == result.n * n_buckets
+    assert pair is not None
+    for result in (pair.uncalibrated, pair.calibrated):
+        assert result.n == 5  # five days have both a forecast and an actual
+        assert 0.0 <= result.modal_hit_rate <= 1.0
+        assert 0.0 < result.mean_modal_p <= 1.0
+        assert result.mean_brier >= 0.0
+        assert result.mean_crps >= 0.0
+        for q in (0.5, 0.8, 0.9):
+            assert 0.0 <= result.coverage[q] <= 1.0
+        # every day contributes one (p, won) pair per bucket
+        n_buckets = len(standard_buckets(40.0))
+        assert sum(b.count for b in result.reliability) == result.n * n_buckets
 
 
 def test_backtest_synthetic_tmin_fetches_min_field(httpx_mock):
