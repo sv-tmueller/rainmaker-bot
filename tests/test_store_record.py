@@ -255,6 +255,32 @@ def test_precip_only_run_coverage_counts_markets_and_sources():
     conn.close()
 
 
+def test_get_predictions_includes_won():
+    # get_predictions must return won for each row so the dashboard query surface
+    # exposes the persisted value.
+    conn = connect(":memory:")
+    init_schema(conn)
+    market, fs, report = _evaluated()
+    record_run(
+        conn,
+        run_id="run-1",
+        started_at="t0",
+        finished_at="t1",
+        status="ok",
+        evaluated=[(market, fs, report)],
+    )
+    # Manually set won on all rows (fixture outcomes are not recommended, so update
+    # without a recommended filter to verify the column is readable).
+    conn.execute("UPDATE predictions SET won = 1 WHERE run_id = ?", ("run-1",))
+    conn.commit()
+    preds = get_predictions(conn, "run-1")
+    assert len(preds) > 0
+    # won must be a key in every returned row
+    assert all("won" in p for p in preds)
+    # the value we just set must come back
+    assert all(p["won"] == 1 for p in preds)
+
+
 def test_accuracy_save_and_upsert_round_trip():
     conn = connect(":memory:")
     init_schema(conn)

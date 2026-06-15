@@ -87,6 +87,20 @@ def test_is_duplicate_column_only_matches_the_two_exact_signals():
     assert _is_duplicate_column(_PgDuplicateTable()) is False
 
 
+def test_migration_adds_predictions_won_column():
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO predictions (run_id, market_id, bucket, side, p_win, edge, recommended, won, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (None, None, "70-71°F", "YES", 0.8, 0.1, 1, 1, "t"),
+    )
+    conn.commit()
+    row = conn.execute("SELECT won FROM predictions").fetchone()
+    conn.close()
+    assert row["won"] == 1
+
+
 def test_apply_migrations_crash_safe_when_alter_already_applied():
     """apply_migrations must succeed when a column was added but never recorded.
 
