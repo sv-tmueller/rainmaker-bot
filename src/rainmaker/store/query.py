@@ -44,10 +44,29 @@ def unsettled_markets(conn: Conn, before: date) -> list[dict[str, Any]]:
     """Recorded markets with a past settlement date and no outcome yet."""
     rows = conn.execute(
         "SELECT m.id AS market_id, m.city AS city, m.variable AS variable, "
-        "m.settlement_date AS settlement_date, m.settlement_ghcnd AS settlement_ghcnd "
+        "m.settlement_date AS settlement_date, m.settlement_ghcnd AS settlement_ghcnd, "
+        "m.venue AS venue "
         "FROM markets m LEFT JOIN outcomes o ON o.market_id = m.id "
         "WHERE o.market_id IS NULL AND m.settlement_date < ? "
         "ORDER BY m.settlement_date",
         (before.isoformat(),),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def settled_polymarket_temp_markets(conn: Conn) -> list[dict[str, Any]]:
+    """Settled Polymarket TMAX/TMIN markets eligible for ASOS re-grade.
+
+    Returns all markets that have an outcome and are Polymarket venue temperature
+    markets. Used by regrade_polymarket_settlements in settle.py.
+    """
+    rows = conn.execute(
+        "SELECT m.id AS market_id, m.city AS city, m.variable AS variable, "
+        "m.settlement_date AS settlement_date, m.settlement_ghcnd AS settlement_ghcnd, "
+        "m.venue AS venue "
+        "FROM markets m JOIN outcomes o ON o.market_id = m.id "
+        "WHERE m.venue = 'polymarket' "
+        "AND m.variable IN ('TMAX', 'TMIN') "
+        "ORDER BY m.settlement_date",
     ).fetchall()
     return [dict(r) for r in rows]

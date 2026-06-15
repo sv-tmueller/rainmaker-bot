@@ -42,7 +42,7 @@ from rainmaker.polymarket.client import (
 )
 from rainmaker.ranking.edge import evaluate_market, evaluate_precip_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
-from rainmaker.settle import run_settlement
+from rainmaker.settle import regrade_polymarket_settlements, run_settlement
 from rainmaker.settlement_divergence import (
     GhcndToIsdMapping,
     render_divergence_report,
@@ -428,7 +428,25 @@ def _settle(db_path: str) -> None:
     finally:
         client.close()
         conn.close()
-    print(f"settled {settled} market(s); {waiting} waiting on NCEI data -> {_db_label(db_path)}")
+    print(
+        f"settled {settled} market(s); {waiting} waiting on ASOS/NCEI data -> {_db_label(db_path)}"
+    )
+
+
+def _regrade(db_path: str) -> None:
+    """Re-settle existing Polymarket TMAX/TMIN outcomes using ASOS and re-grade predictions."""
+    regraded_at = _now_iso()
+    if "://" not in db_path:
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    client = build_client(60.0)
+    try:
+        init_schema(conn)
+        regraded = regrade_polymarket_settlements(conn, client, regraded_at)
+    finally:
+        client.close()
+        conn.close()
+    print(f"regraded {regraded} Polymarket market(s) onto ASOS -> {_db_label(db_path)}")
 
 
 def _prune(db_path: str) -> None:
@@ -604,6 +622,12 @@ def main(argv: list[str] | None = None) -> None:
     settle = sub.add_parser("settle", help="settle past markets against NOAA actuals")
     settle.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
+    regrade = sub.add_parser(
+        "regrade",
+        help="re-settle existing Polymarket TMAX/TMIN outcomes using ASOS (one-time migration)",
+    )
+    regrade.add_argument("--db", default=DB_PATH, help="SQLite database path")
+
     prune = sub.add_parser("prune", help="delete redundant intraday rows for settled markets")
     prune.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
@@ -632,6 +656,8 @@ def main(argv: list[str] | None = None) -> None:
         _backfill(args.city, args.variable, args.days, _parse_leads(args.leads), db)
     elif args.command == "settle":
         _settle(db)
+    elif args.command == "regrade":
+        _regrade(db)
     elif args.command == "prune":
         _prune(db)
     elif args.command == "track":
