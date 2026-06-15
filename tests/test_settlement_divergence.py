@@ -13,9 +13,12 @@ import httpx
 import pytest
 
 from rainmaker.settlement_divergence import (
+    ICAO_TO_ASOS_STATION,
+    MESONET_ASOS_URL,
     NCEI_ISD_URL,
     DivergenceRow,
     GhcndToIsdMapping,
+    fetch_asos_actuals_mesonet,
     fetch_isd_actuals,
     isd_station_for,
     resolved_bucket_label,
@@ -105,9 +108,9 @@ def test_temperature_in_bucket_negative():
 
 def test_isd_station_for_known_station():
     mapping = GhcndToIsdMapping.default()
-    # NYC LaGuardia
+    # NYC LaGuardia - 11-char format (USAF=725030, WBAN=14732, no dash)
     result = isd_station_for("USW00014732", mapping)
-    assert result == "725030-14732"
+    assert result == "72503014732"
 
 
 def test_isd_station_for_unknown_station():
@@ -144,7 +147,7 @@ def test_fetch_isd_actuals_returns_daily_max(httpx_mock):
     httpx_mock.add_response(url=re.compile(re.escape(NCEI_ISD_URL)), json=fixture)
     with httpx.Client() as client:
         result = fetch_isd_actuals(
-            isd_station="725030-14732",
+            isd_station="72503014732",
             start=date(2026, 3, 2),
             end=date(2026, 3, 2),
             client=client,
@@ -163,7 +166,7 @@ def test_fetch_isd_actuals_returns_daily_min(httpx_mock):
     httpx_mock.add_response(url=re.compile(re.escape(NCEI_ISD_URL)), json=fixture)
     with httpx.Client() as client:
         result = fetch_isd_actuals(
-            isd_station="725030-14732",
+            isd_station="72503014732",
             start=date(2026, 3, 2),
             end=date(2026, 3, 2),
             client=client,
@@ -192,7 +195,7 @@ def test_fetch_isd_actuals_skips_missing_data(httpx_mock):
     httpx_mock.add_response(url=re.compile(re.escape(NCEI_ISD_URL)), json=fixture)
     with httpx.Client() as client:
         result = fetch_isd_actuals(
-            isd_station="725030-14732",
+            isd_station="72503014732",
             start=date(2026, 3, 2),
             end=date(2026, 3, 2),
             client=client,
@@ -215,7 +218,7 @@ def test_fetch_isd_actuals_celsius_conversion(httpx_mock):
     httpx_mock.add_response(url=re.compile(re.escape(NCEI_ISD_URL)), json=fixture)
     with httpx.Client() as client:
         result = fetch_isd_actuals(
-            isd_station="725030-14732",
+            isd_station="72503014732",
             start=date(2026, 6, 1),
             end=date(2026, 6, 1),
             client=client,
@@ -231,12 +234,112 @@ def test_fetch_isd_actuals_raises_on_http_error(httpx_mock):
     with httpx.Client() as client:
         with pytest.raises(httpx.HTTPStatusError):
             fetch_isd_actuals(
-                isd_station="725030-14732",
+                isd_station="72503014732",
                 start=date(2026, 3, 2),
                 end=date(2026, 3, 2),
                 client=client,
                 variable="TMAX",
             )
+
+
+# ---------------------------------------------------------------------------
+# Iowa State Mesonet ASOS fetch -> daily extreme
+# ---------------------------------------------------------------------------
+
+
+def _mesonet_fixture(name: str) -> str:
+    return (FIXTURES / name).read_text()
+
+
+def test_fetch_asos_actuals_mesonet_returns_daily_max(httpx_mock):
+    """fetch_asos_actuals_mesonet reduces hourly tmpc to the daily TMAX correctly."""
+    fixture_csv = _mesonet_fixture("mesonet_asos_klga_2026-03-02.csv")
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=fixture_csv)
+    with httpx.Client() as client:
+        result = fetch_asos_actuals_mesonet(
+            asos_station="LGA",
+            start=date(2026, 3, 2),
+            end=date(2026, 3, 2),
+            client=client,
+            variable="TMAX",
+        )
+    assert date(2026, 3, 2) in result
+    # Max should be 3.33C = 37.994F ~ 38F
+    assert abs(result[date(2026, 3, 2)] - 38.0) < 1.0
+
+
+def test_fetch_asos_actuals_mesonet_returns_daily_min(httpx_mock):
+    """fetch_asos_actuals_mesonet reduces hourly tmpc to the daily TMIN correctly."""
+    fixture_csv = _mesonet_fixture("mesonet_asos_klga_2026-03-02.csv")
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=fixture_csv)
+    with httpx.Client() as client:
+        result = fetch_asos_actuals_mesonet(
+            asos_station="LGA",
+            start=date(2026, 3, 2),
+            end=date(2026, 3, 2),
+            client=client,
+            variable="TMIN",
+        )
+    assert date(2026, 3, 2) in result
+    # Min should be -5.56C = 21.992F ~ 22F
+    assert abs(result[date(2026, 3, 2)] - 22.0) < 1.0
+
+
+def test_fetch_asos_actuals_mesonet_skips_missing(httpx_mock):
+    """Rows with tmpc='M' (missing) are excluded."""
+    fixture_csv = "station,valid,tmpc\nLGA,2026-03-02 12:00,15.0\nLGA,2026-03-02 14:00,M\n"
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=fixture_csv)
+    with httpx.Client() as client:
+        result = fetch_asos_actuals_mesonet(
+            asos_station="LGA",
+            start=date(2026, 3, 2),
+            end=date(2026, 3, 2),
+            client=client,
+            variable="TMAX",
+        )
+    assert date(2026, 3, 2) in result
+    # Only the 15.0C = 59F reading counts
+    assert abs(result[date(2026, 3, 2)] - 59.0) < 1.0
+
+
+def test_fetch_asos_actuals_mesonet_skips_debug_lines(httpx_mock):
+    """Lines starting with '#' (debug/comment) are skipped."""
+    fixture_csv = "#DEBUG: some debug line\nstation,valid,tmpc\nLGA,2026-03-02 15:00,10.0\n"
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=fixture_csv)
+    with httpx.Client() as client:
+        result = fetch_asos_actuals_mesonet(
+            asos_station="LGA",
+            start=date(2026, 3, 2),
+            end=date(2026, 3, 2),
+            client=client,
+            variable="TMAX",
+        )
+    assert date(2026, 3, 2) in result
+    # 10.0C = 50F
+    assert abs(result[date(2026, 3, 2)] - 50.0) < 0.5
+
+
+def test_fetch_asos_actuals_mesonet_raises_on_http_error(httpx_mock):
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), status_code=503)
+    with httpx.Client() as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            fetch_asos_actuals_mesonet(
+                asos_station="LGA",
+                start=date(2026, 3, 2),
+                end=date(2026, 3, 2),
+                client=client,
+                variable="TMAX",
+            )
+
+
+def test_icao_to_asos_station_covers_all_stations():
+    """Every ICAO code in STATIONS must have an ASOS code in ICAO_TO_ASOS_STATION."""
+    from rainmaker.config import STATIONS
+
+    missing = [
+        f"{s.city}/{s.icao}" for s in STATIONS.values() if s.icao not in ICAO_TO_ASOS_STATION
+    ]
+    assert missing == [], f"Missing ASOS station codes: {missing}"
 
 
 # ---------------------------------------------------------------------------

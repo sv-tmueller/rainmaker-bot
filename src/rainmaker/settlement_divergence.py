@@ -2,20 +2,27 @@
 
 Measures how often the NCEI GHCND daily extreme (our current source) falls in
 the same bucket that Polymarket resolved, versus how often the ASOS daily
-extreme from NCEI ISD hourly (the global-hourly / Integrated Surface Data
-dataset) falls in that bucket.
+extreme from the Iowa State Mesonet ASOS API falls in that bucket.
 
 Ground truth: for closed Polymarket temperature events the resolved bucket is
 the market whose outcomePrices YES side == 1.0.
 
 Arm A: NCEI GHCND daily extreme -> bucket -> match?
-Arm B: NCEI ISD hourly TMP -> daily extreme -> bucket -> match?
+Arm B: Iowa State Mesonet ASOS hourly tmpc -> daily extreme -> bucket -> match?
+
+Note: the sub-plan named NCEI ISD hourly as the Arm B source. In practice NCEI
+ISD has a ~10-month data lag, so no ISD data is available for 2025/2026 closed
+events. Iowa State Mesonet serves the same ASOS observations with minimal lag
+and is used as Arm B instead. The NCEI ISD fetcher (fetch_isd_actuals) is
+retained for reference and future use.
 
 The result is a list of DivergenceRow, one per resolved market.
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from dataclasses import dataclass
 from datetime import date
@@ -29,11 +36,30 @@ from rainmaker.domain import BucketKind, parse_bucket_label
 # NCEI ISD (global-hourly) endpoint - same base as daily-summaries
 NCEI_ISD_URL = "https://www.ncei.noaa.gov/access/services/data/v1"
 
+# Iowa State Mesonet ASOS API - near-real-time hourly ASOS observations
+MESONET_ASOS_URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
+
 # Bad ISD quality flags: suspend or erroneous readings
 _BAD_ISD_FLAGS = frozenset("1 2 6 A B C D I".split())
 
 # Missing-value sentinel in ISD TMP: +9999 tenths of C
 _ISD_MISSING_TMP = 9999
+
+# Map ICAO station id (as stored on Station) to ASOS 3-letter code used by Iowa State Mesonet.
+# The Mesonet uses FAA 3-letter codes (without the K prefix for US stations).
+ICAO_TO_ASOS_STATION: dict[str, str] = {
+    "KLGA": "LGA",  # NYC LaGuardia
+    "KMIA": "MIA",  # Miami Intl
+    "KORD": "ORD",  # Chicago O'Hare
+    "KDAL": "DAL",  # Dallas Love Field
+    "KHOU": "HOU",  # Houston Hobby
+    "KLAX": "LAX",  # Los Angeles Intl
+    "KSFO": "SFO",  # San Francisco Intl
+    "KSEA": "SEA",  # Seattle-Tacoma Intl
+    "KAUS": "AUS",  # Austin-Bergstrom Intl
+    "KATL": "ATL",  # Atlanta Hartsfield-Jackson
+    "KBKF": "BKF",  # Denver / Buckley Space Force Base
+}
 
 
 # ---------------------------------------------------------------------------
@@ -43,14 +69,15 @@ _ISD_MISSING_TMP = 9999
 
 @dataclass(frozen=True)
 class GhcndToIsdMapping:
-    """Maps GHCND station id to ISD USAF-WBAN identifier.
+    """Maps GHCND station id to ISD 11-character station id.
 
-    ISD station ids are of the form "<USAF>-<WBAN>" (e.g., "725030-14732").
-    The WBAN is the last 5 digits of the GHCND USW0000XXXXX id. The USAF is
-    sourced from NCEI station metadata lookups for each city.
+    ISD station ids used by the NCEI global-hourly API are 11-char strings
+    formed by concatenating the 6-digit USAF code and 5-digit WBAN code
+    (e.g., "72503014732" for LaGuardia). The WBAN is the trailing 5 digits of
+    the GHCND USW0000XXXXX id. The USAF was sourced from NCEI isd-history.csv.
     """
 
-    data: dict[str, str]  # ghcnd_id -> isd_usaf_wban
+    data: dict[str, str]  # ghcnd_id -> isd_11char
 
     @classmethod
     def default(cls) -> GhcndToIsdMapping:
@@ -59,32 +86,33 @@ class GhcndToIsdMapping:
         Verified against NCEI ISD station list. The WBAN matches the trailing
         5 digits of each GHCND id (the USW-prefixed ids encode the WBAN). The
         USAF id was confirmed via https://www.ncei.noaa.gov/pub/data/noaa/isd-history.csv
-        for each airport/station.
+        for each airport/station. Station IDs are 11-char (USAF+WBAN, no dash)
+        as required by the NCEI global-hourly API endpoint.
         """
         return cls(
             data={
-                # NYC / LaGuardia Airport  GHCND=USW00014732  WBAN=14732
-                "USW00014732": "725030-14732",
-                # Miami Intl Airport  GHCND=USW00012839  WBAN=12839
-                "USW00012839": "722020-12839",
-                # Chicago O'Hare Intl Airport  GHCND=USW00094846  WBAN=94846
-                "USW00094846": "725300-94846",
-                # Dallas Love Field  GHCND=USW00013960  WBAN=13960
-                "USW00013960": "722583-13960",
-                # Houston Hobby Airport  GHCND=USW00012918  WBAN=12918
-                "USW00012918": "722435-12918",
-                # Los Angeles Intl Airport  GHCND=USW00023174  WBAN=23174
-                "USW00023174": "722950-23174",
-                # San Francisco Intl Airport  GHCND=USW00023234  WBAN=23234
-                "USW00023234": "724940-23234",
-                # Seattle-Tacoma Intl Airport  GHCND=USW00024233  WBAN=24233
-                "USW00024233": "727930-24233",
-                # Austin-Bergstrom Intl Airport  GHCND=USW00013904  WBAN=13904
-                "USW00013904": "722540-13904",
-                # Atlanta Hartsfield-Jackson  GHCND=USW00013874  WBAN=13874
-                "USW00013874": "722190-13874",
-                # Denver / Buckley SFB  GHCND=USW00023036  WBAN=23036
-                "USW00023036": "724695-23036",
+                # NYC / LaGuardia Airport  GHCND=USW00014732  USAF=725030  WBAN=14732
+                "USW00014732": "72503014732",
+                # Miami Intl Airport  GHCND=USW00012839  USAF=722020  WBAN=12839
+                "USW00012839": "72202012839",
+                # Chicago O'Hare Intl Airport  GHCND=USW00094846  USAF=725300  WBAN=94846
+                "USW00094846": "72530094846",
+                # Dallas Love Field  GHCND=USW00013960  USAF=722583  WBAN=13960
+                "USW00013960": "72258313960",
+                # Houston Hobby Airport  GHCND=USW00012918  USAF=722435  WBAN=12918
+                "USW00012918": "72243512918",
+                # Los Angeles Intl Airport  GHCND=USW00023174  USAF=722950  WBAN=23174
+                "USW00023174": "72295023174",
+                # San Francisco Intl Airport  GHCND=USW00023234  USAF=724940  WBAN=23234
+                "USW00023234": "72494023234",
+                # Seattle-Tacoma Intl Airport  GHCND=USW00024233  USAF=727930  WBAN=24233
+                "USW00024233": "72793024233",
+                # Austin-Bergstrom Intl Airport  GHCND=USW00013904  USAF=722540  WBAN=13904
+                "USW00013904": "72254013904",
+                # Atlanta Hartsfield-Jackson  GHCND=USW00013874  USAF=722190  WBAN=13874
+                "USW00013874": "72219013874",
+                # Denver / Buckley SFB  GHCND=USW00023036  USAF=724695  WBAN=23036
+                "USW00023036": "72469523036",
             }
         )
 
@@ -229,6 +257,75 @@ def fetch_isd_actuals(
 
 
 # ---------------------------------------------------------------------------
+# Iowa State Mesonet ASOS fetch -> daily extreme
+# ---------------------------------------------------------------------------
+
+
+def fetch_asos_actuals_mesonet(
+    asos_station: str,
+    start: date,
+    end: date,
+    client: httpx.Client,
+    variable: str = "TMAX",
+) -> dict[date, float]:
+    """Daily TMAX or TMIN (degrees F) from Iowa State Mesonet ASOS.
+
+    The Mesonet returns CSV with columns: station, valid (UTC timestamp), tmpc.
+    Lines starting with '#' are debug/comment lines and are skipped.
+    Missing values are reported as 'M' and are excluded.
+
+    Note: timestamps are UTC. The same UTC-vs-local caveat as fetch_isd_actuals
+    applies here: readings from the first/last ~8 hours may belong to the
+    adjacent local day.
+    """
+    resp = client.get(
+        MESONET_ASOS_URL,
+        params={
+            "station": asos_station,
+            "data": "tmpc",
+            "year1": start.year,
+            "month1": start.month,
+            "day1": start.day,
+            "hour1": 0,
+            "minute1": 0,
+            "year2": end.year,
+            "month2": end.month,
+            "day2": end.day,
+            "hour2": 23,
+            "minute2": 59,
+            "tz": "UTC",
+            "format": "onlycomma",
+            "latlon": "no",
+            "elev": "no",
+            "report_type": "3",  # routine hourly METAR only (excludes specials)
+        },
+    )
+    resp.raise_for_status()
+
+    reduce = max if variable == "TMAX" else min
+    by_day: dict[date, list[float]] = {}
+
+    reader = csv.DictReader(
+        line for line in io.StringIO(resp.text).readlines() if not line.startswith("#")
+    )
+    for row in reader:
+        valid_str = row.get("valid", "")
+        tmpc_str = row.get("tmpc", "M")
+        if not valid_str or tmpc_str in ("M", ""):
+            continue
+        try:
+            # valid is "YYYY-MM-DD HH:MM" (UTC)
+            day = date.fromisoformat(valid_str[:10])
+            celsius = float(tmpc_str)
+        except ValueError:
+            continue
+        fahrenheit = celsius * 9.0 / 5.0 + 32.0
+        by_day.setdefault(day, []).append(fahrenheit)
+
+    return {day: reduce(readings) for day, readings in by_day.items() if readings}
+
+
+# ---------------------------------------------------------------------------
 # Result type
 # ---------------------------------------------------------------------------
 
@@ -277,9 +374,7 @@ def summarise(rows: list[DivergenceRow]) -> dict[str, CityResult]:
     for city, city_rows in sorted(by_city.items()):
         # Only count rows where both arms produced a value
         scored = [
-            r
-            for r in city_rows
-            if r.ncei_in_bucket is not None and r.asos_in_bucket is not None
+            r for r in city_rows if r.ncei_in_bucket is not None and r.asos_in_bucket is not None
         ]
         n = len(scored)
         if n == 0:
@@ -314,8 +409,12 @@ def run_spike(
     """Run the divergence spike over a list of Polymarket closed event dicts.
 
     For each US-city temperature event with a resolved bucket:
-    - Arm A: fetch GHCND daily extreme, check bucket membership.
-    - Arm B: fetch ISD hourly, reduce to daily extreme, check bucket membership.
+    - Arm A: fetch GHCND daily extreme via NCEI GHCND, check bucket membership.
+    - Arm B: fetch ASOS hourly tmpc via Iowa State Mesonet, reduce to daily
+      extreme, check bucket membership.
+
+    The GhcndToIsdMapping parameter is retained for future ISD use but is not
+    used for Arm B in the current implementation (Mesonet uses ICAO_TO_ASOS_STATION).
     """
     from rainmaker.backfill import fetch_actuals
     from rainmaker.polymarket.markets import parse_market
@@ -350,15 +449,17 @@ def run_spike(
         except httpx.HTTPError:
             pass
 
-        # Arm B: ASOS/ISD
+        # Arm B: Iowa State Mesonet ASOS
         asos_value: float | None = None
         asos_in_bucket: bool | None = None
         asos_gap: float | None = None
-        isd_id = isd_station_for(station.ghcnd_id, mapping)
-        if isd_id is not None:
+        asos_code = ICAO_TO_ASOS_STATION.get(station.icao)
+        if asos_code is not None:
             try:
-                isd_actuals = fetch_isd_actuals(isd_id, local_date, local_date, client, variable)
-                asos_value = isd_actuals.get(local_date)
+                mesonet_actuals = fetch_asos_actuals_mesonet(
+                    asos_code, local_date, local_date, client, variable
+                )
+                asos_value = mesonet_actuals.get(local_date)
                 if asos_value is not None:
                     asos_in_bucket = temperature_in_bucket(asos_value, resolved)
             except httpx.HTTPError:
@@ -397,8 +498,12 @@ def render_divergence_report(
         "",
         f"Run date: {run_date}",
         "",
-        "Measures how often NCEI GHCND (Arm A, our current source) and NCEI ISD hourly",
-        "(Arm B, ASOS proxy) agree with the bucket Polymarket actually resolved.",
+        "Measures how often NCEI GHCND (Arm A, our current source) and Iowa State Mesonet ASOS",
+        "(Arm B) agree with the bucket Polymarket actually resolved.",
+        "",
+        "Note: the sub-plan named NCEI ISD as Arm B. NCEI ISD data has a ~10-month lag so",
+        "no ISD data is available for 2025/2026 events. Iowa State Mesonet serves the same",
+        "ASOS observations with minimal lag and was used for Arm B instead.",
         "",
         "**Flip rate** = fraction of markets where the arm's computed extreme falls",
         "outside the resolved bucket. Lower is better.",
@@ -412,9 +517,7 @@ def render_divergence_report(
     for city, res in sorted(city_results.items()):
         ncei_pct = f"{res.ncei_flip_rate:.0%}"
         asos_pct = f"{res.asos_flip_rate:.0%}"
-        lines.append(
-            f"| {city} | {res.variable} | {res.n} | {ncei_pct} | {asos_pct} |"
-        )
+        lines.append(f"| {city} | {res.variable} | {res.n} | {ncei_pct} | {asos_pct} |")
 
     if rows:
         total_n = sum(r.n for r in city_results.values())
@@ -465,7 +568,7 @@ def render_divergence_report(
         elif delta > 0.05:
             lines.append(
                 f"ASOS (Arm B) outperforms NCEI GHCND (Arm A) by {delta:.0%} points. "
-                "Proceed to #101b: switch settlement to ISD hourly."
+                "Proceed to #101b: investigate switching settlement to ASOS/ISD."
             )
         elif delta < -0.05:
             lines.append(
