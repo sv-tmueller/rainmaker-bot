@@ -336,6 +336,32 @@ DB_PATH = "rainmaker.db"
 # Calibration (Phase 4)
 MIN_CAL_SAMPLES = 30  # a cell needs this many pairs before its calibration is trusted
 UNCALIBRATED_WIDEN = 1.25  # widen the raw spread when a cell is uncalibrated
+BACKFILL_DAYS = 45  # default history window for calibration; literature optimum ~30-45 days
+
+# Meteorological season start months: DJF=Dec, MAM=Mar, JJA=Jun, SON=Sep.
+_SEASON_START_MONTHS = {
+    12: 12,
+    1: 12,
+    2: 12,  # DJF (winter)
+    3: 3,
+    4: 3,
+    5: 3,  # MAM (spring)
+    6: 6,
+    7: 6,
+    8: 6,  # JJA (summer)
+    9: 9,
+    10: 9,
+    11: 9,  # SON (autumn)
+}
+
+
+def season_start_month(d: date) -> tuple[int, int]:
+    """Return (year, month) for the first day of the meteorological season containing d."""
+    start_month = _SEASON_START_MONTHS[d.month]
+    # DJF: if we are in Jan or Feb, the season started in December of the prior year.
+    if start_month == 12 and d.month != 12:
+        return d.year - 1, 12
+    return d.year, start_month
 
 
 def build_target(city: str, variable: Variable, local_date: date) -> Target:

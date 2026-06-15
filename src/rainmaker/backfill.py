@@ -11,12 +11,12 @@ tighter calibration grows from the bot's own persisted runs over time.
 
 import calendar
 import statistics
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import httpx
 
-from rainmaker.config import OPENMETEO_MODELS, Station
+from rainmaker.config import BACKFILL_DAYS, OPENMETEO_MODELS, Station, season_start_month
 from rainmaker.forecasts.base import ForecastSample
 from rainmaker.forecasts.openmeteo import _daily_field
 from rainmaker.probability.calibration import (
@@ -31,6 +31,25 @@ from rainmaker.probability.distribution import Gaussian
 NCEI_URL = "https://www.ncei.noaa.gov/access/services/data/v1"
 HISTORICAL_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
+
+
+def season_window(today: date, days: int = BACKFILL_DAYS) -> tuple[date, date] | None:
+    """Return (start, end) for the calibration window anchored at today.
+
+    end = today - 1 (actuals lag real-time).
+    start = max(today - days, first day of today's meteorological season).
+
+    Returns None when start > end, which happens on the first day of a new
+    season (yesterday was still the prior season). Callers should skip the
+    calibration fit and fall back to the uncalibrated widening path.
+    """
+    end = today - timedelta(days=1)
+    year, month = season_start_month(today)
+    season_start = date(year, month, 1)
+    start = max(today - timedelta(days=days), season_start)
+    if start > end:
+        return None
+    return start, end
 
 
 def fetch_actuals(

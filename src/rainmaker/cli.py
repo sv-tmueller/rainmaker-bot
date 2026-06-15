@@ -9,9 +9,10 @@ from pathlib import Path
 import httpx
 from pydantic import ValidationError
 
-from rainmaker.backfill import run_backfill, run_backfill_accuracy
+from rainmaker.backfill import run_backfill, run_backfill_accuracy, season_window
 from rainmaker.backtest import BacktestPair, backtest_real, backtest_synthetic, render_report
 from rainmaker.config import (
+    BACKFILL_DAYS,
     CONFIDENCE_FLOOR,
     DB_PATH,
     KALSHI_STATIONS,
@@ -250,8 +251,18 @@ def _backfill_stations(city: str) -> list[Station]:
 
 def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_path: str) -> None:
     stations = _backfill_stations(city)
-    end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
-    start = end - timedelta(days=days)
+    today = _today()
+    window = season_window(today, days)
+    if window is None:
+        # First day of a new meteorological season: no in-season data yet.
+        # Skip the fit; apply_calibration falls back to uncalibrated widening.
+        print(
+            f"skipping backfill: today ({today}) is the first day of a new season, "
+            "no in-season data available yet",
+            file=sys.stderr,
+        )
+        return
+    start, end = window
     if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
@@ -533,7 +544,9 @@ def main(argv: list[str] | None = None) -> None:
         "--city", default="NYC", help="city key from the station registry, or 'all'"
     )
     backfill.add_argument("--variable", default="TMAX")
-    backfill.add_argument("--days", type=int, default=60, help="history window length in days")
+    backfill.add_argument(
+        "--days", type=int, default=BACKFILL_DAYS, help="history window length in days"
+    )
     backfill.add_argument(
         "--leads",
         default="1,2,3",
