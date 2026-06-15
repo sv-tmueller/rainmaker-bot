@@ -370,7 +370,7 @@ def test_divergence_row_fields():
 
 
 # ---------------------------------------------------------------------------
-# Finding 4 (SHOULD-FIX): split the mixed bad-flag / sentinel test
+# ISD quality-flag and sentinel exclusion
 # ---------------------------------------------------------------------------
 
 
@@ -419,7 +419,7 @@ def test_fetch_isd_actuals_skips_sentinel_9999_with_good_flag(httpx_mock):
 
 
 # ---------------------------------------------------------------------------
-# Finding 2 (MUST-FIX): ncei_gap / asos_gap populated when outside bucket
+# _bucket_edge_gap
 # ---------------------------------------------------------------------------
 
 
@@ -473,7 +473,7 @@ def test_gap_returns_none_when_in_bucket():
 
 
 # ---------------------------------------------------------------------------
-# Finding 3 (MUST-FIX): summarise groups by (city, variable), not just city
+# summarise
 # ---------------------------------------------------------------------------
 
 
@@ -554,7 +554,7 @@ def test_summarise_single_variable_city_key_unchanged():
 
 
 # ---------------------------------------------------------------------------
-# Finding 1 (MUST-FIX): end-to-end test: run_spike -> summarise -> render
+# end-to-end
 # ---------------------------------------------------------------------------
 
 

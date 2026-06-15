@@ -478,7 +478,7 @@ def _snapshot(db_path: str) -> None:
 
 
 def _settle_divergence(pages: int, reports_dir: str) -> None:
-    """Fetch closed Polymarket events, run Arm A (GHCND) and Arm B (ISD), write report."""
+    """Fetch closed Polymarket events, run Arm A (GHCND) and Arm B (Mesonet ASOS), write report."""
     client = build_client(60.0)
     mapping = GhcndToIsdMapping.default()
     try:

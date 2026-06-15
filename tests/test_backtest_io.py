@@ -8,8 +8,10 @@ import httpx
 
 from rainmaker.backfill import HISTORICAL_FORECAST_URL, NCEI_URL
 from rainmaker.backtest import backtest_real, backtest_synthetic, standard_buckets
-from rainmaker.config import STATIONS
+from rainmaker.config import MIN_CAL_SAMPLES, MIN_SIGMA_F, STATIONS
 from rainmaker.polymarket.client import GAMMA_EVENTS_URL, fetch_closed_weather_events
+from rainmaker.probability.calibration import CalibrationPair, apply_calibration, fit_calibration
+from rainmaker.probability.distribution import Gaussian
 
 FIXTURES = Path(__file__).parent / "fixtures"
 KLGA = STATIONS["NYC"]
@@ -97,3 +99,22 @@ def test_backtest_real_returns_none_when_all_filtered(httpx_mock):
     with httpx.Client() as client:
         result = backtest_real(_closed_events(), client, on_or_after=date(2027, 1, 1))
     assert result is None
+
+
+def test_calibration_wiring_changes_result_with_enough_pairs():
+    # Verify that the calibrated arm genuinely differs from uncalibrated when
+    # there are enough pairs. The IO test fixture has only 5 pairs (<MIN_CAL_SAMPLES),
+    # so backtest_synthetic falls back to the widened-uncalibrated path and both
+    # arms are identical. This test uses 30 synthetic pairs with a known 5F bias
+    # to confirm that apply_calibration, when wired in correctly, shifts the mu.
+    n = MIN_CAL_SAMPLES
+    raw_g = Gaussian(mu=70.0, sigma=3.0)
+    # Actuals are consistently 5F below the forecast -> bias = +5F
+    pairs = [CalibrationPair(mu=70.0, sigma=3.0, actual=65.0) for _ in range(n)]
+    cal = fit_calibration("KLGA", "TMAX", 1, pairs)
+    assert abs(cal.bias - 5.0) < 0.01
+    g_cal, was_calibrated = apply_calibration(raw_g, cal, min_sigma=MIN_SIGMA_F, min_samples=n)
+    assert was_calibrated is True
+    # Calibrated mu must differ from raw mu by the fitted bias
+    assert g_cal.mu != raw_g.mu
+    assert abs(g_cal.mu - (raw_g.mu - cal.bias)) < 0.001
