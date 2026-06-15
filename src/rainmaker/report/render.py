@@ -77,7 +77,7 @@ def render_terminal(report: Report) -> str:
             if m.variable == "PRCP":
                 lines.append(f"  forecast: mu={m.mu:.2f}in sigma={m.sigma:.2f}in ({cal})")
             else:
-                unit = getattr(m, "unit", "F")
+                unit = m.unit
                 lines.append(f"  forecast: mu={m.mu:.1f}{unit} sigma={m.sigma:.1f}{unit} ({cal})")
         elif (m.mu is None) != (m.sigma is None):
             lines.append("  forecast: partial data (only one of mu/sigma available)")
@@ -139,7 +139,7 @@ def render_markdown(report: Report) -> str:
             if m.variable == "PRCP":
                 lines.append(f"- forecast: mu={m.mu:.2f}in sigma={m.sigma:.2f}in ({cal})")
             else:
-                unit = getattr(m, "unit", "F")
+                unit = m.unit
                 lines.append(f"- forecast: mu={m.mu:.1f}{unit} sigma={m.sigma:.1f}{unit} ({cal})")
         elif (m.mu is None) != (m.sigma is None):
             lines.append("- forecast: partial data (only one of mu/sigma available)")
