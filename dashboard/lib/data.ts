@@ -1,5 +1,4 @@
 import { serverClient } from "./supabase";
-import { settledIn, type BucketSpec } from "./settle";
 
 export type Bet = {
   title: string;
@@ -83,9 +82,10 @@ export async function getDashboardData() {
     settledIds.length > 0
       ? db
           .from("predictions")
-          .select("market_id, run_id, bucket, side, p_win")
+          .select("market_id, run_id, bucket, side, p_win, won")
           .eq("recommended", 1)
           .not("bucket", "is", null)
+          .not("won", "is", null)
           .in("market_id", settledIds)
       : Promise.resolve({ data: null }),
   ]);
@@ -101,7 +101,7 @@ export async function getDashboardData() {
     neededIds.length > 0
       ? db
           .from("markets")
-          .select("id, title, slug, settlement_date, city, venue, variable, outcome_spec")
+          .select("id, title, slug, settlement_date, city, venue, variable")
           .in("id", neededIds)
       : Promise.resolve({ data: [] }),
     settledRunIds.length > 0
@@ -125,18 +125,6 @@ export async function getDashboardData() {
   const settleDateOf = new Map(
     (marketsQ.data ?? []).map((m) => [m.id, (m.settlement_date as string | null) ?? null]),
   );
-  // Structured bucket bounds per market (from outcome_spec), keyed by label. Used
-  // to grade settled bets from real bounds instead of re-parsing the display label.
-  const specOf = new Map<string, Map<string, BucketSpec>>();
-  for (const m of marketsQ.data ?? []) {
-    try {
-      const spec = JSON.parse(m.outcome_spec as string) as BucketSpec[];
-      specOf.set(m.id as string, new Map(spec.map((b) => [b.label, b])));
-    } catch {
-      // no parsable spec -> bets on this market cannot be graded and are skipped
-    }
-  }
-
   // Assemble run health.
   let run: RunInfo | null = null;
   if (runRow) {
@@ -245,15 +233,10 @@ export async function getDashboardData() {
         const o = outcomeOf.get(p.market_id);
         const side = sideOf(p.side);
         const ask = priceOf.get(`${p.run_id}|${p.market_id}|${p.bucket}|${side}`);
-        if (!o || ask === undefined) return [];
-        const spec = specOf.get(p.market_id)?.get(p.bucket as string);
-        const inBucket =
-          spec === undefined
-            ? null
-            : settledIn(spec, variableOf.get(p.market_id) ?? "", o.actual_value as number);
-        if (inBucket === null) return [];
-        // A NO bet wins when the bucket does not settle.
-        const won = side === "NO" ? !inBucket : inBucket;
+        // won is pre-graded by settle.py using the canonical Python grading; skip
+        // rows where it is NULL (not yet graded, or non-recommended).
+        if (!o || ask === undefined || p.won === null) return [];
+        const won = p.won === 1;
         return [
           {
             settledAt: o.settled_at as string,

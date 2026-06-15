@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import date
 
@@ -11,10 +12,30 @@ from rainmaker.store.query import unsettled_markets
 from rainmaker.store.record import record_outcome
 
 
-def _market(conn, market_id, city, variable, settlement_date):
+def _market(conn, market_id, city, variable, settlement_date, outcome_spec=None):
+    spec = json.dumps(outcome_spec) if outcome_spec is not None else None
     conn.execute(
-        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
-        (market_id, city, variable, settlement_date),
+        "INSERT INTO markets (id, city, variable, settlement_date, outcome_spec) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (market_id, city, variable, settlement_date, spec),
+    )
+    conn.commit()
+
+
+def _run(conn, run_id):
+    conn.execute(
+        "INSERT OR IGNORE INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        (run_id, "t", "ok"),
+    )
+    conn.commit()
+
+
+def _prediction(conn, run_id, market_id, bucket, side, p_win, recommended=1):
+    _run(conn, run_id)
+    cols = "run_id, market_id, bucket, side, p_win, edge, recommended, created_at"
+    conn.execute(
+        f"INSERT INTO predictions ({cols}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, market_id, bucket, side, p_win, 0.1, recommended, "t"),
     )
     conn.commit()
 
@@ -249,3 +270,129 @@ def test_run_settlement_unknown_variable_does_not_block_rest(httpx_mock):
     conn.close()
     assert (settled, waiting) == (1, 0)
     assert n == 1
+
+
+# ----- won grading tests -----
+
+_TMAX_SPEC = [
+    {"label": "59°F or below", "kind": "below", "lo": None, "hi": None, "threshold": 59},
+    {"label": "60-64°F", "kind": "range", "lo": 60, "hi": 64, "threshold": None},
+    {"label": "65°F or higher", "kind": "above", "lo": None, "hi": None, "threshold": 65},
+]
+
+_PRCP_SPEC = [
+    {"label": 'under 1.00"', "kind": "below", "lo": None, "hi": None, "threshold": 1.0},
+    {"label": '1.00"-2.00"', "kind": "range", "lo": 1.0, "hi": 2.0, "threshold": None},
+    {"label": '2.00" or over', "kind": "above", "lo": None, "hi": None, "threshold": 2.0},
+]
+
+
+def test_run_settlement_grades_predictions_on_settle(httpx_mock):
+    # When run_settlement settles a market, recommended predictions get won filled in.
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "m1", "NYC", "TMAX", "2026-05-30", _TMAX_SPEC)
+    # actual is 62: lands in "60-64°F" (range, lo=60, hi=64); round(62.0)=62, 60<=62<=64 -> YES wins
+    _prediction(conn, "run-1", "m1", "60-64°F", "YES", 0.5, recommended=1)
+    _prediction(conn, "run-1", "m1", "65°F or higher", "YES", 0.3, recommended=1)
+    httpx_mock.add_response(
+        url=re.compile(re.escape(NCEI_URL)),
+        json=[{"DATE": "2026-05-30", "TMAX": "62"}],
+    )
+    with httpx.Client() as client:
+        run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
+    q = conn.execute("SELECT bucket, won FROM predictions WHERE market_id = ?", ("m1",))
+    rows = {r["bucket"]: r["won"] for r in q.fetchall()}
+    conn.close()
+    assert rows["60-64°F"] == 1  # in-bucket YES bet wins
+    assert rows["65°F or higher"] == 0  # out-of-bucket YES bet loses
+
+
+def test_run_settlement_grades_no_side_predictions(httpx_mock):
+    # A NO bet wins when the bucket does NOT settle.
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "m1", "NYC", "TMAX", "2026-05-30", _TMAX_SPEC)
+    # actual 62 -> "60-64°F" settles; NO on "60-64°F" loses; NO on "65°F or higher" wins
+    _prediction(conn, "run-1", "m1", "60-64°F", "NO", 0.4, recommended=1)
+    _prediction(conn, "run-1", "m1", "65°F or higher", "NO", 0.6, recommended=1)
+    httpx_mock.add_response(
+        url=re.compile(re.escape(NCEI_URL)),
+        json=[{"DATE": "2026-05-30", "TMAX": "62"}],
+    )
+    with httpx.Client() as client:
+        run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
+    q = conn.execute("SELECT bucket, won FROM predictions WHERE market_id = ?", ("m1",))
+    rows = {r["bucket"]: r["won"] for r in q.fetchall()}
+    conn.close()
+    assert rows["60-64°F"] == 0  # bucket settled, NO loses
+    assert rows["65°F or higher"] == 1  # bucket did not settle, NO wins
+
+
+def test_run_settlement_grades_precip_predictions(httpx_mock):
+    # Precip uses precip_settles (half-open intervals); a boundary value (1.00 inches)
+    # resolves to the higher bracket -- the 1.00-2.00 range wins, not the under-1.00 below.
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "p1", "NYC", "PRCP", "2026-06-30", _PRCP_SPEC)
+    _prediction(conn, "run-1", "p1", 'under 1.00"', "YES", 0.3, recommended=1)
+    _prediction(conn, "run-1", "p1", '1.00"-2.00"', "YES", 0.4, recommended=1)
+    httpx_mock.add_response(
+        url=re.compile(re.escape(NCEI_URL)),
+        json=[{"DATE": "2026-06", "STATION": "USW00094728", "PRCP": "1.00"}],
+    )
+    with httpx.Client() as client:
+        run_settlement(conn, client, date(2026, 7, 3), "2026-07-03T00:00:00Z")
+    q = conn.execute("SELECT bucket, won FROM predictions WHERE market_id = ?", ("p1",))
+    rows = {r["bucket"]: r["won"] for r in q.fetchall()}
+    conn.close()
+    # 1.00 is a boundary: precip_settles uses half-open [lo, hi), so 1.00 resolves UP.
+    # "under 1.00"" is [0, 1.00) -> 1.00 does NOT land here -> YES loses
+    # "1.00"-2.00"" is [1.00, 2.00) -> 1.00 DOES land here -> YES wins
+    assert rows['under 1.00"'] == 0
+    assert rows['1.00"-2.00"'] == 1
+
+
+def test_run_settlement_backfills_won_for_already_settled_markets(httpx_mock):
+    # Markets already in outcomes (settled before this change) must also get won
+    # populated when predictions.won IS NULL. No NCEI call needed for them.
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "m1", "NYC", "TMAX", "2026-05-28", _TMAX_SPEC)
+    _prediction(conn, "run-1", "m1", "60-64°F", "YES", 0.5, recommended=1)
+    # Pre-seed the outcome (simulates "already settled before the won column existed")
+    record_outcome(conn, "m1", 62.0, "2026-05-30T00:00:00Z")
+    # Add an unsettled market so run_settlement has something to do (to show the
+    # backfill pass runs regardless).
+    _market(conn, "m2", "NYC", "TMAX", "2026-05-30", _TMAX_SPEC)
+    httpx_mock.add_response(
+        url=re.compile(re.escape(NCEI_URL)),
+        json=[{"DATE": "2026-05-30", "TMAX": "70"}],
+    )
+    with httpx.Client() as client:
+        run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
+    row = conn.execute(
+        "SELECT won FROM predictions WHERE market_id = ? AND bucket = ?", ("m1", "60-64°F")
+    ).fetchone()
+    conn.close()
+    # The backfill pass must have graded m1's prediction even though m1 was
+    # already settled before this run_settlement call.
+    assert row["won"] == 1
+
+
+def test_run_settlement_does_not_grade_non_recommended_predictions(httpx_mock):
+    # won is only meaningful for recommended predictions; non-recommended rows
+    # stay NULL to keep the data model clean.
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "m1", "NYC", "TMAX", "2026-05-30", _TMAX_SPEC)
+    _prediction(conn, "run-1", "m1", "60-64°F", "YES", 0.5, recommended=0)
+    httpx_mock.add_response(
+        url=re.compile(re.escape(NCEI_URL)),
+        json=[{"DATE": "2026-05-30", "TMAX": "62"}],
+    )
+    with httpx.Client() as client:
+        run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
+    row = conn.execute("SELECT won FROM predictions WHERE market_id = ?", ("m1",)).fetchone()
+    conn.close()
+    assert row["won"] is None  # not graded: not recommended

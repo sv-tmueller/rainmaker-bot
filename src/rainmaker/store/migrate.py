@@ -18,6 +18,10 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
     ("0004_markets_settlement_ghcnd", ["ALTER TABLE markets ADD COLUMN settlement_ghcnd TEXT"]),
     # The venue a market came from ("polymarket" or "kalshi").
     ("0005_markets_venue", ["ALTER TABLE markets ADD COLUMN venue TEXT"]),
+    # Per-prediction settlement outcome: 1 if the recommended bet won, 0 if lost,
+    # NULL if not yet graded. Populated by the settlement grading pass in settle.py
+    # so the dashboard reads persisted values instead of re-deriving them in TS.
+    ("0006_predictions_won", ["ALTER TABLE predictions ADD COLUMN won INTEGER"]),
 ]
 
 
