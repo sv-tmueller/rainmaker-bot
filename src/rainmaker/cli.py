@@ -492,8 +492,7 @@ def main(argv: list[str] | None = None) -> None:
         "--leads",
         default="1,2,3",
         help=(
-            "comma-separated leads in days; lead 1 fits calibration, "
-            "higher leads are accuracy-only"
+            "comma-separated leads in days; lead 1 fits calibration, higher leads are accuracy-only"
         ),
     )
     backfill.add_argument("--db", default=DB_PATH, help="SQLite database path")
