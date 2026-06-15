@@ -18,6 +18,7 @@ from rainmaker.backfill import (
     fetch_monthly_precip,
     run_backfill,
     run_backfill_accuracy,
+    season_window,
 )
 from rainmaker.cli import _backfill
 from rainmaker.config import STATIONS
@@ -290,3 +291,111 @@ def test_backfill_cli_saves_a_backtest_row_per_lead(httpx_mock, tmp_path, monkey
     assert leads == [1, 2, 3]
     assert all(r[1] == "backtest" for r in rows)
     assert knyc == 3  # the Kalshi Central Park station is backfilled alongside LaGuardia
+
+
+# season_window tests
+
+
+def test_season_window_mid_winter_returns_full_days_window():
+    # 2026-01-20 is mid-winter (DJF). Season started 2025-12-01.
+    # today - 45 days = 2025-12-06. Season start = 2025-12-01.
+    # max(2025-12-06, 2025-12-01) = 2025-12-06 (not clipped by season start).
+    result = season_window(date(2026, 1, 20), days=45)
+    assert result is not None
+    start, end = result
+    assert end == date(2026, 1, 19)
+    assert start == date(2025, 12, 6)  # today - 45 days; season start is earlier
+
+
+def test_season_window_clipped_at_season_start_early_spring():
+    # 2026-03-10 is 9 days into meteorological spring (MAM starts Mar 1).
+    # end = 2026-03-09. 45 days back would be 2026-01-23 (winter).
+    # Season start = 2026-03-01. Clip: start = 2026-03-01.
+    result = season_window(date(2026, 3, 10), days=45)
+    assert result is not None
+    start, end = result
+    assert end == date(2026, 3, 9)
+    assert start == date(2026, 3, 1)  # clipped to spring start, not 45 days back
+
+
+def test_season_window_day_one_of_season_returns_none():
+    # 2026-03-01 is exactly the first day of spring (MAM).
+    # end = 2026-02-28 (yesterday). Season start = 2026-03-01. start > end -> None.
+    result = season_window(date(2026, 3, 1), days=45)
+    assert result is None
+
+
+def test_season_window_day_two_of_season_yields_one_day_window():
+    # 2026-03-02. end = 2026-03-01. season_start = 2026-03-01. start = max(2026-02-15, 2026-03-01).
+    # start = 2026-03-01, end = 2026-03-01 -> valid 1-day window.
+    result = season_window(date(2026, 3, 2), days=45)
+    assert result is not None
+    start, end = result
+    assert start == date(2026, 3, 1)
+    assert end == date(2026, 3, 1)
+
+
+def test_season_window_mid_summer_uses_full_days():
+    # 2026-08-01 is 61 days into summer (JJA starts Jun 1). 45-day window fits within season.
+    # end = 2026-07-31. today - 45 days = 2026-06-17. Season start = 2026-06-01.
+    # max(2026-06-17, 2026-06-01) = 2026-06-17 (not clipped).
+    result = season_window(date(2026, 8, 1), days=45)
+    assert result is not None
+    start, end = result
+    assert end == date(2026, 7, 31)
+    assert start == date(2026, 6, 17)
+
+
+def test_season_window_first_day_of_winter_returns_none():
+    # Winter (DJF) starts Dec 1. On 2025-12-01, end = 2025-11-30 (autumn). start > end -> None.
+    result = season_window(date(2025, 12, 1), days=45)
+    assert result is None
+
+
+def test_season_window_respects_custom_days():
+    # 2026-06-20 is 19 days into summer (JJA). days=30: end = 2026-06-19.
+    # 30 days back = 2026-05-20 (spring). Season start = 2026-06-01.
+    # Clip: start = 2026-06-01.
+    result = season_window(date(2026, 6, 20), days=30)
+    assert result is not None
+    start, end = result
+    assert start == date(2026, 6, 1)
+    assert end == date(2026, 6, 19)
+
+
+def test_season_window_clips_to_season_boundary_not_days_back():
+    """Window start is the season boundary when days would reach into a prior season."""
+    # 2026-03-30 is 29 days into spring (MAM starts Mar 1).
+    # 60 days back would reach 2026-01-29 (winter).
+    # season_window must clip to 2026-03-01, not go back 60 days.
+    result = season_window(date(2026, 3, 30), days=60)
+    assert result is not None
+    start, end = result
+    assert start == date(2026, 3, 1)  # season boundary, not today - 60 days
+    assert end == date(2026, 3, 29)
+
+
+def test_seasonal_fit_avoids_cross_season_bias():
+    """Demonstrate that the seasonal clip prevents a winter bias from contaminating spring.
+
+    Setup: synthetic pairs where winter data has a +5F bias and spring data is unbiased.
+    A flat window spanning both seasons would fit ~+2.5F bias (wrong for spring).
+    The season-clipped window fits ~0 (correct for spring).
+    """
+    from rainmaker.probability.calibration import CalibrationPair, fit_calibration
+
+    sigma = 2.0
+    # 30 winter pairs with +5F bias (mu runs warm vs actual)
+    winter_pairs = [
+        CalibrationPair(mu=70.0 + i, sigma=sigma, actual=(70.0 + i) - 5.0) for i in range(30)
+    ]
+    # 30 spring pairs with 0 bias
+    spring_pairs = [CalibrationPair(mu=60.0 + i, sigma=sigma, actual=60.0 + i) for i in range(30)]
+
+    # Flat window: includes winter + spring -> bias near +2.5
+    flat_cal = fit_calibration("KLGA", "TMAX", 1, winter_pairs + spring_pairs)
+    assert flat_cal.bias == pytest.approx(2.5)  # halfway between +5 and 0
+
+    # Season-clipped window: spring only -> bias near 0
+    seasonal_cal = fit_calibration("KLGA", "TMAX", 1, spring_pairs)
+    assert seasonal_cal.bias == pytest.approx(0.0)
