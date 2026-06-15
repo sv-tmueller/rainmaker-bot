@@ -1,7 +1,12 @@
 import sqlite3
 
 from rainmaker.store.db import _SQLITE_SCHEMA, connect, init_schema
-from rainmaker.store.migrate import _MIGRATIONS, _is_duplicate_column, apply_migrations
+from rainmaker.store.migrate import (
+    _MIGRATIONS,
+    _backfill_venue,
+    _is_duplicate_column,
+    apply_migrations,
+)
 
 
 def test_migration_adds_predictions_bucket_column():
@@ -63,7 +68,9 @@ def test_apply_migrations_is_idempotent():
     apply_migrations(conn)  # second pass must not error
     n = conn.execute("SELECT count(*) AS n FROM schema_migrations").fetchone()["n"]
     conn.close()
-    assert n == len(_MIGRATIONS)
+    # _MIGRATIONS holds DDL steps; 0007_backfill_venue is recorded as a separate
+    # Python step outside that list, so the total count is len(_MIGRATIONS) + 1.
+    assert n == len(_MIGRATIONS) + 1
 
 
 def test_is_duplicate_column_only_matches_the_two_exact_signals():
@@ -124,9 +131,71 @@ def test_apply_migrations_crash_safe_when_alter_already_applied():
     conn.commit()
 
     # apply_migrations must not raise 'duplicate column name' for 0001 and must
-    # apply 0002-0005 forward normally.
+    # apply 0002-0007 forward normally.
     apply_migrations(conn)
 
     rows = {r["id"] for r in conn.execute("SELECT id FROM schema_migrations").fetchall()}
     conn.close()
-    assert rows == {mid for mid, _ in _MIGRATIONS}
+    # _MIGRATIONS holds DDL steps; 0007_backfill_venue is recorded outside that list.
+    assert rows == {mid for mid, _ in _MIGRATIONS} | {"0007_backfill_venue"}
+
+
+def test_backfill_venue_sets_polymarket_for_numeric_id():
+    """A NULL-venue market with a numeric id is inferred as 'polymarket'."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    # Insert a legacy market: numeric id, no venue (simulates pre-0005 row)
+    conn.execute("INSERT INTO markets (id) VALUES (?)", ("700001",))
+    conn.commit()
+
+    _backfill_venue(conn)
+
+    row = conn.execute("SELECT venue FROM markets WHERE id = ?", ("700001",)).fetchone()
+    conn.close()
+    assert row["venue"] == "polymarket"
+
+
+def test_backfill_venue_sets_kalshi_for_ticker_id():
+    """A NULL-venue market with an alphanumeric ticker id is inferred as 'kalshi'."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute("INSERT INTO markets (id) VALUES (?)", ("KXHIGHNY-26JUN08",))
+    conn.commit()
+
+    _backfill_venue(conn)
+
+    row = conn.execute("SELECT venue FROM markets WHERE id = ?", ("KXHIGHNY-26JUN08",)).fetchone()
+    conn.close()
+    assert row["venue"] == "kalshi"
+
+
+def test_backfill_venue_does_not_overwrite_explicit_venue():
+    """A market that already has a venue set is not overwritten."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute("INSERT INTO markets (id, venue) VALUES (?, ?)", ("700001", "kalshi"))
+    conn.commit()
+
+    _backfill_venue(conn)
+
+    row = conn.execute("SELECT venue FROM markets WHERE id = ?", ("700001",)).fetchone()
+    conn.close()
+    # Non-NULL venue must not be touched; only venue IS NULL rows are backfilled
+    assert row["venue"] == "kalshi"
+
+
+def test_backfill_venue_is_idempotent():
+    """Running _backfill_venue twice produces the same result."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute("INSERT INTO markets (id) VALUES (?)", ("700001",))
+    conn.execute("INSERT INTO markets (id) VALUES (?)", ("KXHIGHNY-26JUN08",))
+    conn.commit()
+
+    _backfill_venue(conn)
+    _backfill_venue(conn)
+
+    rows = {r["id"]: r["venue"] for r in conn.execute("SELECT id, venue FROM markets").fetchall()}
+    conn.close()
+    assert rows["700001"] == "polymarket"
+    assert rows["KXHIGHNY-26JUN08"] == "kalshi"

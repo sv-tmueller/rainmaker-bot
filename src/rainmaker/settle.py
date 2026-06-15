@@ -1,9 +1,15 @@
 """Settle recorded markets against NOAA actuals (a proxy for Weather Underground).
 
 For each recorded market whose settlement date has passed and that has no outcome
-yet, fetch the NOAA daily extreme for its station/date/variable and record it.
-Idempotent: already-settled markets are skipped, and a market whose NOAA data is
+yet, fetch the daily extreme for its station/date/variable and record it.
+Idempotent: already-settled markets are skipped, and a market whose data is
 not published yet is left for a later run.
+
+Settlement source routing:
+  Polymarket TMAX/TMIN -> ASOS (Iowa State Mesonet): matches Polymarket's resolution source.
+  Polymarket PRCP      -> NCEI GSOM: no ASOS precip path.
+  Kalshi (all)         -> NCEI GHCND: Kalshi settles on the NOAA daily climate report.
+  NULL venue (legacy)  -> NCEI GHCND: safe fallback, does not send legacy rows to ASOS.
 """
 
 import json
@@ -15,10 +21,11 @@ import httpx
 
 from rainmaker.backfill import fetch_actuals, fetch_monthly_precip
 from rainmaker.config import PRECIP_STATIONS, STATIONS
+from rainmaker.forecasts.asos import ICAO_TO_ASOS_STATION, fetch_asos_daily_extreme
 from rainmaker.probability.outcomes import settles
 from rainmaker.probability.precip_outcomes import precip_settles
 from rainmaker.store.db import Conn
-from rainmaker.store.query import unsettled_markets
+from rainmaker.store.query import settled_polymarket_temp_markets, unsettled_markets
 from rainmaker.store.record import record_outcome
 
 
@@ -30,6 +37,14 @@ def _legacy_ghcnd(market: dict[str, str]) -> str | None:
         return precip.ghcnd_id if precip is not None else None
     station = STATIONS.get(market["city"])
     return station.ghcnd_id if station is not None else None
+
+
+def _asos_code_for(city: str) -> str | None:
+    """Return the Mesonet 3-letter ASOS code for a city, or None if unmapped."""
+    station = STATIONS.get(city)
+    if station is None:
+        return None
+    return ICAO_TO_ASOS_STATION.get(station.icao)
 
 
 def _grade_won(variable: str, bucket: dict[str, Any], actual_value: float, side: str) -> int:
@@ -71,33 +86,90 @@ def _grade_predictions(conn: Conn) -> None:
     conn.commit()
 
 
+def _grade_predictions_for_market(conn: Conn, market_id: str, actual_value: float) -> None:
+    """Re-grade all recommended predictions for a specific market against a new actual value.
+
+    Unconditionally overwrites predictions.won (ignores the IS NULL guard).
+    Used by regrade_polymarket_settlements after the outcome is overwritten.
+    """
+    rows = conn.execute(
+        "SELECT p.id, p.bucket, p.side, m.variable, m.outcome_spec "
+        "FROM predictions p "
+        "JOIN markets m ON m.id = p.market_id "
+        "WHERE p.market_id = ? AND p.recommended = 1 AND p.bucket IS NOT NULL",
+        (market_id,),
+    ).fetchall()
+    for row in rows:
+        try:
+            spec: list[dict[str, Any]] = json.loads(row["outcome_spec"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        bucket = next((b for b in spec if b["label"] == row["bucket"]), None)
+        if bucket is None:
+            continue
+        won = _grade_won(row["variable"], bucket, actual_value, row["side"] or "YES")
+        conn.execute("UPDATE predictions SET won = ? WHERE id = ?", (won, row["id"]))
+    conn.commit()
+
+
 def run_settlement(
     conn: Conn, client: httpx.Client, today: date, settled_at: str
 ) -> tuple[int, int]:
-    """Settle every unsettled past market that has NOAA data. Returns (settled, waiting)."""
+    """Settle every unsettled past market. Returns (settled, waiting).
+
+    Routes by venue and variable:
+    - Polymarket TMAX/TMIN -> ASOS (Iowa State Mesonet)
+    - Polymarket PRCP      -> NCEI GSOM
+    - Kalshi (all)         -> NCEI GHCND
+    - NULL venue (legacy)  -> NCEI GHCND (safe fallback)
+    """
     settled = 0
     waiting = 0
     for m in unsettled_markets(conn, today):
         day = date.fromisoformat(m["settlement_date"])
-        # Use the market's exact settlement station (Kalshi NYC = Central Park, not
-        # LaGuardia); fall back to the city registry for legacy rows.
+        venue = m.get("venue") or ""
+        variable = m["variable"]
+
+        if variable not in {"TMAX", "TMIN", "PRCP"}:
+            print(
+                f"skipping {m['market_id']}: unknown variable {variable!r}",
+                file=sys.stderr,
+            )
+            continue
+
+        # Polymarket TMAX/TMIN: fetch from ASOS (Mesonet)
+        if venue == "polymarket" and variable in {"TMAX", "TMIN"}:
+            asos_code = _asos_code_for(m["city"])
+            if asos_code is None:
+                print(
+                    f"skipping {m['market_id']}: no station for {m['city']!r}",
+                    file=sys.stderr,
+                )
+                continue
+            try:
+                value = fetch_asos_daily_extreme(asos_code, day, day, client, variable).get(day)
+            except httpx.HTTPError as exc:
+                print(f"waiting on {m['market_id']}: ASOS fetch failed: {exc}", file=sys.stderr)
+                waiting += 1
+                continue
+            if value is None:
+                waiting += 1
+                continue
+            record_outcome(conn, m["market_id"], value, settled_at)
+            settled += 1
+            continue
+
+        # All other paths: NCEI (Kalshi all, Polymarket PRCP, NULL venue legacy)
         ghcnd = m.get("settlement_ghcnd") or _legacy_ghcnd(m)
         if ghcnd is None:
             print(f"skipping {m['market_id']}: no station for {m['city']!r}", file=sys.stderr)
             continue
-        if m["variable"] not in {"TMAX", "TMIN", "PRCP"}:
-            print(
-                f"skipping {m['market_id']}: unknown variable {m['variable']!r}",
-                file=sys.stderr,
-            )
-            continue
         try:
-            if m["variable"] == "PRCP":
+            if variable == "PRCP":
                 value = fetch_monthly_precip(ghcnd, day.year, day.month, client)
             else:
-                value = fetch_actuals(ghcnd, day, day, client, m["variable"]).get(day)
+                value = fetch_actuals(ghcnd, day, day, client, variable).get(day)
         except httpx.HTTPError as exc:
-            # One station's transient NCEI error must not abort the rest of the loop.
             print(f"waiting on {m['market_id']}: NCEI fetch failed: {exc}", file=sys.stderr)
             waiting += 1
             continue
@@ -108,3 +180,38 @@ def run_settlement(
         settled += 1
     _grade_predictions(conn)
     return settled, waiting
+
+
+def regrade_polymarket_settlements(conn: Conn, client: httpx.Client, regraded_at: str) -> int:
+    """Re-settle existing Polymarket TMAX/TMIN outcomes using ASOS and re-grade predictions.
+
+    Fetches the ASOS daily extreme for every settled Polymarket TMAX/TMIN market,
+    overwrites outcomes.actual_value, and re-grades predictions.won.
+
+    Returns the number of markets successfully regraded. Markets where ASOS
+    returns no data for the settlement date are skipped (not counted).
+
+    Re-runnable: running twice converges to the same ASOS value.
+    """
+    regraded = 0
+    for m in settled_polymarket_temp_markets(conn):
+        day = date.fromisoformat(m["settlement_date"])
+        asos_code = _asos_code_for(m["city"])
+        if asos_code is None:
+            # No ASOS mapping for this city: skip silently (should not occur for
+            # the 11 known cities, but do not crash if a legacy row appears).
+            continue
+        try:
+            value = fetch_asos_daily_extreme(asos_code, day, day, client, m["variable"]).get(day)
+        except httpx.HTTPError as exc:
+            print(
+                f"regrade skipped {m['market_id']}: ASOS fetch failed: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        if value is None:
+            continue
+        record_outcome(conn, m["market_id"], value, regraded_at)
+        _grade_predictions_for_market(conn, m["market_id"], value)
+        regraded += 1
+    return regraded
