@@ -3,7 +3,7 @@ from typing import Any, cast
 
 import httpx
 
-from rainmaker.config import PRECIP_STATIONS, STATIONS
+from rainmaker.config import INTL_STATIONS, PRECIP_STATIONS, STATIONS
 from rainmaker.domain import Market, PrecipMonthlyMarket
 from rainmaker.polymarket.markets import parse_city, parse_market
 from rainmaker.polymarket.precip_markets import (
@@ -60,16 +60,19 @@ def fetch_closed_weather_events(
     )
 
 
-def _is_us_temp_event(event: dict[str, Any]) -> bool:
+_ALL_TEMP_STATIONS = {**STATIONS, **INTL_STATIONS}
+
+
+def _is_known_temp_event(event: dict[str, Any]) -> bool:
     try:
         city = parse_city(event.get("title", ""))
     except ValueError:
         return False
-    return city in STATIONS
+    return city in _ALL_TEMP_STATIONS
 
 
 def discover_markets(client: httpx.Client) -> list[Market]:
-    """Fetch live weather events and parse the US-city temperature markets.
+    """Fetch live weather events and parse temperature markets (US + intl Celsius).
 
     A market that fails to parse (for example its description does not name the
     resolution station) is skipped with a warning so one bad market does not
@@ -77,7 +80,7 @@ def discover_markets(client: httpx.Client) -> list[Market]:
     """
     markets: list[Market] = []
     for ev in fetch_weather_events(client):
-        if not _is_us_temp_event(ev):
+        if not _is_known_temp_event(ev):
             continue
         try:
             markets.append(parse_market(ev))

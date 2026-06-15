@@ -5,7 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from rainmaker.config import CONFIDENCE_FLOOR, MIN_EDGE, MIN_SOURCES, PRECIP_VAR_FLOOR, build_target
+from rainmaker.config import (
+    CONFIDENCE_FLOOR,
+    MIN_EDGE,
+    MIN_SIGMA_C,
+    MIN_SIGMA_F,
+    MIN_SOURCES,
+    PRECIP_VAR_FLOOR,
+    Station,
+    Target,
+    build_target,
+)
 from rainmaker.domain import Bucket, Market
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.forecasts.precip import PrecipForecastSet
@@ -364,3 +374,93 @@ def test_evaluate_precip_market_emits_no_side_complement():
     for o in no:
         assert o.p_win == pytest.approx(1 - yes_by_label[o.bucket_label])
     assert report.excluded_no_ask == []
+
+
+# ---------------------------------------------------------------------------
+# Binding Celsius sigma-floor test (#177)
+# ---------------------------------------------------------------------------
+
+_LONDON_STATION = Station(
+    city="London",
+    icao="EGLC",
+    name="London City Airport",
+    lat=51.505,
+    lon=0.055,
+    timezone="Europe/London",
+    wunderground_url="https://www.wunderground.com/history/daily/gb/london/EGLC",
+    ghcnd_id=None,
+    unit="C",
+)
+
+
+def _london_c_market() -> Market:
+    """Synthetic 1°C ladder (16-18°C) for a London-style C market."""
+    target = Target(station=_LONDON_STATION, variable="TMAX", local_date=date(2026, 6, 15))
+    return Market(
+        id="london_floor",
+        slug="highest-temperature-london",
+        title="Highest temperature in London on Jun 15?",
+        target=target,
+        buckets=[
+            _bucket("15°C or below", "below", threshold=15, best_ask=0.30),
+            _bucket("16°C", "range", lo=16, hi=16, best_ask=0.40),
+            _bucket("17°C", "range", lo=17, hi=17, best_ask=0.20),
+            _bucket("18°C or higher", "above", threshold=18, best_ask=0.10),
+        ],
+    )
+
+
+def _tight_c_forecast_set(target: Target) -> ForecastSet:
+    # Very tight pool: all samples at exactly 16C (= 60.8F).
+    # Raw sigma will be ~0; the C floor must bind at MIN_SIGMA_C.
+    f_value = 16 * 9 / 5 + 32  # 60.8F
+    samples = [
+        ForecastSample(
+            source="nws",
+            model="m",
+            member=None,
+            station="EGLC",
+            variable="TMAX",
+            target_date=target.local_date,
+            lead_time_days=1,
+            value_f=f_value,
+            issued_at=None,
+        )
+        for _ in range(6)
+    ]
+    return ForecastSet(
+        target=target,
+        samples=samples,
+        coverage=[
+            SourceCoverage(source="nws", ok=True, n_samples=6),
+            SourceCoverage(source="open-meteo", ok=True, n_samples=6),
+        ],
+    )
+
+
+def test_c_floor_binds_at_min_sigma_c() -> None:
+    """A C market with near-zero raw sigma must floor at MIN_SIGMA_C, not MIN_SIGMA_F.
+
+    This test would fail if cli.py passed MIN_SIGMA_F for a C market:
+    MIN_SIGMA_F (~1.5) >> MIN_SIGMA_C (~0.833), so using the F floor would
+    over-widen the C distribution and produce a different sigma.
+    """
+    market = _london_c_market()
+    assert market.target.station.unit == "C"
+
+    fs = _tight_c_forecast_set(market.target)
+    report = evaluate_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_C,  # the wiring cli.py must choose for C markets
+        min_edge=MIN_EDGE,
+    )
+
+    assert report.sigma is not None
+    # The C floor must bind.
+    assert report.sigma == pytest.approx(MIN_SIGMA_C, abs=1e-6)
+    # And the floored value must be distinctly less than the F floor,
+    # proving this test would fail if the wrong floor were passed.
+    assert report.sigma < MIN_SIGMA_F

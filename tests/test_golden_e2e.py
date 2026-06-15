@@ -345,3 +345,85 @@ def test_golden_pipeline_on_celsius_market():
     assert "C (uncalibrated)" in md
     assert "F (uncalibrated)" not in md
     assert "OEJN" in md
+
+
+# ---------------------------------------------------------------------------
+# Real London (EGLC, Celsius) e2e from saved Gamma fixture (#177)
+# ---------------------------------------------------------------------------
+
+
+def _london_market_from_fixture():
+    event = json.loads((FIXTURES / "polymarket_intl_london.json").read_text())
+    return parse_market(event)
+
+
+def _london_forecast_set(target):
+    # Pool centered at 21C (the mode bucket in the fixture).
+    # 21C = 69.8F; spread of +-1C in F-space.
+    f_center = 21 * 9 / 5 + 32  # 69.8F
+    samples = [
+        ForecastSample(
+            source="nws",
+            model="m",
+            member=None,
+            station="EGLC",
+            variable="TMAX",
+            target_date=target.local_date,
+            lead_time_days=1,
+            value_f=f_center + offset,
+            issued_at=None,
+        )
+        for offset in (-1.8, -0.9, 0.0, 0.9, 1.8)  # 1C spread in F
+    ]
+    return ForecastSet(
+        target=target,
+        samples=samples,
+        coverage=[
+            SourceCoverage(source="nws", ok=True, n_samples=5),
+            SourceCoverage(source="open-meteo", ok=True, n_samples=5),
+        ],
+    )
+
+
+def test_golden_pipeline_on_real_london_fixture():
+    """Real London fixture (EGLC, Celsius, single-degree buckets) through the full pipeline."""
+    market = _london_market_from_fixture()
+    assert market.target.station.unit == "C"
+    assert market.target.station.icao == "EGLC"
+    assert len(market.buckets) == 11
+
+    fs = _london_forecast_set(market.target)
+    report = evaluate_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_C,
+        min_edge=MIN_EDGE,
+    )
+
+    # All 11 buckets have an ask in the fixture.
+    assert report.excluded_no_ask == []
+    yes_outcomes = [o for o in report.outcomes if o.side == "YES"]
+    assert len(yes_outcomes) == 11
+    # YES partition sums to ~1.
+    assert abs(sum(o.p_win for o in yes_outcomes) - 1.0) < 1e-6
+    # Mode bucket is 21°C (pool centered there).
+    mode = max(yes_outcomes, key=lambda o: o.p_win)
+    assert mode.bucket_label == "21°C"
+    # Ranking is sorted by edge descending.
+    edges = [o.edge for o in report.outcomes]
+    assert edges == sorted(edges, reverse=True)
+    # mu is in C, near 21.
+    assert report.mu is not None
+    assert 19 < report.mu < 23, f"mu should be near 21C, got {report.mu}"
+    # sigma is in C, small (< 5).
+    assert report.sigma is not None
+    assert report.sigma < 5, f"sigma in C should be < 5, got {report.sigma}"
+
+    # Render labels the unit as C and names EGLC.
+    md = render_markdown(Report(run_date=date(2026, 6, 15), markets=[report]))
+    assert "C (uncalibrated)" in md
+    assert "F (uncalibrated)" not in md
+    assert "EGLC" in md
+    assert "2026-06-15" in md
