@@ -195,7 +195,7 @@ def test_backfill_fits_and_saves_calibration_and_accuracy(monkeypatch, tmp_path,
     from rainmaker.probability.calibration import Accuracy
 
     cal = Calibration(
-        station="KLGA", variable="TMAX", lead_time=1, bias=-2.0, spread_scale=1.1, n_samples=42
+        station="KLGA", variable="TMAX", lead_time=1, bias=-2.0, var_a=1.0, var_b=1.1, n_samples=42
     )
     acc = Accuracy(n=42, mae_f=2.5, bias_f=-2.0)
     monkeypatch.setattr(cli, "run_backfill", lambda *a, **k: (cal, acc))
@@ -225,7 +225,8 @@ def test_backfill_all_covers_every_city(monkeypatch, tmp_path):
             variable=variable,
             lead_time=lead,
             bias=0.0,
-            spread_scale=1.0,
+            var_a=0.0,
+            var_b=1.0,
             n_samples=42,
         )
         return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
@@ -275,7 +276,8 @@ def test_backfill_partial_failure_exits_zero(monkeypatch, tmp_path, capsys):
             variable=variable,
             lead_time=lead,
             bias=0.0,
-            spread_scale=1.0,
+            var_a=0.0,
+            var_b=1.0,
             n_samples=42,
         )
         return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
@@ -310,7 +312,8 @@ def test_backfill_all_fits_kalshi_only_stations(monkeypatch, tmp_path):
             variable=variable,
             lead_time=lead,
             bias=0.0,
-            spread_scale=1.0,
+            var_a=0.0,
+            var_b=1.0,
             n_samples=42,
         )
         return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
@@ -338,7 +341,8 @@ def test_backfill_city_covers_both_venue_stations(monkeypatch, tmp_path):
             variable=variable,
             lead_time=lead,
             bias=0.0,
-            spread_scale=1.0,
+            var_a=0.0,
+            var_b=1.0,
             n_samples=42,
         )
         return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)

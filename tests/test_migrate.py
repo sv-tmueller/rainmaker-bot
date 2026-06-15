@@ -1,5 +1,7 @@
 import sqlite3
 
+import pytest
+
 from rainmaker.store.db import _SQLITE_SCHEMA, connect, init_schema
 from rainmaker.store.migrate import (
     _MIGRATIONS,
@@ -106,6 +108,21 @@ def test_migration_adds_predictions_won_column():
     row = conn.execute("SELECT won FROM predictions").fetchone()
     conn.close()
     assert row["won"] == 1
+
+
+def test_migration_adds_calibration_emos_columns():
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO calibration (station, variable, lead_time, bias, var_a, var_b, n_samples)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("KLGA", "TMAX", 1, -0.5, 1.2, 0.8, 30),
+    )
+    conn.commit()
+    row = conn.execute("SELECT var_a, var_b FROM calibration").fetchone()
+    conn.close()
+    assert row["var_a"] == pytest.approx(1.2)
+    assert row["var_b"] == pytest.approx(0.8)
 
 
 def test_apply_migrations_crash_safe_when_alter_already_applied():

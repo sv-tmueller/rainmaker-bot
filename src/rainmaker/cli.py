@@ -295,7 +295,7 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
                     )
                     print(
                         f"calibrated {cal.station} {cal.variable} lead={cal.lead_time}: "
-                        f"bias={cal.bias:+.2f}F spread_scale={cal.spread_scale:.2f} "
+                        f"bias={cal.bias:+.2f}F var_a={cal.var_a:.3f} var_b={cal.var_b:.3f} "
                         f"mae={acc.mae_f:.2f}F n={cal.n_samples} -> {label}"
                     )
                     city_ok = True

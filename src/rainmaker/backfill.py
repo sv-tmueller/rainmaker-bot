@@ -256,7 +256,7 @@ def build_pairs(
 ) -> list[CalibrationPair]:
     """Join forecasts and actuals on date into calibration pairs."""
     return [
-        CalibrationPair(mu=g.mu, sigma=g.sigma, actual=actuals[d])
+        CalibrationPair(mu=g.mu, sigma=g.sigma, ensemble_var=g.sigma**2, actual=actuals[d])
         for d, g in sorted(forecasts.items())
         if d in actuals
     ]

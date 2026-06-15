@@ -189,7 +189,7 @@ def test_evaluate_market_applies_calibration():
     market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.20)])
     fs = _forecast_set([70, 70, 71, 71])  # raw fit mean 70.5
     cal = Calibration(
-        station="KLGA", variable="TMAX", lead_time=1, bias=2.0, spread_scale=1.0, n_samples=50
+        station="KLGA", variable="TMAX", lead_time=1, bias=2.0, var_a=0.0, var_b=1.0, n_samples=50
     )
     raw = evaluate_market(market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0)
     cald = evaluate_market(
@@ -205,7 +205,7 @@ def test_evaluate_market_low_sample_calibration_falls_back():
     market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.20)])
     fs = _forecast_set([70, 70, 71, 71])
     cal = Calibration(
-        station="KLGA", variable="TMAX", lead_time=1, bias=2.0, spread_scale=1.0, n_samples=5
+        station="KLGA", variable="TMAX", lead_time=1, bias=2.0, var_a=0.0, var_b=1.0, n_samples=5
     )
     out = evaluate_market(
         market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0, calibration=cal

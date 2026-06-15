@@ -33,7 +33,7 @@ def count_rows(conn: Conn, table: str) -> int:
 
 def load_calibration(conn: Conn, station: str, variable: str, lead_time: int) -> Calibration | None:
     row = conn.execute(
-        "SELECT station, variable, lead_time, bias, spread_scale, n_samples "
+        "SELECT station, variable, lead_time, bias, var_a, var_b, n_samples "
         "FROM calibration WHERE station = ? AND variable = ? AND lead_time = ?",
         (station, variable, lead_time),
     ).fetchone()
