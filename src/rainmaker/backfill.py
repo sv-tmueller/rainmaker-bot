@@ -1,12 +1,14 @@
 """Build forecast-vs-actual pairs from history and fit a calibration cell.
 
-Actuals come from NOAA NCEI's token-free daily-summaries service (the GHCND
-station daily max, the closest free proxy to the Weather Underground settling
-value). Historical forecasts come from Open-Meteo's historical-forecast API; the
-ensemble archive does not retain members for past dates, so the predictive
-spread is taken from the multi-model disagreement (mean and std across the
-deterministic models). That is an approximation of the live pooled distribution;
-tighter calibration grows from the bot's own persisted runs over time.
+Actuals source is routed per venue (mirrors settle.py):
+  Polymarket stations (ICAO in ICAO_TO_ASOS_STATION) -> ASOS (Iowa State Mesonet).
+  Kalshi-only stations (KNYC Central Park, KMDW Midway) -> NCEI GHCND daily-summaries.
+
+Historical forecasts come from Open-Meteo's historical-forecast API; the ensemble
+archive does not retain members for past dates, so the predictive spread is taken
+from the multi-model disagreement (mean and std across the deterministic models).
+That is an approximation of the live pooled distribution; tighter calibration grows
+from the bot's own persisted runs over time.
 """
 
 import calendar
@@ -17,6 +19,7 @@ from typing import Any
 import httpx
 
 from rainmaker.config import BACKFILL_DAYS, OPENMETEO_MODELS, Station, season_start_month
+from rainmaker.forecasts.asos import ICAO_TO_ASOS_STATION, fetch_asos_daily_extreme
 from rainmaker.forecasts.base import ForecastSample
 from rainmaker.forecasts.openmeteo import _daily_field
 from rainmaker.probability.calibration import (
@@ -251,6 +254,25 @@ def fetch_historical_samples(
     return out
 
 
+def _calibration_actuals(
+    station: Station,
+    start: date,
+    end: date,
+    client: httpx.Client,
+    variable: str = "TMAX",
+) -> dict[date, float]:
+    """Daily extreme (degrees F) for the calibration window, routed by venue.
+
+    Polymarket stations (ICAO in ICAO_TO_ASOS_STATION) -> ASOS (Iowa State Mesonet),
+    batched over the full window (one request). Mirrors settle.py's ASOS path.
+    Kalshi-only stations (KNYC, KMDW) -> NCEI GHCND daily-summaries (unchanged).
+    """
+    asos_code = ICAO_TO_ASOS_STATION.get(station.icao)
+    if asos_code is not None:
+        return fetch_asos_daily_extreme(asos_code, start, end, client, variable)
+    return fetch_actuals(station.ghcnd_id, start, end, client, variable)  # type: ignore[arg-type]
+
+
 def build_pairs(
     forecasts: dict[date, Gaussian], actuals: dict[date, float]
 ) -> list[CalibrationPair]:
@@ -272,7 +294,7 @@ def run_backfill(
 ) -> tuple[Calibration, Accuracy]:
     """Fetch history, build pairs, fit one calibration cell, measure accuracy."""
     forecasts = fetch_historical_forecasts(station, start, end, client, variable)
-    actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)  # type: ignore[arg-type]
+    actuals = _calibration_actuals(station, start, end, client, variable)
     pairs = build_pairs(forecasts, actuals)
     return fit_calibration(station.icao, variable, lead_time, pairs), compute_accuracy(pairs)
 
@@ -285,14 +307,15 @@ def run_backfill_accuracy(
     end: date,
     client: httpx.Client,
 ) -> dict[int, Accuracy]:
-    """Per-lead forecast accuracy (mae/bias) from the Previous Runs API vs NCEI actuals.
+    """Per-lead forecast accuracy (mae/bias) from the Previous Runs API vs actuals.
 
-    Accuracy needs only the point forecast, so each per-date mean is wrapped in a
-    placeholder-sigma Gaussian to reuse build_pairs/compute_accuracy. Leads with no
-    overlapping actual are omitted.
+    Actuals are sourced by venue (same routing as run_backfill): ASOS for Polymarket
+    stations, NCEI for Kalshi-only stations. Accuracy needs only the point forecast,
+    so each per-date mean is wrapped in a placeholder-sigma Gaussian to reuse
+    build_pairs/compute_accuracy. Leads with no overlapping actual are omitted.
     """
     point = fetch_historical_point_forecasts(station, leads, start, end, client, variable)
-    actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)  # type: ignore[arg-type]
+    actuals = _calibration_actuals(station, start, end, client, variable)
     out: dict[int, Accuracy] = {}
     for lead in leads:
         gaussians = {day: Gaussian(mu=mu, sigma=1.0) for day, mu in point[lead].items()}
