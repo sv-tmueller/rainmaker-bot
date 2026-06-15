@@ -1,0 +1,27 @@
+name: regrade
+# Manual, occasional re-grade of recorded Polymarket settlement outcomes against
+# the current settlement source (ASOS via Mesonet, per #101b). One-time after a
+# settlement-source change; idempotent. Manual dispatch only, never scheduled.
+on:
+  workflow_dispatch: {}
+jobs:
+  regrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync
+      - name: Re-grade Polymarket settlements
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          case "$DATABASE_URL" in
+            postgres://*|postgresql://*) ;;
+            *) echo "DATABASE_URL is not a Postgres DSN; refusing to run (would touch ephemeral SQLite)"; exit 1 ;;
+          esac
+          uv run rainmaker regrade
