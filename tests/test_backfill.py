@@ -363,16 +363,39 @@ def test_season_window_respects_custom_days():
     assert end == date(2026, 6, 19)
 
 
-def test_season_window_prevents_winter_bias_in_spring():
-    """Synthetic: a window straddling winter->spring applies no winter data."""
-    # If we used flat 60 days from 2026-03-30 (30 days into spring),
-    # we'd pull from 2026-01-29 (winter) through 2026-03-29.
-    # season_window clips to 2026-03-01 (spring start), isolating spring data.
-    result_seasonal = season_window(date(2026, 3, 30), days=60)
-    result_flat = (date(2026, 1, 29), date(2026, 3, 29))  # hypothetical unconstrained
-    assert result_seasonal is not None
-    seasonal_start, seasonal_end = result_seasonal
-    flat_start, _ = result_flat
-    # The seasonal window starts strictly after the flat window start
-    assert seasonal_start > flat_start
-    assert seasonal_start == date(2026, 3, 1)  # starts at spring boundary, not 60 days ago
+def test_season_window_clips_to_season_boundary_not_days_back():
+    """Window start is the season boundary when days would reach into a prior season."""
+    # 2026-03-30 is 29 days into spring (MAM starts Mar 1).
+    # 60 days back would reach 2026-01-29 (winter).
+    # season_window must clip to 2026-03-01, not go back 60 days.
+    result = season_window(date(2026, 3, 30), days=60)
+    assert result is not None
+    start, end = result
+    assert start == date(2026, 3, 1)  # season boundary, not today - 60 days
+    assert end == date(2026, 3, 29)
+
+
+def test_seasonal_fit_avoids_cross_season_bias():
+    """Demonstrate that the seasonal clip prevents a winter bias from contaminating spring.
+
+    Setup: synthetic pairs where winter data has a +5F bias and spring data is unbiased.
+    A flat window spanning both seasons would fit ~+2.5F bias (wrong for spring).
+    The season-clipped window fits ~0 (correct for spring).
+    """
+    from rainmaker.probability.calibration import CalibrationPair, fit_calibration
+
+    sigma = 2.0
+    # 30 winter pairs with +5F bias (mu runs warm vs actual)
+    winter_pairs = [
+        CalibrationPair(mu=70.0 + i, sigma=sigma, actual=(70.0 + i) - 5.0) for i in range(30)
+    ]
+    # 30 spring pairs with 0 bias
+    spring_pairs = [CalibrationPair(mu=60.0 + i, sigma=sigma, actual=60.0 + i) for i in range(30)]
+
+    # Flat window: includes winter + spring -> bias near +2.5
+    flat_cal = fit_calibration("KLGA", "TMAX", 1, winter_pairs + spring_pairs)
+    assert flat_cal.bias == pytest.approx(2.5)  # halfway between +5 and 0
+
+    # Season-clipped window: spring only -> bias near 0
+    seasonal_cal = fit_calibration("KLGA", "TMAX", 1, spring_pairs)
+    assert seasonal_cal.bias == pytest.approx(0.0)
