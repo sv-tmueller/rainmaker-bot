@@ -360,10 +360,12 @@ def _london_market_from_fixture():
 def _london_forecast_set(target):
     # Pool centered at 21C (the mode bucket in the fixture).
     # 21C = 69.8F; spread of +-1C in F-space.
+    # NWS is absent (ok=False) because NWS only covers US airports. This is the
+    # real intl scenario: a single open-meteo source.
     f_center = 21 * 9 / 5 + 32  # 69.8F
     samples = [
         ForecastSample(
-            source="nws",
+            source="open-meteo",
             model="m",
             member=None,
             station="EGLC",
@@ -379,8 +381,10 @@ def _london_forecast_set(target):
         target=target,
         samples=samples,
         coverage=[
-            SourceCoverage(source="nws", ok=True, n_samples=5),
             SourceCoverage(source="open-meteo", ok=True, n_samples=5),
+            SourceCoverage(
+                source="nws", ok=False, n_samples=0, error="NWS only covers US airports"
+            ),
         ],
     )
 
@@ -393,6 +397,8 @@ def test_golden_pipeline_on_real_london_fixture():
     assert len(market.buckets) == 11
 
     fs = _london_forecast_set(market.target)
+    # The real intl path: NWS is absent (US-only), so n_sources=1 from open-meteo.
+    assert sum(1 for c in fs.coverage if c.ok and c.n_samples > 0) == 1
     report = evaluate_market(
         market,
         fs,
@@ -402,6 +408,7 @@ def test_golden_pipeline_on_real_london_fixture():
         min_edge=MIN_EDGE,
     )
 
+    assert report.n_sources == 1
     # All 11 buckets have an ask in the fixture.
     assert report.excluded_no_ask == []
     yes_outcomes = [o for o in report.outcomes if o.side == "YES"]

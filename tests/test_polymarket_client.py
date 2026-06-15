@@ -157,3 +157,50 @@ def test_discover_markets_parses_real_london_fixture(httpx_mock):
     # Interior buckets are single-degree ranges (lo=hi).
     interior = [b for b in m.buckets if b.kind == "range"]
     assert all(b.lo == b.hi for b in interior)
+
+
+# ---------------------------------------------------------------------------
+# ICAO guards for Paris / Helsinki / Sao Paulo (#177)
+# ---------------------------------------------------------------------------
+
+
+def test_discover_markets_parses_real_paris_fixture(httpx_mock):
+    """Paris (LFPB, C) from a saved live fixture: ICAO guard and Celsius parsing work."""
+    event = json.loads((FIXTURES / "polymarket_intl_paris.json").read_text())
+    httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[event])
+    with httpx.Client() as client:
+        markets = discover_markets(client)
+    assert len(markets) == 1
+    m = markets[0]
+    assert m.target.station.icao == "LFPB"
+    assert m.target.station.unit == "C"
+    assert m.target.station.ghcnd_id is None
+    assert len(m.buckets) > 0
+
+
+def test_discover_markets_parses_real_helsinki_fixture(httpx_mock):
+    """Helsinki (EFHK, C) from a saved live fixture: ICAO guard and Celsius parsing work."""
+    event = json.loads((FIXTURES / "polymarket_intl_helsinki.json").read_text())
+    httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[event])
+    with httpx.Client() as client:
+        markets = discover_markets(client)
+    assert len(markets) == 1
+    m = markets[0]
+    assert m.target.station.icao == "EFHK"
+    assert m.target.station.unit == "C"
+    assert m.target.station.ghcnd_id is None
+    assert len(m.buckets) > 0
+
+
+def test_discover_markets_parses_real_sao_paulo_fixture(httpx_mock):
+    """Sao Paulo (SBGR, C) from a saved live fixture: ICAO guard and Celsius parsing work."""
+    event = json.loads((FIXTURES / "polymarket_intl_sao_paulo.json").read_text())
+    httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[event])
+    with httpx.Client() as client:
+        markets = discover_markets(client)
+    assert len(markets) == 1
+    m = markets[0]
+    assert m.target.station.icao == "SBGR"
+    assert m.target.station.unit == "C"
+    assert m.target.station.ghcnd_id is None
+    assert len(m.buckets) > 0
