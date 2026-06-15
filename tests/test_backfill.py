@@ -22,6 +22,7 @@ from rainmaker.backfill import (
 )
 from rainmaker.cli import _backfill
 from rainmaker.config import STATIONS
+from rainmaker.forecasts.asos import MESONET_ASOS_URL
 from rainmaker.probability.calibration import CalibrationPair
 from rainmaker.probability.distribution import Gaussian
 
@@ -100,7 +101,9 @@ def test_run_backfill_fits_calibration_and_accuracy_from_history(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
     )
-    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    # KLGA is a Polymarket station (in ICAO_TO_ASOS_STATION): actuals come from ASOS.
+    asos_fixture = (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
     with httpx.Client() as client:
         cal, acc = run_backfill(KLGA, "TMAX", 1, date(2026, 3, 1), date(2026, 3, 5), client)
     assert cal.station == "KLGA"
@@ -163,12 +166,16 @@ def test_fetch_monthly_precip_none_when_unpublished(httpx_mock):
 
 
 def test_run_backfill_tmin_pairs_min_forecast_with_tmin_actual(httpx_mock):
-    rows = [
-        {"DATE": "2026-03-01", "STATION": KLGA.ghcnd_id, "TMIN": "39"},
-        {"DATE": "2026-03-02", "STATION": KLGA.ghcnd_id, "TMIN": "31"},
-    ]
+    # KLGA (Polymarket) -> ASOS. Two readings per day; TMIN uses the minimum.
+    asos_csv = (
+        "station,valid,tmpc\n"
+        "LGA,2026-03-01 06:00,2.0\n"
+        "LGA,2026-03-01 12:00,3.9\n"  # 3.9C -> 38.82F min is 2.0C -> 35.6F
+        "LGA,2026-03-02 06:00,-0.556\n"
+        "LGA,2026-03-02 12:00,1.0\n"  # min is -0.556C -> 30.999F ~ 31F
+    )
     httpx_mock.add_response(url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_HIST_MIN)
-    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=rows)
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_csv)
     with httpx.Client() as client:
         cal, acc = run_backfill(KLGA, "TMIN", 1, date(2026, 3, 1), date(2026, 3, 2), client)
     assert cal.variable == "TMIN"
@@ -203,10 +210,13 @@ def test_fetch_historical_point_forecasts_reduces_hourly_to_daily_mean(httpx_moc
 
 
 def test_run_backfill_accuracy_scores_each_lead(httpx_mock):
+    # KLGA (Polymarket) -> ASOS. Use the 5-day ASOS fixture; only dates 03-01 and 03-02
+    # overlap with the Previous Runs fixture, so 2 pairs per lead are produced.
+    asos_fixture = (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
     httpx_mock.add_response(
         url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
     )
-    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
     with httpx.Client() as client:
         accs = run_backfill_accuracy(
             KLGA, "TMAX", (2, 3), date(2026, 3, 1), date(2026, 3, 2), client
@@ -214,12 +224,12 @@ def test_run_backfill_accuracy_scores_each_lead(httpx_mock):
     assert set(accs) == {2, 3}
     # lead 2: mu 49.0 vs 43 (+6), 37.0 vs 34 (+3) -> bias 4.5, mae 4.5
     assert accs[2].n == 2
-    assert accs[2].bias_f == pytest.approx(4.5)
-    assert accs[2].mae_f == pytest.approx(4.5)
+    assert accs[2].bias_f == pytest.approx(4.5, abs=0.01)
+    assert accs[2].mae_f == pytest.approx(4.5, abs=0.01)
     # lead 3: mu 45.0 vs 43 (+2), 33.5 vs 34 (-0.5) -> bias 0.75, mae 1.25
     assert accs[3].n == 2
-    assert accs[3].bias_f == pytest.approx(0.75)
-    assert accs[3].mae_f == pytest.approx(1.25)
+    assert accs[3].bias_f == pytest.approx(0.75, abs=0.01)
+    assert accs[3].mae_f == pytest.approx(1.25, abs=0.01)
 
 
 def test_fetch_historical_point_forecasts_uses_min_for_tmin(httpx_mock):
@@ -259,8 +269,9 @@ def test_fetch_historical_point_forecasts_raises_value_error_on_open_meteo_error
             fetch_historical_point_forecasts(KLGA, (2,), date(2026, 3, 1), date(2026, 3, 1), client)
 
 
-# 'NYC' now resolves to two settlement stations (LaGuardia and Kalshi's Central
-# Park), so the same mocked endpoints are hit once per station; allow reuse.
+# 'NYC' resolves to two settlement stations (LaGuardia KLGA and Kalshi's Central
+# Park KNYC). KLGA is a Polymarket station -> ASOS (2 requests: lead-1 + accuracy).
+# KNYC is Kalshi-only -> NCEI (2 requests: lead-1 + accuracy).
 @pytest.mark.httpx_mock(can_send_already_matched_responses=True)
 def test_backfill_cli_saves_a_backtest_row_per_lead(httpx_mock, tmp_path, monkeypatch):
     import rainmaker.cli as cli
@@ -271,7 +282,11 @@ def test_backfill_cli_saves_a_backtest_row_per_lead(httpx_mock, tmp_path, monkey
     httpx_mock.add_response(
         url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
     )
-    # NCEI is hit twice: once for lead 1 (run_backfill), once for leads 2-3 (run_backfill_accuracy)
+    # KLGA (Polymarket/ASOS): 2 requests - run_backfill and run_backfill_accuracy
+    asos_fixture = (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
+    # KNYC (Kalshi/NCEI): 2 requests - run_backfill and run_backfill_accuracy
     httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
     httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 3, 6))
