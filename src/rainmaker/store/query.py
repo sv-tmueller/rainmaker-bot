@@ -37,7 +37,14 @@ def load_calibration(conn: Conn, station: str, variable: str, lead_time: int) ->
         "FROM calibration WHERE station = ? AND variable = ? AND lead_time = ?",
         (station, variable, lead_time),
     ).fetchone()
-    return Calibration(**dict(row)) if row is not None else None
+    if row is None:
+        return None
+    d = dict(row)
+    # Rows written by the old code (spread_scale era) have var_a/var_b as NULL after
+    # migration 0008. They cannot be used by the EMOS model, so treat them as absent.
+    if d.get("var_a") is None or d.get("var_b") is None:
+        return None
+    return Calibration(**d)
 
 
 def unsettled_markets(conn: Conn, before: date) -> list[dict[str, Any]]:

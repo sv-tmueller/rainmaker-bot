@@ -125,6 +125,30 @@ def test_migration_adds_calibration_emos_columns():
     assert row["var_b"] == pytest.approx(0.8)
 
 
+def test_load_calibration_returns_none_for_null_emos_columns():
+    """load_calibration returns None when var_a/var_b are NULL (pre-EMOS rows after migration).
+
+    Migration 0008 adds var_a/var_b as nullable columns; rows written by the old
+    code retain NULL in those fields. Passing NULLs into Calibration() would fail
+    Pydantic validation (Field(ge=0) rejects None). The loader must return None
+    instead so the uncalibrated-widen fallback is used.
+    """
+    from rainmaker.store.query import load_calibration
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    # Simulate a legacy row: var_a and var_b are NULL.
+    conn.execute(
+        "INSERT INTO calibration (station, variable, lead_time, bias, var_a, var_b, n_samples)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("KLGA", "TMAX", 1, -0.5, None, None, 30),
+    )
+    conn.commit()
+    result = load_calibration(conn, "KLGA", "TMAX", 1)
+    conn.close()
+    assert result is None
+
+
 def test_apply_migrations_crash_safe_when_alter_already_applied():
     """apply_migrations must succeed when a column was added but never recorded.
 
