@@ -21,18 +21,20 @@ not a Postgres DSN.
 
 ## What is backed up
 
-Row data only (`pg_dump --data-only`). Schema is in git (`store/migrate.py` and
-the base schema); it is not included in the dump.
+Row data only (`pg_dump --data-only`). Schema is in git (`store/db.py` base
+tables and `store/migrate.py` migrations); it is not included in the dump.
 
 ## Restore procedure
 
 1. Download the artifact from GitHub Actions (the run's "db-backup-<id>" artifact).
 2. Decrypt: `gpg --decrypt rainmaker-<timestamp>.sql.gpg > dump.sql`
    Enter the `BACKUP_PASSPHRASE` when prompted.
-3. Apply schema to the target database if it does not already have it:
-   `uv run python -m rainmaker.store.migrate` (or replay migrations manually).
-4. Load the data into a database that already has the schema and is empty (the
-   dump is data-only; inserting into tables that already have rows will produce
+3. Ensure the target database has the schema. Any `uv run rainmaker` command
+   (e.g. `uv run rainmaker run --help`) will call `init_schema` and apply
+   all migrations on connect. Run against an empty database first to initialize
+   it, or apply `store/db.py` and `store/migrate.py` directly if you prefer.
+4. Load the data into the database (it must already have the schema and be
+   empty; the dump is data-only, so inserting into populated tables produces
    duplicate-key errors):
    `psql "$DATABASE_URL" < dump.sql`
 5. Delete the plaintext dump: `rm dump.sql`

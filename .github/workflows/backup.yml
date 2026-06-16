@@ -32,7 +32,7 @@ jobs:
           # "server version mismatch" aborts. Installing from PGDG pins to 17.
           sudo apt-get install -y curl ca-certificates
           sudo install -d /usr/share/postgresql-common/pgdg
-          curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail \
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail \
             https://www.postgresql.org/media/keys/ACCC4CF8.asc
           . /etc/os-release
           sudo sh -c "echo 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $VERSION_CODENAME-pgdg main' > /etc/apt/sources.list.d/pgdg.list"
@@ -59,7 +59,7 @@ jobs:
           echo "ENCRYPTED_FILE=${DUMP_FILE}.gpg" >> "$GITHUB_ENV"
 
       - name: Upload encrypted dump
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: db-backup-${{ github.run_id }}
           path: ${{ env.ENCRYPTED_FILE }}
