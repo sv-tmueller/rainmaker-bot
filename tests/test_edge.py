@@ -643,3 +643,73 @@ def test_c_floor_binds_at_min_sigma_c() -> None:
     # And the floored value must be distinctly less than the F floor,
     # proving this test would fail if the wrong floor were passed.
     assert report.sigma < MIN_SIGMA_F
+
+
+# ---------------------------------------------------------------------------
+# Per-side floor: lower bar for NO (longshot) regime, higher for YES (#85)
+# ---------------------------------------------------------------------------
+
+
+def test_per_side_floor_no_recommended_yes_blocked():
+    """A NO bet whose p_no clears floor_no but not floor_yes must be recommended;
+    a YES bet at the same probability must be blocked.
+
+    This is the gate-binding property. A flat-floor mutation (floor_no = floor_yes)
+    collapses the asymmetry: the NO bet flips to recommended=False.
+
+    Concrete wiring: floor_no=0.80, floor_yes=0.90, bucket "72-73F" with forecast
+    centered at 70F, sigma=1.5F (floored). p_win(YES) for 72-73F ~ 0.149;
+    p_no ~ 0.851. This clears floor_no=0.80 but not floor_yes=0.90.
+    """
+    market = _market(
+        [
+            _bucket(
+                "72-73\u00b0F",
+                "range",
+                lo=72,
+                hi=73,
+                best_ask=0.20,
+                no_ask=0.15,
+            )
+        ]
+    )
+    # Forecast centered at 70F, sigma floored to 1.5F.
+    # p_win(YES) for 72-73 ~ 0.149 (Z=1.67); p_no ~ 0.851.
+    fs = _forecast_set([69, 70, 70, 71, 71])
+
+    # Per-side floor: floor_no=0.80, floor_yes=0.90, min_sources=2.
+    report = evaluate_market(
+        market,
+        fs,
+        floor=0.90,
+        floor_no=0.80,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.05,
+    )
+    sides = {o.side: o for o in report.outcomes}
+    yes, no = sides["YES"], sides["NO"]
+
+    # Gate-binding assertions: prove the test is not vacuous.
+    assert yes.p_win < 0.90, f"YES p_win={yes.p_win} should be below floor_yes=0.90"
+    assert no.p_win > 0.80, f"NO p_win={no.p_win} should clear floor_no=0.80"
+    assert no.p_win < 0.90, f"NO p_win={no.p_win} should be below floor_yes=0.90"
+    assert no.edge >= 0.05, f"NO edge={no.edge} must clear min_edge"
+
+    assert yes.recommended is False, "YES must be blocked (p_win < floor_yes=0.90)"
+    assert no.recommended is True, "NO must be recommended (p_win > floor_no=0.80)"
+
+    # Flat-floor mutation: floor_no = floor_yes = 0.90 collapses the asymmetry.
+    report_flat = evaluate_market(
+        market,
+        fs,
+        floor=0.90,
+        floor_no=0.90,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.05,
+    )
+    no_flat = next(o for o in report_flat.outcomes if o.side == "NO")
+    assert no_flat.recommended is False, (
+        "NO must flip to not-recommended when floor_no = floor_yes = 0.90 (flat-floor mutation)"
+    )
