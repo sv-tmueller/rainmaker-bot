@@ -28,8 +28,9 @@ from rainmaker.pnl_backtest import (
     replay_market,
     score,
 )
+from rainmaker.polymarket.markets import parse_market
 from rainmaker.polymarket.prices import CLOB_PRICES_URL, PricePoint
-from rainmaker.polymarket.trades import TRADES_URL
+from rainmaker.polymarket.trades import TRADES_URL, FillPoint
 from rainmaker.probability.distribution import fit_gaussian
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -456,13 +457,21 @@ def _closed_events_with_condids() -> list[dict[str, Any]]:
 def test_backtest_pnl_trades_mode_uses_fill_as_ask(httpx_mock):
     """In trades mode, fill prices from the trades endpoint replace mid+spread asks.
 
-    The trades fixture has:
-    - lead 0: fill at ts 1772452750 (50s before settlement 1772452800) -> price 0.11
-    - lead 1: fill at ts 1772366350 (50s before lead-1 target 1772366400) -> price 0.12
-    - lead 2, lead 3: no fills -> fallback to mid (0.15 from CLOB history)
+    The trades fixture has fills for the "38F or higher" bucket (d0=YES, d1=NO):
+    - Market 1 (March 2, settlement_ts=1772452800):
+      lead 0 (target=1772452800): d0 fill at 0.11, d1 fill at 0.90 -> NO ask = 0.90
+      lead 1 (target=1772366400): d0 fill at 0.12, d1 no fill -> NO ask = 0.85 (fallback)
+      leads 2, 3: no fills -> NO ask = 0.85 (fallback)
+    - Market 2 (March 3, settlement_ts=1772539200):
+      lead 0 (target=1772539200): no fills -> NO ask = 0.85 (fallback)
+      lead 1 (target=1772452800): d0 fill at 0.11, d1 fill at 0.90 -> NO ask = 0.90
+      lead 2 (target=1772366400): d0 fill at 0.12, d1 no fill -> NO ask = 0.85 (fallback)
+      lead 3: no fills -> NO ask = 0.85 (fallback)
 
-    Both the mid path and the trades path should produce bets, but the ask differs:
-    mid path: 0.15; trades path for leads 0,1: 0.11 / 0.12 (the fills).
+    Fill coverage: market 1 uses fills at leads {0,1}, market 2 at leads {1,2} -> 4 total.
+    The recommended "38F or higher" NO bet wins for both markets (actuals 34F/35F).
+    Trades-mode total_pnl = 1.10 vs mid-mode 1.20 because two bets pay the higher
+    0.90 fill ask instead of the 0.85 mid complement, reducing payout from 0.15 to 0.10.
     """
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
@@ -489,8 +498,96 @@ def test_backtest_pnl_trades_mode_uses_fill_as_ask(httpx_mock):
     assert result.fill_coverage is not None
     # two markets, four leads each = 8 total lead-market combinations
     assert result.fill_coverage.n_leads == 8
-    # leads 0 and 1 have fills in the trades fixture (per market)
-    assert result.fill_coverage.fills_used == 4  # 2 markets * 2 leads with fills
+    # market 1: fills at leads {0,1}; market 2: fills at leads {1,2} -> 4 total
+    assert result.fill_coverage.fills_used == 4
+    # End-to-end: fills flow into asks -> lower payouts when NO ask is 0.90 (d1 fill)
+    # vs. mid complement 0.85. Two such leads (market1-lead0, market2-lead1) each
+    # reduce payout by 0.05, so total_pnl = 1.20 - 0.10 = 1.10 (not 1.20 as in mid mode).
+    assert result.overall.total_pnl == pytest.approx(1.10)
+
+
+def test_replay_market_fill_coverage_distribution_per_market(httpx_mock):
+    """replay_market fill coverage differs by market: March 2 gets fills at leads {0,1},
+    March 3 at leads {1,2} - same fixture trades, different settlement offsets.
+
+    Both markets share the same fill timestamps (d0 at 1772452750/1772366350,
+    d1 at 1772452600). Against March 2 settlement_ts=1772452800, those land on
+    leads 0 and 1. Against March 3 settlement_ts=1772539200, leads 1 and 2.
+    Each market therefore has fills_used == 2.
+    """
+    # Two separate forecast fetches: one per market date.
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+    )
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+    )
+
+    # Parse both NYC March markets from the fixture with conditionIds injected.
+    events = _closed_events_with_condids()
+    markets_march = [
+        parse_market(ev)
+        for ev in events
+        if ev.get("slug", "").startswith("highest-temperature-in-nyc-on-march")
+    ]
+    # Settlement timestamps: March 2 = 1772452800, March 3 = 1772539200.
+    settlement_dts = [
+        datetime.fromisoformat(ev["endDate"].replace("Z", "+00:00"))
+        for ev in events
+        if ev.get("slug", "").startswith("highest-temperature-in-nyc-on-march")
+    ]
+
+    # Build fill_histories directly from the trades fixture (no HTTP needed).
+    d0_fills = [
+        FillPoint(t=f["timestamp"], p=f["price"])
+        for f in _trades_fixture_raw()
+        if f["side"] == "BUY" and f["asset"] == "d0"
+    ]
+    d1_fills = [
+        FillPoint(t=f["timestamp"], p=f["price"])
+        for f in _trades_fixture_raw()
+        if f["side"] == "BUY" and f["asset"] == "d1"
+    ]
+    # Actuals: March 2 = 34F, March 3 = 35F (from the NCEI fixture).
+    actuals_by_date = {"2026-03-02": 34.0, "2026-03-03": 35.0}
+    clob_series = [PricePoint(t=p["t"], p=p["p"]) for p in _clob_history()["history"]]
+
+    per_market_fills_used = []
+    with httpx.Client() as client:
+        for market, settlement_dt in zip(markets_march, settlement_dts, strict=True):
+            samples = fetch_historical_samples(
+                market.target.station,
+                market.target.local_date,
+                market.target.local_date,
+                client,
+            )[market.target.local_date]
+            actual = actuals_by_date[str(market.target.local_date)]
+            histories = {b.yes_token_id: clob_series for b in market.buckets}
+            fill_histories: dict[str, list[FillPoint]] = {}
+            for b in market.buckets:
+                if b.label == "38°F or higher":
+                    fill_histories[b.yes_token_id] = d0_fills
+                    fill_histories[b.no_token_id] = d1_fills
+
+            _, fills_used = replay_market(
+                market,
+                forecast_set_from_samples(market.target, samples),
+                actual,
+                histories,
+                settlement_dt,
+                leads=(0, 1, 2, 3),
+                floor=0.80,
+                min_sources=1,
+                min_sigma=MIN_SIGMA_F,
+                min_edge=0.05,
+                fill_histories=fill_histories,
+            )
+            per_market_fills_used.append(fills_used)
+
+    # Market 1 (March 2): fills land at leads 0 and 1.
+    # Market 2 (March 3): same fill timestamps land at leads 1 and 2.
+    # Each market contributes fills_used == 2.
+    assert per_market_fills_used == [2, 2]
 
 
 def test_backtest_pnl_mid_mode_no_fill_coverage(httpx_mock):
@@ -546,5 +643,5 @@ def test_render_pnl_report_shows_trades_source_and_coverage():
     md, _payload = render_pnl_report(result)
     lowered = md.lower()
     assert "trades" in lowered or "fill" in lowered
-    # coverage should appear
-    assert "4" in md and "8" in md
+    # coverage should appear as "4 of 8 lead-market slots..."
+    assert "4 of 8" in md

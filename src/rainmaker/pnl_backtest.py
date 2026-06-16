@@ -17,6 +17,7 @@ Caveats baked in by design:
   the mid when available; a fill IS the ask paid, so no spread is added on top.
 """
 
+import json
 from collections import defaultdict
 from collections.abc import Sequence
 from datetime import date, datetime
@@ -314,8 +315,6 @@ def _parse_closed_markets(
     Also returns a mapping of yes_token_id -> conditionId for each sub-market
     that carries a conditionId field (used in trades mode).
     """
-    import json as _json
-
     out: list[tuple[Market, datetime, dict[str, str]]] = []
     for ev in events:
         try:
@@ -331,7 +330,7 @@ def _parse_closed_markets(
         for raw_sub in ev.get("markets", []):
             cond_id = raw_sub.get("conditionId")
             if cond_id:
-                tokens = _json.loads(raw_sub["clobTokenIds"])
+                tokens = json.loads(raw_sub["clobTokenIds"])
                 if tokens:
                     cond_ids[tokens[0]] = cond_id
         out.append((market, datetime.fromisoformat(ev["endDate"]), cond_ids))
