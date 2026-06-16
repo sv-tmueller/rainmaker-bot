@@ -10,10 +10,18 @@ Iowa State Mesonet (IEM) ASOS carries full METAR history for all four
 international Polymarket settlement stations (EGLC, LFPB, EFHK, SBGR). When
 fetched without the `report_type=3` filter (all obs types, not just routine
 hourly), daily TMAX and TMIN derived from spot-tmpc readings match Wunderground
-settlement values exactly across 36 TMAX spot-checks and 20 TMIN spot-checks
-spanning 2024-2026: zero bucket flips, zero mean delta. No new dependency: this
-is the same IEM endpoint already used for US ASOS settlement in
+published hourly METAR observations across 74 TMAX spot-checks and 20 TMIN
+spot-checks spanning 2024-2026: zero bucket flips, zero mean delta. No new
+dependency: this is the same IEM endpoint already used for US ASOS settlement in
 `forecasts/asos.py`.
+
+**Important scope limit:** The comparison validates that IEM and WU agree on the
+METAR obs stream (both ingest the same source). It does not directly measure
+agreement with WU's displayed daily settlement value, which could not be fetched
+independently (daily summary API returns 401 - paid endpoint; web page is
+Angular-rendered). The settlement-flip risk is expected to be zero because WU
+settles on the METAR stream, but this remains an inference, not a direct
+measurement.
 
 ---
 
@@ -112,16 +120,16 @@ integer-Celsius values. Step (2)-(3) is what this spike confirms directly. Step
 (1) is what is asserted (WU's settlement methodology) but not independently
 cross-checked.
 
-### TMAX results (56 spot-checks)
+### TMAX results (74 spot-checks)
 
 | Station | Dates tested | Zero-delta | Flips | Mean delta | Max |delta| |
 |---------|-------------|-----------|-------|-----------|-----|
-| EGLC | 16 (Jun26 x6, May26 x10, 2024-25 x5+5) | 16/16 | 0 | 0.00C | 0.0C |
+| EGLC | 21 (Jun26 x6, May26 x10, historical x5) | 21/21 | 0 | 0.00C | 0.0C |
 | LFPB | 16 (Jun26 x6, May26 x10) | 16/16 | 0 | 0.00C | 0.0C |
-| EFHK | 16 (Jun26 x6, May26 x10, 2024-25 x5+5) | 16/16 | 0 | 0.00C | 0.0C |
-| SBGR | 10 (Jun26 x6, May26 x10) | 10/10 | 0 | 0.00C | 0.0C |
+| EFHK | 21 (Jun26 x6, May26 x10, historical x5) | 21/21 | 0 | 0.00C | 0.0C |
+| SBGR | 16 (Jun26 x6, May26 x10) | 16/16 | 0 | 0.00C | 0.0C |
 
-Total: 56 TMAX spot-checks, 0 flips, 0.00C mean delta.
+Total: 74 TMAX spot-checks, 0 flips, 0.00C mean delta.
 
 ### TMIN results (20 spot-checks)
 
@@ -144,9 +152,10 @@ whole-degree-C integers that are exactly the METAR spot readings IEM carries.
 - The comparison is not fully independent (see Method note above). An alternative
   ground truth such as OGIMET or WMO CLIMAT archives would provide an independent
   cross-check. That was out of scope for this spike.
-- 56 TMAX + 20 TMIN spot-checks is a shorter baseline than the #101a analysis
+- 74 TMAX + 20 TMIN spot-checks is a shorter baseline than the #101a analysis
   (~45 days of continuous data). A 90-day post-implementation backcheck per
-  station is recommended before enabling intl betting recommendations.
+  station is recommended before enabling intl betting recommendations (see GO
+  condition #4 for what that backcheck must cover).
 
 ---
 
@@ -175,9 +184,10 @@ IEM with:
 
 - History depth exceeding 10 years
 - 24-48 obs/day cadence
-- Zero delta vs Wunderground settlement values across 76 spot-checks (56 TMAX
-  + 20 TMIN) over 2024-2026, spanning seasons, multiple temperature ranges, and
-  DST transitions
+- Zero delta vs Wunderground hourly METAR observations across 94 spot-checks
+  (74 TMAX + 20 TMIN) over 2024-2026, spanning seasons, multiple temperature
+  ranges, and DST transitions (both IEM and WU draw from the same METAR feed;
+  see section 3 for the independence caveat)
 
 The only implementation wrinkle (missing SPECI obs from `report_type=3`) has a
 one-line fix. The free-sources position is intact. No new vendor, no API key,
@@ -189,7 +199,10 @@ no additional cost.
 2. Reduce by local calendar day using `station.timezone` and `zoneinfo.ZoneInfo`.
 3. Return Celsius; skip F conversion for `station.unit == "C"`.
 4. Run a 90-day post-implementation backcheck per station before enabling intl
-   betting recommendations.
+   betting recommendations. The backcheck must validate against an independent
+   daily extreme - SYNOP/CLIMAT Tmax/Tmin (a separate report type from aviation
+   METAR), OGIMET daily summaries, or scraped WU published daily highs - not a
+   repeat of the IEM-vs-WU-hourly comparison, which is same-source.
 
 ---
 
