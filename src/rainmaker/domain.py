@@ -36,6 +36,7 @@ def parse_bucket_label(label: str) -> tuple[BucketKind, int | None, int | None, 
     "70-71°F"        -> ("range", 70, 71, None)
     "78°F or higher" -> ("above", None, None, 78)
     "-10--5°F"       -> ("range", -10, -5, None)
+    "15°C"           -> ("range", 15, 15, None)  single-degree Celsius bucket
     """
     lowered = label.lower()
     if "below" in lowered:
@@ -49,12 +50,18 @@ def parse_bucket_label(label: str) -> tuple[BucketKind, int | None, int | None, 
             raise ValueError(f"no threshold in above-bucket label: {label!r}")
         return ("above", None, None, int(match.group(1)))
     match = _TEMP_RANGE_RE.search(label)
-    if match is None:
-        raise ValueError(f"unrecognized bucket label: {label!r}")
-    lo, hi = int(match.group(1)), int(match.group(2))
-    if lo >= hi:
-        raise ValueError(f"inverted range bucket label: {label!r}")
-    return ("range", lo, hi, None)
+    if match is not None:
+        lo, hi = int(match.group(1)), int(match.group(2))
+        if lo >= hi:
+            raise ValueError(f"inverted range bucket label: {label!r}")
+        return ("range", lo, hi, None)
+    # Single-degree Celsius bucket: "15°C" -> range with lo=hi=15.
+    # Polymarket intl markets use one bucket per whole degree.
+    single = _TEMP_THRESHOLD_RE.search(label)
+    if single is not None:
+        v = int(single.group(1))
+        return ("range", v, v, None)
+    raise ValueError(f"unrecognized bucket label: {label!r}")
 
 
 class Bucket(BaseModel):

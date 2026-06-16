@@ -4,8 +4,10 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from rainmaker.config import STATIONS, Variable, build_target
+from rainmaker.config import INTL_STATIONS, STATIONS, Target, Variable
 from rainmaker.domain import Bucket, Market, parse_bucket_label
+
+_ALL_TEMP_STATIONS = {**STATIONS, **INTL_STATIONS}
 
 _TITLE_RE = re.compile(r"(highest|lowest) temperature in (.+?) on .+", re.IGNORECASE)
 
@@ -53,7 +55,7 @@ def parse_market(event: dict[str, Any]) -> Market:
         raise ValueError(f"not a temperature market title: {title!r}")
     variable: Variable = "TMAX" if match.group(1).lower() == "highest" else "TMIN"
     city = match.group(2).strip()
-    station = STATIONS[city]  # KeyError for an unknown city is intended
+    station = _ALL_TEMP_STATIONS[city]  # KeyError for an unknown city is intended
     if station.icao not in event["description"]:
         raise ValueError(
             f"resolution station {station.icao} not named in market {event['id']} rules"
@@ -68,6 +70,6 @@ def parse_market(event: dict[str, Any]) -> Market:
             "cannot safely derive the settlement date"
         )
     local_date = end.astimezone(ZoneInfo(station.timezone)).date()
-    target = build_target(city, variable, local_date)
+    target = Target(station=station, variable=variable, local_date=local_date)
     buckets = [parse_bucket(m) for m in event["markets"]]
     return Market(id=event["id"], slug=event["slug"], title=title, target=target, buckets=buckets)

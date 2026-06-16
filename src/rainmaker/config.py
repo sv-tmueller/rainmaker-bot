@@ -161,6 +161,56 @@ STATIONS: dict[str, Station] = {
     ),
 }
 
+# International Celsius temperature markets. Station identity verified from
+# Polymarket rule text (Wunderground URL slug). These rows are advisory-only:
+# ghcnd_id=None (no NCEI proxy), no settlement or calibration (#103c).
+INTL_STATIONS: dict[str, Station] = {
+    "London": Station(
+        city="London",
+        icao="EGLC",
+        name="London City Airport",
+        lat=51.5048,
+        lon=0.0495,
+        timezone="Europe/London",
+        wunderground_url="https://www.wunderground.com/history/daily/gb/london/EGLC",
+        ghcnd_id=None,
+        unit="C",
+    ),
+    "Paris": Station(
+        city="Paris",
+        icao="LFPB",
+        name="Paris-Le Bourget Airport",
+        lat=48.9694,
+        lon=2.4414,
+        timezone="Europe/Paris",
+        wunderground_url="https://www.wunderground.com/history/daily/fr/bonneuil-en-france/LFPB",
+        ghcnd_id=None,
+        unit="C",
+    ),
+    "Helsinki": Station(
+        city="Helsinki",
+        icao="EFHK",
+        name="Helsinki Vantaa Airport",
+        lat=60.3183,
+        lon=24.9630,
+        timezone="Europe/Helsinki",
+        wunderground_url="https://www.wunderground.com/history/daily/fi/vantaa/EFHK",
+        ghcnd_id=None,
+        unit="C",
+    ),
+    "Sao Paulo": Station(
+        city="Sao Paulo",
+        icao="SBGR",
+        name="Sao Paulo-Guarulhos International Airport",
+        lat=-23.4356,
+        lon=-46.4731,
+        timezone="America/Sao_Paulo",
+        wunderground_url="https://www.wunderground.com/history/daily/br/guarulhos/SBGR",
+        ghcnd_id=None,
+        unit="C",
+    ),
+}
+
 # Monthly precipitation settles on a different station than the temperature
 # markets: NYC on Central Park (not LaGuardia), Seattle on the "Seattle City
 # Area" threaded record at Sand Point WFO (not SeaTac). Both GHCND ids were

@@ -17,6 +17,7 @@ from rainmaker.config import (
     DB_PATH,
     KALSHI_STATIONS,
     MIN_EDGE,
+    MIN_SIGMA_C,
     MIN_SIGMA_F,
     MIN_SOURCES,
     PRECIP_CLIMATOLOGY_YEARS,
@@ -26,7 +27,7 @@ from rainmaker.config import (
     Station,
     Target,
 )
-from rainmaker.domain import PrecipTarget
+from rainmaker.domain import Market, PrecipTarget
 from rainmaker.forecasts.aggregate import aggregate
 from rainmaker.forecasts.base import ForecastSet
 from rainmaker.forecasts.nws import NwsSource
@@ -62,6 +63,11 @@ from rainmaker.store.record import (
 from rainmaker.tracking import compute_calibration, compute_pnl, write_snapshot
 
 SUPPORTED_VARIABLES = {"TMAX", "TMIN"}
+
+
+def _sigma_floor(market: Market) -> float:
+    """Return the sigma floor appropriate for the market's settlement unit."""
+    return MIN_SIGMA_C if market.target.station.unit == "C" else MIN_SIGMA_F
 
 
 def _today() -> date:
@@ -146,7 +152,7 @@ def _run(reports_dir: str, db_path: str) -> None:
                 forecast_set,
                 floor=CONFIDENCE_FLOOR,
                 min_sources=MIN_SOURCES,
-                min_sigma=MIN_SIGMA_F,
+                min_sigma=_sigma_floor(market),
                 min_edge=MIN_EDGE,
                 calibration=calibration,
             )
@@ -175,7 +181,7 @@ def _run(reports_dir: str, db_path: str) -> None:
                 forecast_set,
                 floor=CONFIDENCE_FLOOR,
                 min_sources=MIN_SOURCES,
-                min_sigma=MIN_SIGMA_F,
+                min_sigma=_sigma_floor(market),
                 min_edge=MIN_EDGE,
                 calibration=calibration,
             )

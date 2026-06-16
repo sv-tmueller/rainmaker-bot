@@ -62,6 +62,10 @@ def evaluate_market(
 ) -> MarketReport:
     unit = market.target.station.unit
     n_sources = sum(1 for c in forecast_set.coverage if c.ok and c.n_samples > 0)
+    # Intl markets (ghcnd_id is None) have no NCEI/ASOS settlement proxy, so NWS
+    # (US-only) never returns data. One live source is the maximum available.
+    # US markets always require min_sources because they have both NWS and open-meteo.
+    effective_min_sources = 1 if market.target.station.ghcnd_id is None else min_sources
     common: dict[str, Any] = dict(
         market_id=market.id,
         title=market.title,
@@ -96,7 +100,7 @@ def evaluate_market(
         # bets (pay 0.99 to win 0.01) out of the recommendations.
         if bucket.best_ask is not None and bucket.best_ask > 0:
             edge = p_win - bucket.best_ask
-            recommended = p_win >= floor and n_sources >= min_sources and edge >= min_edge
+            recommended = p_win >= floor and n_sources >= effective_min_sources and edge >= min_edge
             outcomes.append(
                 RankedOutcome(
                     bucket_label=bucket.label,
@@ -114,7 +118,9 @@ def evaluate_market(
         if bucket.no_ask is not None and 0 < bucket.no_ask < 1:
             p_no = 1 - p_win
             edge_no = p_no - bucket.no_ask
-            recommended_no = p_no >= floor and n_sources >= min_sources and edge_no >= min_edge
+            recommended_no = (
+                p_no >= floor and n_sources >= effective_min_sources and edge_no >= min_edge
+            )
             outcomes.append(
                 RankedOutcome(
                     bucket_label=bucket.label,

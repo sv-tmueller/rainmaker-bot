@@ -194,3 +194,58 @@ def test_min_sigma_c_is_fahrenheit_floor_times_five_ninths():
     import pytest
 
     assert MIN_SIGMA_C == pytest.approx(MIN_SIGMA_F * 5 / 9, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# International Celsius city registry (#177)
+# ---------------------------------------------------------------------------
+
+
+def test_intl_stations_present() -> None:
+    from rainmaker.config import INTL_STATIONS
+
+    # Top-4 most-liquid intl cities by Polymarket volume, station from rule text.
+    assert "London" in INTL_STATIONS
+    assert "Paris" in INTL_STATIONS
+    assert "Helsinki" in INTL_STATIONS
+    assert "Sao Paulo" in INTL_STATIONS
+
+
+def test_intl_stations_are_celsius_with_no_ghcnd() -> None:
+    from rainmaker.config import INTL_STATIONS
+
+    for city, s in INTL_STATIONS.items():
+        assert s.unit == "C", f"{city} should be unit=C"
+        assert s.ghcnd_id is None, f"{city} ghcnd_id must be None (advisory-only)"
+
+
+def test_intl_station_icao_matches_rule_text() -> None:
+    from rainmaker.config import INTL_STATIONS
+
+    # ICAOs verified from Polymarket rule text (Wunderground URL slug).
+    assert INTL_STATIONS["London"].icao == "EGLC"  # London City Airport
+    assert INTL_STATIONS["Paris"].icao == "LFPB"  # Paris-Le Bourget
+    assert INTL_STATIONS["Helsinki"].icao == "EFHK"  # Helsinki Vantaa
+    assert INTL_STATIONS["Sao Paulo"].icao == "SBGR"  # Guarulhos
+
+
+def test_intl_stations_do_not_appear_in_us_stations() -> None:
+    from rainmaker.config import INTL_STATIONS
+
+    for city in INTL_STATIONS:
+        assert city not in STATIONS, f"{city} must not appear in US STATIONS"
+
+
+def test_every_intl_station_is_valid() -> None:
+    import zoneinfo
+
+    from rainmaker.config import INTL_STATIONS
+
+    for city, s in INTL_STATIONS.items():
+        assert s.city == city
+        assert len(s.icao) == 4, f"{city} ICAO must be 4 chars"
+        assert s.name, city
+        assert -90 <= s.lat <= 90, city
+        assert -180 <= s.lon <= 180, city
+        assert s.wunderground_url.startswith("https://"), city
+        zoneinfo.ZoneInfo(s.timezone)

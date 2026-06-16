@@ -5,7 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from rainmaker.config import CONFIDENCE_FLOOR, MIN_EDGE, MIN_SOURCES, PRECIP_VAR_FLOOR, build_target
+from rainmaker.config import (
+    CONFIDENCE_FLOOR,
+    MIN_EDGE,
+    MIN_SIGMA_C,
+    MIN_SIGMA_F,
+    MIN_SOURCES,
+    PRECIP_VAR_FLOOR,
+    Station,
+    Target,
+    build_target,
+)
 from rainmaker.domain import Bucket, Market
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.forecasts.precip import PrecipForecastSet
@@ -364,3 +374,272 @@ def test_evaluate_precip_market_emits_no_side_complement():
     for o in no:
         assert o.p_win == pytest.approx(1 - yes_by_label[o.bucket_label])
     assert report.excluded_no_ask == []
+
+
+# ---------------------------------------------------------------------------
+# Binding Celsius sigma-floor test (#177)
+# ---------------------------------------------------------------------------
+
+_LONDON_STATION = Station(
+    city="London",
+    icao="EGLC",
+    name="London City Airport",
+    lat=51.505,
+    lon=0.055,
+    timezone="Europe/London",
+    wunderground_url="https://www.wunderground.com/history/daily/gb/london/EGLC",
+    ghcnd_id=None,
+    unit="C",
+)
+
+
+def _london_c_market() -> Market:
+    """Synthetic 1°C ladder (16-18°C) for a London-style C market."""
+    target = Target(station=_LONDON_STATION, variable="TMAX", local_date=date(2026, 6, 15))
+    return Market(
+        id="london_floor",
+        slug="highest-temperature-london",
+        title="Highest temperature in London on Jun 15?",
+        target=target,
+        buckets=[
+            _bucket("15°C or below", "below", threshold=15, best_ask=0.30),
+            _bucket("16°C", "range", lo=16, hi=16, best_ask=0.40),
+            _bucket("17°C", "range", lo=17, hi=17, best_ask=0.20),
+            _bucket("18°C or higher", "above", threshold=18, best_ask=0.10),
+        ],
+    )
+
+
+def _tight_c_forecast_set(target: Target) -> ForecastSet:
+    # Very tight pool: all samples at exactly 16C (= 60.8F).
+    # Raw sigma will be ~0; the C floor must bind at MIN_SIGMA_C.
+    f_value = 16 * 9 / 5 + 32  # 60.8F
+    samples = [
+        ForecastSample(
+            source="nws",
+            model="m",
+            member=None,
+            station="EGLC",
+            variable="TMAX",
+            target_date=target.local_date,
+            lead_time_days=1,
+            value_f=f_value,
+            issued_at=None,
+        )
+        for _ in range(6)
+    ]
+    return ForecastSet(
+        target=target,
+        samples=samples,
+        coverage=[
+            SourceCoverage(source="nws", ok=True, n_samples=6),
+            SourceCoverage(source="open-meteo", ok=True, n_samples=6),
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Source-gate discriminator: intl markets relax to 1, US markets stay at 2 (#177)
+# ---------------------------------------------------------------------------
+
+_US_STATION_FOR_GATE = Station(
+    city="NYC",
+    icao="KLGA",
+    name="LaGuardia Airport",
+    lat=40.7792,
+    lon=-73.8803,
+    timezone="America/New_York",
+    wunderground_url="https://www.wunderground.com/history/daily/us/ny/new-york-city/KLGA",
+    ghcnd_id="USW00014732",
+)
+
+_INTL_STATION_FOR_GATE = Station(
+    city="London",
+    icao="EGLC",
+    name="London City Airport",
+    lat=51.505,
+    lon=0.055,
+    timezone="Europe/London",
+    wunderground_url="https://www.wunderground.com/history/daily/gb/london/EGLC",
+    ghcnd_id=None,
+    unit="C",
+)
+
+
+def _gate_market_intl() -> Market:
+    """Intl market with an above-18C tail bucket priced cheaply so p_win is high."""
+    target = Target(station=_INTL_STATION_FOR_GATE, variable="TMAX", local_date=date(2026, 6, 15))
+    # Forecast will be centered at 20C; "18C or higher" captures most of the mass.
+    # best_ask=0.05 -> edge = p_win - 0.05 >> min_edge when p_win is near 1.
+    return Market(
+        id="gate_intl",
+        slug="gate-intl",
+        title="Highest temperature in London on Jun 15?",
+        target=target,
+        buckets=[_bucket("18°C or higher", "above", threshold=18, best_ask=0.05)],
+    )
+
+
+def _gate_market_us() -> Market:
+    """US market: forecast centered at 70F, bucket "68F or higher", so p_win > CONFIDENCE_FLOOR
+    and edge > MIN_EDGE. Only the source gate (n_sources=1 < min_sources=2) blocks it.
+    """
+    target = Target(station=_US_STATION_FOR_GATE, variable="TMAX", local_date=date(2026, 5, 31))
+    return Market(
+        id="gate_us",
+        slug="gate-us",
+        title="Highest temperature in NYC on May 31?",
+        target=target,
+        buckets=[_bucket("68°F or higher", "above", threshold=68, best_ask=0.05)],
+    )
+
+
+def _single_source_c(target: Target) -> ForecastSet:
+    """One live source (NWS absent), forecast values as F, centered at 20C (68F)."""
+    samples = [
+        ForecastSample(
+            source="open-meteo",
+            model="m",
+            member=None,
+            station=target.station.icao,
+            variable="TMAX",
+            target_date=target.local_date,
+            lead_time_days=1,
+            value_f=68.0 + offset,  # 20C +/- small F offsets
+            issued_at=None,
+        )
+        for offset in (-2.0, -1.0, 0.0, 1.0, 2.0)
+    ]
+    return ForecastSet(
+        target=target,
+        samples=samples,
+        coverage=[
+            SourceCoverage(source="open-meteo", ok=True, n_samples=5),
+            # NWS absent: the real intl scenario (NWS is US-only)
+            SourceCoverage(source="nws", ok=False, n_samples=0, error="not available"),
+        ],
+    )
+
+
+def _single_source_f(target: Target) -> ForecastSet:
+    """One live source (NWS absent), forecast centered at 70F (above the 68F threshold)."""
+    samples = [
+        ForecastSample(
+            source="open-meteo",
+            model="m",
+            member=None,
+            station=target.station.icao,
+            variable="TMAX",
+            target_date=target.local_date,
+            lead_time_days=1,
+            value_f=70.0 + offset,
+            issued_at=None,
+        )
+        for offset in (-2.0, -1.0, 0.0, 1.0, 2.0)
+    ]
+    return ForecastSet(
+        target=target,
+        samples=samples,
+        coverage=[
+            SourceCoverage(source="open-meteo", ok=True, n_samples=5),
+            SourceCoverage(source="nws", ok=False, n_samples=0, error="not available"),
+        ],
+    )
+
+
+def test_intl_market_single_source_recommended() -> None:
+    """An intl market (ghcnd_id=None) with real n_sources=1 must produce recommended=True.
+
+    This is the RED test: before the gate change, min_sources=2 blocks all intl recs
+    when n_sources=1. After the fix, evaluate_market internally relaxes to
+    effective_min_sources=1 for ghcnd_id=None stations.
+    """
+    market = _gate_market_intl()
+    assert market.target.station.ghcnd_id is None
+
+    fs = _single_source_c(market.target)
+    assert sum(1 for c in fs.coverage if c.ok and c.n_samples > 0) == 1  # real 1-source
+
+    # Call site always passes MIN_SOURCES=2; the function relaxes internally for intl.
+    report = evaluate_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_C,
+        min_edge=MIN_EDGE,
+    )
+    assert report.n_sources == 1
+    yes = [o for o in report.outcomes if o.side == "YES"]
+    assert len(yes) == 1
+    assert yes[0].recommended is True
+
+
+def test_us_market_single_source_blocked() -> None:
+    """A US market (ghcnd_id set) with n_sources=1 must remain blocked.
+
+    US markets always require min_sources=2; the relaxation must not apply.
+    """
+    market = _gate_market_us()
+    assert market.target.station.ghcnd_id is not None
+
+    fs = _single_source_f(market.target)
+    assert sum(1 for c in fs.coverage if c.ok and c.n_samples > 0) == 1
+
+    report = evaluate_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_F,
+        min_edge=MIN_EDGE,
+    )
+    assert report.n_sources == 1
+    yes = next(o for o in report.outcomes if o.side == "YES")
+    # Floor and edge gates pass: the source gate is the only binding constraint.
+    assert yes.p_win >= CONFIDENCE_FLOOR, f"p_win={yes.p_win} must clear CONFIDENCE_FLOOR"
+    assert yes.edge >= MIN_EDGE, f"edge={yes.edge} must clear MIN_EDGE"
+    # US 1-source must not be recommended despite passing the other two gates.
+    assert yes.recommended is False
+
+
+def test_ghcnd_none_discriminator_cannot_reach_us_stations() -> None:
+    """Every station in STATIONS and KALSHI_STATIONS has a non-None ghcnd_id.
+
+    This invariant is what makes the ghcnd_id=None relaxation US-safe:
+    no US station can ever trigger the intl gate.
+    """
+    from rainmaker.config import KALSHI_STATIONS, STATIONS
+
+    for city, station in STATIONS.items():
+        assert station.ghcnd_id is not None, f"STATIONS[{city!r}].ghcnd_id must not be None"
+    for city, station in KALSHI_STATIONS.items():
+        assert station.ghcnd_id is not None, f"KALSHI_STATIONS[{city!r}].ghcnd_id must not be None"
+
+
+def test_c_floor_binds_at_min_sigma_c() -> None:
+    """A C market with near-zero raw sigma must floor at MIN_SIGMA_C, not MIN_SIGMA_F.
+
+    This test would fail if cli.py passed MIN_SIGMA_F for a C market:
+    MIN_SIGMA_F (~1.5) >> MIN_SIGMA_C (~0.833), so using the F floor would
+    over-widen the C distribution and produce a different sigma.
+    """
+    market = _london_c_market()
+    assert market.target.station.unit == "C"
+
+    fs = _tight_c_forecast_set(market.target)
+    report = evaluate_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_C,  # the wiring cli.py must choose for C markets
+        min_edge=MIN_EDGE,
+    )
+
+    assert report.sigma is not None
+    # The C floor must bind.
+    assert report.sigma == pytest.approx(MIN_SIGMA_C, abs=1e-6)
+    # And the floored value must be distinctly less than the F floor,
+    # proving this test would fail if the wrong floor were passed.
+    assert report.sigma < MIN_SIGMA_F

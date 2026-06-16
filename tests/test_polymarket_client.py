@@ -20,14 +20,21 @@ def _events_body() -> list[dict[str, Any]]:
     return json.loads((FIXTURES / "polymarket_weather_events.json").read_text())
 
 
-def test_discover_markets_filters_to_us_temp_markets(httpx_mock):
+def test_discover_markets_includes_us_and_intl_temp_markets(httpx_mock):
+    # The fixture has NYC (KLGA, F) and London (EGLC, C with single-degree buckets).
+    # discover_markets must parse both.
     httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=_events_body())
     with httpx.Client() as client:
         markets = discover_markets(client)
-    assert len(markets) == 1
-    assert markets[0].id == "533147"
-    assert markets[0].target.station.icao == "KLGA"
-    assert len(markets[0].buckets) == 11
+    assert len(markets) == 2
+    icaos = sorted(m.target.station.icao for m in markets)
+    assert icaos == ["EGLC", "KLGA"]
+    nyc = next(m for m in markets if m.target.station.icao == "KLGA")
+    assert nyc.id == "533147"
+    assert len(nyc.buckets) == 11
+    london = next(m for m in markets if m.target.station.icao == "EGLC")
+    assert london.target.station.unit == "C"
+    assert len(london.buckets) == 11
 
 
 def test_fetch_weather_events_raises_when_gamma_down(httpx_mock):
@@ -50,12 +57,14 @@ def _multicity_body() -> list[dict[str, Any]]:
     return json.loads((FIXTURES / "polymarket_weather_multicity.json").read_text())
 
 
-def test_discover_skips_unparseable_and_drops_international(httpx_mock, capsys):
+def test_discover_skips_unparseable_and_drops_wrong_station_event(httpx_mock, capsys):
+    # The multicity fixture has a London event whose description names EGLL, not EGLC.
+    # London is registered as EGLC, so the ICAO guard fails and the event is skipped.
     httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=_multicity_body())
     with httpx.Client() as client:
         markets = discover_markets(client)
     # Los Angeles (multi-word) and Dallas (trap KDAL) are kept; NYC is skipped
-    # because its description omits KLGA; London is filtered (not US registry).
+    # because its description omits KLGA; London is skipped because EGLL != EGLC.
     assert sorted(m.target.station.icao for m in markets) == ["KDAL", "KLAX"]
     err = capsys.readouterr().err
     assert "900003" in err and "skip" in err.lower()
@@ -125,3 +134,73 @@ def test_discover_precip_markets_skips_event_missing_required_key(httpx_mock, ca
     assert markets[0].id == "531291"
     err = capsys.readouterr().err
     assert "888002" in err and "skip" in err.lower()
+
+
+def _london_fixture_event() -> dict[str, Any]:
+    return json.loads((FIXTURES / "polymarket_intl_london.json").read_text())
+
+
+def test_discover_markets_parses_real_london_fixture(httpx_mock):
+    # London (EGLC, C) from a saved live fixture: single-degree buckets must parse.
+    event = _london_fixture_event()
+    httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[event])
+    with httpx.Client() as client:
+        markets = discover_markets(client)
+    assert len(markets) == 1
+    m = markets[0]
+    assert m.target.station.icao == "EGLC"
+    assert m.target.station.unit == "C"
+    assert len(m.buckets) == 11
+    # First bucket is the below-tail, last is the above-tail.
+    assert m.buckets[0].kind == "below"
+    assert m.buckets[-1].kind == "above"
+    # Interior buckets are single-degree ranges (lo=hi).
+    interior = [b for b in m.buckets if b.kind == "range"]
+    assert all(b.lo == b.hi for b in interior)
+
+
+# ---------------------------------------------------------------------------
+# ICAO guards for Paris / Helsinki / Sao Paulo (#177)
+# ---------------------------------------------------------------------------
+
+
+def test_discover_markets_parses_real_paris_fixture(httpx_mock):
+    """Paris (LFPB, C) from a saved live fixture: ICAO guard and Celsius parsing work."""
+    event = json.loads((FIXTURES / "polymarket_intl_paris.json").read_text())
+    httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[event])
+    with httpx.Client() as client:
+        markets = discover_markets(client)
+    assert len(markets) == 1
+    m = markets[0]
+    assert m.target.station.icao == "LFPB"
+    assert m.target.station.unit == "C"
+    assert m.target.station.ghcnd_id is None
+    assert len(m.buckets) > 0
+
+
+def test_discover_markets_parses_real_helsinki_fixture(httpx_mock):
+    """Helsinki (EFHK, C) from a saved live fixture: ICAO guard and Celsius parsing work."""
+    event = json.loads((FIXTURES / "polymarket_intl_helsinki.json").read_text())
+    httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[event])
+    with httpx.Client() as client:
+        markets = discover_markets(client)
+    assert len(markets) == 1
+    m = markets[0]
+    assert m.target.station.icao == "EFHK"
+    assert m.target.station.unit == "C"
+    assert m.target.station.ghcnd_id is None
+    assert len(m.buckets) > 0
+
+
+def test_discover_markets_parses_real_sao_paulo_fixture(httpx_mock):
+    """Sao Paulo (SBGR, C) from a saved live fixture: ICAO guard and Celsius parsing work."""
+    event = json.loads((FIXTURES / "polymarket_intl_sao_paulo.json").read_text())
+    httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[event])
+    with httpx.Client() as client:
+        markets = discover_markets(client)
+    assert len(markets) == 1
+    m = markets[0]
+    assert m.target.station.icao == "SBGR"
+    assert m.target.station.unit == "C"
+    assert m.target.station.ghcnd_id is None
+    assert len(m.buckets) > 0
