@@ -9,8 +9,8 @@ import pytest
 from rainmaker.backfill import NCEI_URL
 from rainmaker.forecasts.openmeteo import ENSEMBLE_URL, FORECAST_URL
 from rainmaker.forecasts.precip import (
+    _lag1_from_dated_series,
     build_precip_forecast_set,
-    fit_lag1_autocorrelation,
     monthly_total_moments,
     parse_nws_qpf,
     parse_precip_open_meteo,
@@ -271,34 +271,138 @@ def test_monthly_total_moments_rho_inflates_variance():
         floor=0.001,
         rho=0.5,
     )
-    expected_factor = variance_inflation_factor(20, 0.5)
-    assert v_inflated == pytest.approx(v_base * expected_factor, rel=1e-6)
+    # Hand-computed: variance_inflation_factor(20, 0.5) = 2.8000001907348633
+    # v_base = 20 * 0.04 = 0.8; v_inflated = 0.8 * 2.8000001907 = 2.2400001525...
+    assert v_inflated == pytest.approx(2.2400001525878905, rel=1e-6)
     assert v_inflated > v_base
 
 
-def test_fit_lag1_autocorrelation_known_series():
-    # A simple alternating pattern [0, 1, 0, 1, ...] has lag-1 autocorrelation of -1.
-    # After clamping to [0, 0.95) it should return 0.0.
-    series = [float(i % 2) for i in range(20)]
-    rho = fit_lag1_autocorrelation(series)
-    # Alternating series: negative autocorr -> clamped to 0
-    assert rho == pytest.approx(0.0)
+# ---------------------------------------------------------------------------
+# _lag1_from_dated_series: the production fitter (issue #88)
+# ---------------------------------------------------------------------------
 
 
-def test_fit_lag1_autocorrelation_all_identical_returns_zero():
-    # Constant series: variance is 0, autocorrelation undefined -> fallback to 0.
-    assert fit_lag1_autocorrelation([0.5] * 30) == pytest.approx(0.0)
+def test_lag1_from_dated_series_year_boundary_gap_skipped():
+    # Three values: one dry day at year-end, then two wet consecutive days in the
+    # next June. The year-boundary pair (2024-06-30 -> 2025-06-01) spans 366 days
+    # and must be excluded by the date-diff guard.
+    #
+    # With the guard: only the valid pair (2025-06-01 -> 2025-06-02) contributes.
+    # Both values (1.0) are above the series mean (2/3), so the cross-product is
+    # positive -> rho = 0.5.
+    #
+    # Without the guard (mutation a): the year-boundary pair is also included. Its
+    # cross-product (0.0 - mean) * (1.0 - mean) is negative, which drives the mean
+    # covariance below zero and the result back to 0.0.
+    #
+    # This test pins the guard: rho = 0.5 iff the guard is present, 0.0 otherwise.
+    series = [
+        (date(2024, 6, 30), 0.0),
+        (date(2025, 6, 1), 1.0),
+        (date(2025, 6, 2), 1.0),
+    ]
+    assert _lag1_from_dated_series(series) == pytest.approx(0.5)
 
 
-def test_fit_lag1_autocorrelation_short_series_returns_zero():
-    # Fewer than 2 pairs: can't compute.
-    assert fit_lag1_autocorrelation([]) == pytest.approx(0.0)
-    assert fit_lag1_autocorrelation([1.0]) == pytest.approx(0.0)
+def test_lag1_from_dated_series_positive_rho():
+    # A 20-day block pattern has strong positive lag-1 autocorrelation.
+    # All pairs are consecutive-day so the guard does not suppress them.
+    from datetime import timedelta
 
-
-def test_fit_lag1_autocorrelation_positively_correlated():
-    # A series with clear positive autocorrelation: blocks of same value.
-    # [0,0,0,...,1,1,1,...] has high positive lag-1 autocorrelation.
-    series = [0.0] * 15 + [1.0] * 15
-    rho = fit_lag1_autocorrelation(series)
+    base = date(2025, 6, 1)
+    # 10 dry days followed by 10 wet days: clear wet-spell structure
+    series = [(base + timedelta(days=i), 0.0 if i < 10 else 1.0) for i in range(20)]
+    rho = _lag1_from_dated_series(series)
     assert rho > 0.3
+
+
+def test_lag1_from_dated_series_skips_gap_keeps_valid_pairs():
+    # A series spanning two Junes with a year gap in the middle.
+    # The year-boundary pair is skipped; the pairs within each June still
+    # contribute, so rho is non-zero when within-June structure is positive.
+    from datetime import timedelta
+
+    base1 = date(2024, 6, 1)
+    june_2024 = [(base1 + timedelta(days=i), 0.0 if i < 15 else 1.0) for i in range(30)]
+    base2 = date(2025, 6, 1)
+    june_2025 = [(base2 + timedelta(days=i), 0.0 if i < 15 else 1.0) for i in range(30)]
+    combined = june_2024 + june_2025
+    rho = _lag1_from_dated_series(combined)
+    assert rho > 0.3
+
+
+def test_lag1_from_dated_series_constant_returns_zero():
+    from datetime import timedelta
+
+    base = date(2025, 6, 1)
+    series = [(base + timedelta(days=i), 0.5) for i in range(30)]
+    assert _lag1_from_dated_series(series) == pytest.approx(0.0)
+
+
+def test_lag1_from_dated_series_short_returns_zero():
+    assert _lag1_from_dated_series([]) == pytest.approx(0.0)
+    assert _lag1_from_dated_series([(date(2025, 6, 1), 1.0)]) == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Build-level: var widens end-to-end when rho > 0 (issue #88)
+# ---------------------------------------------------------------------------
+
+
+def test_build_precip_forecast_set_var_widens_with_positive_rho(httpx_mock, monkeypatch):
+    # Monkeypatch fetch_precip_climatology to return rho=0.4 vs rho=0.0 in two
+    # separate calls. The second call (rho=0.4) must produce a strictly wider
+    # forecast variance, proving the rho path is wired end-to-end.
+    import rainmaker.forecasts.precip as precip_mod
+
+    _call_count = [0]
+    _rho_values = [0.0, 0.4]
+
+    def _fake_climatology(ghcnd_id, month, year, client, *, lookback_years):
+        rho = _rho_values[_call_count[0] % 2]
+        _call_count[0] += 1
+        return (0.12, 0.04, rho)
+
+    monkeypatch.setattr(precip_mod, "fetch_precip_climatology", _fake_climatology)
+
+    def _setup_mock():
+        daily = json.loads((FIXTURES / "ncei_daily_precip_nyc.json").read_text())
+        # observed-to-date only (climatology call is monkeypatched)
+        httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=daily)
+        httpx_mock.add_response(url=re.compile(re.escape(FORECAST_URL)), json=_multimodel())
+        for _ in range(3):
+            httpx_mock.add_response(url=re.compile(re.escape(ENSEMBLE_URL)), json=_ensemble())
+        httpx_mock.add_response(
+            url="https://api.weather.gov/points/40.779,-73.9692",
+            json={
+                "properties": {"forecastGridData": "https://api.weather.gov/gridpoints/OKX/34,45"}
+            },
+        )
+        httpx_mock.add_response(
+            url="https://api.weather.gov/gridpoints/OKX/34,45",
+            json=json.loads((FIXTURES / "nws_qpf_nyc.json").read_text()),
+        )
+
+    _setup_mock()
+    with httpx.Client() as client:
+        fs_rho0 = build_precip_forecast_set(
+            _nyc_target(),
+            today=date(2026, 6, 6),
+            client=client,
+            var_floor=0.01,
+            lookback_years=20,
+        )
+
+    # Reset mock and set up again for the rho=0.4 run
+    httpx_mock.reset()
+    _setup_mock()
+    with httpx.Client() as client:
+        fs_rho_pos = build_precip_forecast_set(
+            _nyc_target(),
+            today=date(2026, 6, 6),
+            client=client,
+            var_floor=0.01,
+            lookback_years=20,
+        )
+
+    assert fs_rho_pos.var > fs_rho0.var

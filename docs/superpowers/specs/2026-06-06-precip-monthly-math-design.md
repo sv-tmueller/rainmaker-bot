@@ -53,7 +53,7 @@ of three independent pieces for the calendar month:
   daily mean `mu_c` and daily variance `sigma2_c`; tail mean = `N_tail * mu_c`,
   tail variance = `N_tail * sigma2_c`.
 
-`m = observed + m_f + N_tail*mu_c`, `v = v_f + N_tail*sigma2_c` (floored).
+`m = observed + m_f + N_tail*mu_c`, `v = v_f + N_tail*sigma2_c * f(N_tail, rho)` (floored).
 
 Early in the month the tail dominates, so `v` is large, the gamma is wide, and
 per-bracket probabilities are low, so few bets clear the floor/edge gates. As the
@@ -62,10 +62,14 @@ more days, so `v` shrinks and the distribution sharpens. Coverage (how much of
 the month is observed vs forecast vs climatology) is tracked and surfaced like
 `SourceCoverage`.
 
-Stated approximation: daily precipitation is treated as independent across days.
-Real precip is positively autocorrelated (wet spells), so this understates `v`
-and is mildly overconfident. Acceptable for the MVP; a future improvement is an
-autocorrelation inflation factor or a block bootstrap. Flagged, not built.
+Lag-1 autocorrelation inflation (issue #88, implemented): real daily precipitation
+is positively autocorrelated (wet spells cluster), so the day-independence
+approximation understates the climatology tail variance. The exact finite-N AR(1)
+inflation factor `f(N, rho) = 1 + (2/N) * sum_{k=1}^{N-1} (N-k) * rho^k` is
+applied to the tail variance only; the forecast-horizon variance (inter-model
+spread) and the monthly mean are unchanged. `rho` is fit from NCEI history for
+the target calendar month using `_lag1_from_dated_series`, which skips
+year-boundary pairs (date diff != 1 day). Negative `rho` is clamped to 0.
 
 ### Outcome integration
 
@@ -153,6 +157,5 @@ portability is preserved.
 ## Open / deferred
 
 - Daily binary precip form (single probability of >= 0.01 in), deferred.
-- Day-to-day independence approximation (above), deferred improvement.
 - Precip calibration cells (the temperature calibration path is variable-keyed
   and could be extended later); MVP runs uncalibrated.

@@ -18,7 +18,7 @@ For an AR(1) process the variance of the sum S_N = X_1 + ... + X_N is:
 The inflation factor f(N, rho) = Var(S_N) / (N * sigma^2) is computed by
 `variance_inflation_factor`. This is the exact finite-N form; using the
 asymptotic (1+rho)/(1-rho) over-inflates at short horizons (e.g. N=7 at
-rho=0.3 gives 1.86 vs the correct ~1.4).
+rho=0.3 gives 1.86 vs the correct ~1.68).
 
 The inflation is applied only to the climatology tail contribution, where the
 wet-spell autocorrelation is exact. The forecast-horizon variance is inter-model
@@ -27,8 +27,9 @@ mean is not affected.
 
 rho is fit from the NCEI daily-summaries history used for the climatology, pairing
 only consecutive same-month days (year-boundary pairs are spurious). The result is
-clamped to [0, 0.95); negative rho (drying spells, rarer) deflates incorrectly and
-is treated as 0. Near-zero-variance series fall back to rho=0.
+clamped to [0, 0.95] (attains 0.95 via min(rho, 0.95)); negative rho (drying spells,
+rarer) deflates incorrectly and is treated as 0. Near-zero-variance series fall back
+to rho=0.
 """
 
 import calendar
@@ -78,35 +79,6 @@ def variance_inflation_factor(n: int, rho: float) -> float:
         total += (n - k) * rho_k
         rho_k *= rho
     return 1.0 + 2.0 * total / n
-
-
-def fit_lag1_autocorrelation(series: list[float]) -> float:
-    """Estimate lag-1 Pearson autocorrelation from an ordered daily series.
-
-    The series must already contain only consecutive-day values (no gaps). Call
-    this with a single contiguous run; year-boundary filtering is the caller's
-    responsibility (see `fetch_precip_climatology`).
-
-    Returns 0.0 when:
-    - the series has fewer than 2 elements,
-    - the variance of the series is near zero (constant series),
-    - the computed autocorrelation is negative (deflating; not the wet-spell
-      direction we model).
-
-    Result is clamped to [0, _RHO_MAX)."""
-    if len(series) < 2:
-        return 0.0
-    n = len(series)
-    mean = statistics.fmean(series)
-    var = statistics.fmean([(x - mean) ** 2 for x in series])
-    if var < 1e-12:
-        return 0.0
-    # lag-1 covariance over all pairs
-    cov = statistics.fmean([(series[i] - mean) * (series[i + 1] - mean) for i in range(n - 1)])
-    rho = cov / var
-    if rho <= 0.0:
-        return 0.0
-    return min(rho, _RHO_MAX)
 
 
 def _lag1_from_dated_series(dated: list[tuple[date, float]]) -> float:
