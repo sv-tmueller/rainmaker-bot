@@ -497,6 +497,84 @@ def test_backtest_pnl_command_writes_report(monkeypatch, tmp_path, capsys):
     assert captured["city"] == "NYC"
 
 
+def test_backtest_pnl_command_asks_trades_flag(monkeypatch, tmp_path, capsys):
+    """--asks trades routes ask_source="trades" to backtest_pnl."""
+    from rainmaker.pnl_backtest import LeadPnl, PnlBacktestResult
+
+    lp = LeadPnl(
+        lead=0, n_bets=1, wins=1, losses=0, total_pnl=0.10, roi=0.10, win_rate=1.0, mean_edge=0.05
+    )
+    result = PnlBacktestResult(
+        n_markets=1,
+        floor=0.90,
+        min_sources=1,
+        min_edge=0.05,
+        per_lead=[lp],
+        overall=lp.model_copy(update={"lead": -1}),
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_backtest_pnl(events, client, **kwargs):
+        captured.update(kwargs)
+        return result
+
+    monkeypatch.setattr(cli, "backtest_pnl", _fake_backtest_pnl)
+    monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 5))
+
+    cli.main(
+        [
+            "backtest-pnl",
+            "--city",
+            "NYC",
+            "--asks",
+            "trades",
+            "--reports-dir",
+            str(tmp_path),
+        ]
+    )
+    assert captured["ask_source"] == "trades"
+
+
+def test_backtest_pnl_command_asks_default_is_mid(monkeypatch, tmp_path, capsys):
+    """Without --asks, ask_source defaults to "mid"."""
+    from rainmaker.pnl_backtest import LeadPnl, PnlBacktestResult
+
+    lp = LeadPnl(
+        lead=0, n_bets=1, wins=1, losses=0, total_pnl=0.10, roi=0.10, win_rate=1.0, mean_edge=0.05
+    )
+    result = PnlBacktestResult(
+        n_markets=1,
+        floor=0.90,
+        min_sources=1,
+        min_edge=0.05,
+        per_lead=[lp],
+        overall=lp.model_copy(update={"lead": -1}),
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_backtest_pnl(events, client, **kwargs):
+        captured.update(kwargs)
+        return result
+
+    monkeypatch.setattr(cli, "backtest_pnl", _fake_backtest_pnl)
+    monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 5))
+
+    cli.main(
+        [
+            "backtest-pnl",
+            "--city",
+            "NYC",
+            "--reports-dir",
+            str(tmp_path),
+        ]
+    )
+    assert captured["ask_source"] == "mid"
+
+
 def test_backtest_pnl_exits_when_no_data(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "backtest_pnl", lambda *a, **k: None)
     monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])

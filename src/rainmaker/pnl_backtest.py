@@ -13,8 +13,11 @@ Caveats baked in by design:
 - The forecast is keyed to the settlement date and is identical across leads;
   only the market price varies by lead.
 - The price used is the token mid, mildly optimistic versus the ask actually paid.
+  With ask_source="trades", real BUY fills from data-api.polymarket.com replace
+  the mid when available; a fill IS the ask paid, so no spread is added on top.
 """
 
+import json
 from collections import defaultdict
 from collections.abc import Sequence
 from datetime import date, datetime
@@ -29,6 +32,7 @@ from rainmaker.domain import Market, parse_bucket_label
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import parse_market
 from rainmaker.polymarket.prices import PricePoint, fetch_price_history, snap_price
+from rainmaker.polymarket.trades import FillPoint, fetch_fills
 from rainmaker.probability.distribution import fit_gaussian
 from rainmaker.probability.outcomes import bucket_probability, settles
 from rainmaker.ranking.edge import RankedOutcome, evaluate_market
@@ -64,6 +68,13 @@ class LeadPnl(BaseModel):
     mean_edge: float
 
 
+class FillCoverage(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    n_leads: int  # total (market x lead) repricing opportunities
+    fills_used: int  # repricing opportunities where at least one fill snapped
+
+
 class PnlBacktestResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -72,6 +83,8 @@ class PnlBacktestResult(BaseModel):
     min_sources: int
     min_edge: float
     spread: float = 0.0
+    ask_source: Literal["mid", "trades"] = "mid"
+    fill_coverage: FillCoverage | None = None
     per_lead: list[LeadPnl]
     overall: LeadPnl
 
@@ -85,7 +98,13 @@ def forecast_set_from_samples(target: Target, samples: list[ForecastSample]) -> 
     )
 
 
-def market_at_lead(market: Market, mids: dict[str, float | None], *, spread: float = 0.0) -> Market:
+def market_at_lead(
+    market: Market,
+    mids: dict[str, float | None],
+    *,
+    spread: float = 0.0,
+    fills: dict[str, tuple[float | None, float | None]] | None = None,
+) -> Market:
     """Reprice a market's buckets from per-bucket mids keyed by bucket label.
 
     A bucket's YES ask is the mid and its NO ask the complement (1 - mid). With a
@@ -93,6 +112,11 @@ def market_at_lead(market: Market, mids: dict[str, float | None], *, spread: flo
     (ask = mid + spread/2, capped at 1), the symmetric-book approximation of the
     cost actually paid; spread=0 is the raw mid. A missing or None mid leaves both
     sides unpriced so evaluate_market drops it.
+
+    When `fills` is provided (trades mode), each entry is a (yes_fill, no_fill)
+    pair keyed by bucket label. A non-None fill is used directly as the ask for
+    that side (a fill IS the ask paid; no spread added). A None fill falls back to
+    the mid+spread path for that side.
     """
     half = spread / 2
     buckets = []
@@ -102,10 +126,22 @@ def market_at_lead(market: Market, mids: dict[str, float | None], *, spread: flo
             best_ask: float | None = None
             no_ask: float | None = None
         else:
-            best_ask = min(mid + half, 1.0)
-            no_ask = min((1 - mid) + half, 1.0)
+            yes_fill: float | None = None
+            no_fill: float | None = None
+            if fills is not None:
+                pair = fills.get(bucket.label)
+                if pair is not None:
+                    yes_fill, no_fill = pair
+            best_ask = yes_fill if yes_fill is not None else min(mid + half, 1.0)
+            no_ask = no_fill if no_fill is not None else min((1 - mid) + half, 1.0)
         buckets.append(bucket.model_copy(update={"best_ask": best_ask, "no_ask": no_ask}))
     return market.model_copy(update={"buckets": buckets})
+
+
+def _snap_fills(fill_list: list[FillPoint], target_ts: int) -> float | None:
+    """Snap the nearest BUY fill to target_ts, returning the price or None."""
+    points = [PricePoint(t=f.t, p=f.p) for f in fill_list]
+    return snap_price(points, target_ts, tolerance_s=SNAP_TOLERANCE_S)
 
 
 def _outcome_won(outcome: RankedOutcome, actual: float) -> bool:
@@ -127,7 +163,8 @@ def replay_market(
     min_sigma: float,
     min_edge: float,
     spread: float = 0.0,
-) -> list[Bet]:
+    fill_histories: dict[str, list[FillPoint]] | None = None,
+) -> tuple[list[Bet], int]:
     """One best-edge bet per lead, settled against the actual.
 
     At each lead the buckets are repriced from their CLOB mid (snapped to the
@@ -136,9 +173,16 @@ def replay_market(
     describe the same temperature, so counting more than one would inflate the
     P/L; the collapse mirrors live tracking. A lead with no recommended bet or no
     snappable price contributes nothing.
+
+    When `fill_histories` is provided (trades mode), fills are snapped per bucket
+    token and used as the ask in place of mid+spread. Coverage is tracked as the
+    count of leads where at least one fill snapped for any candidate bucket token.
+
+    Returns (bets, fills_used_count).
     """
     settlement_ts = int(settlement_dt.timestamp())
     bets: list[Bet] = []
+    fills_used = 0
     for lead in leads:
         target_ts = settlement_ts - lead * SECONDS_PER_DAY
         mids = {
@@ -147,8 +191,21 @@ def replay_market(
             )
             for bucket in market.buckets
         }
+        fills: dict[str, tuple[float | None, float | None]] | None = None
+        if fill_histories is not None:
+            fills = {}
+            this_lead_used = False
+            for bucket in market.buckets:
+                yes_snapped = _snap_fills(fill_histories.get(bucket.yes_token_id, []), target_ts)
+                no_snapped = _snap_fills(fill_histories.get(bucket.no_token_id, []), target_ts)
+                fills[bucket.label] = (yes_snapped, no_snapped)
+                if yes_snapped is not None or no_snapped is not None:
+                    this_lead_used = True
+            if this_lead_used:
+                fills_used += 1
+
         report = evaluate_market(
-            market_at_lead(market, mids, spread=spread),
+            market_at_lead(market, mids, spread=spread, fills=fills),
             forecast_set,
             floor=floor,
             min_sources=min_sources,
@@ -170,7 +227,7 @@ def replay_market(
                 won=_outcome_won(best, actual),
             )
         )
-    return bets
+    return bets, fills_used
 
 
 def _metrics(lead: int, bets: list[Bet]) -> LeadPnl:
@@ -227,6 +284,16 @@ def render_pnl_report(result: PnlBacktestResult) -> tuple[str, dict[str, Any]]:
         "source, so recommended here is a superset of the live two-source gate. "
         f"Floor {_pct(result.floor)}, minimum edge {_pct(result.min_edge)}.",
         "",
+    ]
+    if result.ask_source == "trades" and result.fill_coverage is not None:
+        cov = result.fill_coverage
+        lines.append(
+            f"Ask source: trades fills. Fill coverage: {cov.fills_used} of "
+            f"{cov.n_leads} lead-market slots had a real fill "
+            f"({cov.fills_used}/{cov.n_leads}); remaining slots fall back to mid.",
+        )
+        lines.append("")
+    lines += [
         "| Lead | Bets | W-L | Win rate | Total P/L | ROI | Mean edge |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
@@ -238,14 +305,17 @@ def render_pnl_report(result: PnlBacktestResult) -> tuple[str, dict[str, Any]]:
 
 def _parse_closed_markets(
     events: list[dict[str, Any]], on_or_after: date, city: str | None
-) -> list[tuple[Market, datetime]]:
+) -> list[tuple[Market, datetime, dict[str, str]]]:
     """Parsed TMAX markets settling on or after the cutoff, with their settlement time.
 
     Mirrors backtest_real's parse and filter, keeping the raw endDate so the
     replay can map a lead to a price timestamp. Non-US-city or unmapped markets
     are skipped, as is anything outside the window or city filter.
+
+    Also returns a mapping of yes_token_id -> conditionId for each sub-market
+    that carries a conditionId field (used in trades mode).
     """
-    out: list[tuple[Market, datetime]] = []
+    out: list[tuple[Market, datetime, dict[str, str]]] = []
     for ev in events:
         try:
             market = parse_market(ev)
@@ -255,7 +325,15 @@ def _parse_closed_markets(
             continue
         if city not in (None, "all") and market.target.station.city != city:
             continue
-        out.append((market, datetime.fromisoformat(ev["endDate"])))
+        # Build yes_token_id -> conditionId from raw sub-market JSON when present.
+        cond_ids: dict[str, str] = {}
+        for raw_sub in ev.get("markets", []):
+            cond_id = raw_sub.get("conditionId")
+            if cond_id:
+                tokens = json.loads(raw_sub["clobTokenIds"])
+                if tokens:
+                    cond_ids[tokens[0]] = cond_id
+        out.append((market, datetime.fromisoformat(ev["endDate"]), cond_ids))
     return out
 
 
@@ -271,6 +349,7 @@ def backtest_pnl(
     min_edge: float = MIN_EDGE,
     city: str | None = None,
     spread: float = 0.0,
+    ask_source: Literal["mid", "trades"] = "mid",
 ) -> PnlBacktestResult | None:
     """Replay closed markets at their historical CLOB price and score the P/L.
 
@@ -280,24 +359,30 @@ def backtest_pnl(
     each lead. Returns None when nothing scorable remains. min_sources defaults
     to 1 because the archive is a single source; recommended here is therefore a
     superset of the live two-source gate.
+
+    When ask_source="trades", real BUY fills from data-api.polymarket.com are
+    fetched for each candidate bucket and used as the ask in place of mid+spread
+    where available. Fill coverage is reported in the result.
     """
     parsed = _parse_closed_markets(events, on_or_after, city)
     if not parsed:
         return None
 
-    by_station: dict[str, list[tuple[Market, datetime]]] = defaultdict(list)
-    for market, settlement_dt in parsed:
-        by_station[market.target.station.icao].append((market, settlement_dt))
+    by_station: dict[str, list[tuple[Market, datetime, dict[str, str]]]] = defaultdict(list)
+    for market, settlement_dt, cond_ids in parsed:
+        by_station[market.target.station.icao].append((market, settlement_dt, cond_ids))
 
     max_lead = max(leads)
     bets: list[Bet] = []
     n_markets = 0
+    total_n_leads = 0
+    total_fills_used = 0
     for group in by_station.values():
         station = group[0][0].target.station
-        dates = [m.target.local_date for m, _ in group]
+        dates = [m.target.local_date for m, _, _ in group]
         samples_by_date = fetch_historical_samples(station, min(dates), max(dates), client)
         actuals = fetch_actuals(station.ghcnd_id, min(dates), max(dates), client, "TMAX")  # type: ignore[arg-type]
-        for market, settlement_dt in group:
+        for market, settlement_dt, cond_ids in group:
             samples = samples_by_date.get(market.target.local_date)
             actual = actuals.get(market.target.local_date)
             if not samples or actual is None:
@@ -308,37 +393,62 @@ def backtest_pnl(
             start_ts = int(settlement_dt.timestamp()) - (max_lead + 1) * SECONDS_PER_DAY
             end_ts = int(settlement_dt.timestamp()) + 3600
             histories: dict[str, list[PricePoint]] = {}
+            candidate_token_ids: list[str] = []
             for bucket in market.buckets:
                 p_win = bucket_probability(gaussian, bucket)
                 if p_win >= floor or (1 - p_win) >= floor:  # candidate on some side
                     histories[bucket.yes_token_id] = fetch_price_history(
                         bucket.yes_token_id, start_ts, end_ts, client
                     )
-            bets.extend(
-                replay_market(
-                    market,
-                    forecast_set,
-                    actual,
-                    histories,
-                    settlement_dt,
-                    leads=leads,
-                    floor=floor,
-                    min_sources=min_sources,
-                    min_sigma=min_sigma,
-                    min_edge=min_edge,
-                    spread=spread,
-                )
+                    candidate_token_ids.append(bucket.yes_token_id)
+
+            # In trades mode, fetch fills for candidate buckets (both YES and NO tokens).
+            fill_histories: dict[str, list[FillPoint]] | None = None
+            if ask_source == "trades":
+                fill_histories = {}
+                for yes_token_id in candidate_token_ids:
+                    cond_id = cond_ids.get(yes_token_id)
+                    if cond_id:
+                        fill_histories[yes_token_id] = fetch_fills(cond_id, yes_token_id, client)
+                        for bucket in market.buckets:
+                            if bucket.yes_token_id == yes_token_id:
+                                fill_histories[bucket.no_token_id] = fetch_fills(
+                                    cond_id, bucket.no_token_id, client
+                                )
+                                break
+
+            market_bets, fills_used = replay_market(
+                market,
+                forecast_set,
+                actual,
+                histories,
+                settlement_dt,
+                leads=leads,
+                floor=floor,
+                min_sources=min_sources,
+                min_sigma=min_sigma,
+                min_edge=min_edge,
+                spread=spread,
+                fill_histories=fill_histories,
             )
+            bets.extend(market_bets)
+            total_n_leads += len(leads)
+            total_fills_used += fills_used
 
     if n_markets == 0:
         return None
     per_lead, overall = score(bets, leads)
+    fill_coverage: FillCoverage | None = None
+    if ask_source == "trades":
+        fill_coverage = FillCoverage(n_leads=total_n_leads, fills_used=total_fills_used)
     return PnlBacktestResult(
         n_markets=n_markets,
         floor=floor,
         min_sources=min_sources,
         min_edge=min_edge,
         spread=spread,
+        ask_source=ask_source,
+        fill_coverage=fill_coverage,
         per_lead=per_lead,
         overall=overall,
     )
