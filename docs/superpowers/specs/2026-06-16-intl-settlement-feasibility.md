@@ -89,11 +89,28 @@ unchanged - the US calibration data from spike #101a was computed on that basis.
 ### Method
 
 WU ground-truth source: `api.weather.com/v1/location/{ICAO}:9:{CC}/observations/historical.json`
-with `units=m` (metric, Celsius). This is the same data WU's web interface
-presents; the settlement value is `max(temp)` over all observations for the day.
+with `units=m` (metric, Celsius). This endpoint returns per-observation METAR
+readings. The settlement value used here is `max(temp)` across all WU
+observations for the local day.
 
 IEM source: same as `forecasts/asos.py` (`MESONET_ASOS_URL`), with `report_type`
 omitted and local-day bucketing applied.
+
+**Note on comparison independence:** WU's hourly observations endpoint and IEM
+both ingest from the same upstream ASOS/METAR feed. The comparison confirms that
+both systems agree on what the METAR data says - it does not independently
+validate IEM against a proprietary WU-internal computation. The WU daily summary
+API (`observations/daily.json`) that would give a truly distinct computation path
+returns HTTP 401 (paid endpoint); the WU public HTML page is Angular-rendered and
+carries no parseable data. This is a real limitation of the comparison.
+
+What is validated: that IEM and WU derive the same daily extreme from the same
+METAR obs stream, and that both agree on the integer-Celsius values that markets
+settle on. The logical chain is: (1) WU settles on the METAR extreme for the
+local day; (2) IEM holds that same METAR obs stream; (3) both return the same
+integer-Celsius values. Step (2)-(3) is what this spike confirms directly. Step
+(1) is what is asserted (WU's settlement methodology) but not independently
+cross-checked.
 
 ### TMAX results (56 spot-checks)
 
@@ -123,9 +140,13 @@ IEM-to-WU shows 0% because both use the same underlying METAR source (IEM and
 WU both ingest ASOS/METAR). There is no rounding-layer divergence: WU reports
 whole-degree-C integers that are exactly the METAR spot readings IEM carries.
 
-**Caveat:** 56 TMAX + 20 TMIN spot-checks is a shorter baseline than the #101a
-analysis (~45 days of continuous data). A 90-day post-implementation backcheck
-per station is recommended before enabling intl betting recommendations.
+**Caveats:**
+- The comparison is not fully independent (see Method note above). An alternative
+  ground truth such as OGIMET or WMO CLIMAT archives would provide an independent
+  cross-check. That was out of scope for this spike.
+- 56 TMAX + 20 TMIN spot-checks is a shorter baseline than the #101a analysis
+  (~45 days of continuous data). A 90-day post-implementation backcheck per
+  station is recommended before enabling intl betting recommendations.
 
 ---
 
