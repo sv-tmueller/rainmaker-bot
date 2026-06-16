@@ -638,3 +638,151 @@ def test_legacy_kalshi_ticker_not_regraded(httpx_mock):
     conn.close()
     assert regraded == 0  # Kalshi row must not be regraded
     assert row["actual_value"] == pytest.approx(79.0)  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# International settlement via IEM METAR (#190)
+# ---------------------------------------------------------------------------
+
+# EGLC intl fixture: 2026-06-09 local (Europe/London, UTC+1).
+# TMAX = 19C (from SPECI at 11:20 UTC = 12:20 local).
+_INTL_EGLC_CSV = (
+    "station,valid,tmpc\n"
+    "EGLC,2026-06-08 23:20,14.0\n"  # UTC 23:20 on Jun-08 = 00:20 local Jun-09 (in window)
+    "EGLC,2026-06-09 10:50,18.0\n"
+    "EGLC,2026-06-09 11:20,19.0\n"  # SPECI: highest obs
+    "EGLC,2026-06-09 11:50,18.0\n"
+    "EGLC,2026-06-09 22:50,11.0\n"
+    "EGLC,2026-06-09 23:20,10.0\n"  # UTC 23:20 on Jun-09 = 00:20 local Jun-10 (out of window)
+)
+
+_INTL_TMAX_SPEC = [
+    {"label": "17°C or below", "kind": "below", "lo": None, "hi": None, "threshold": 17},
+    {"label": "18-21°C", "kind": "range", "lo": 18, "hi": 21, "threshold": None},
+    {"label": "22°C or higher", "kind": "above", "lo": None, "hi": None, "threshold": 22},
+]
+
+
+def test_intl_polymarket_tmax_settles_in_celsius(httpx_mock):
+    """An intl Polymarket TMAX market (London EGLC) settles in Celsius via ASOS."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    # London market: city="London", venue="polymarket", settlement_date="2026-06-09"
+    _market(conn, "eglc-tmax-0609", "London", "TMAX", "2026-06-09", venue="polymarket")
+
+    httpx_mock.add_response(
+        url=re.compile(re.escape(MESONET_ASOS_URL)),
+        text=_INTL_EGLC_CSV,
+    )
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 6, 12), "2026-06-12T00:00:00Z")
+    row = conn.execute(
+        "SELECT actual_value FROM outcomes WHERE market_id = ?", ("eglc-tmax-0609",)
+    ).fetchone()
+    conn.close()
+    assert (settled, waiting) == (1, 0)
+    # 19C from the SPECI obs (not converted to F)
+    assert row["actual_value"] == pytest.approx(19.0, abs=0.01)
+
+
+def test_intl_polymarket_tmin_settles_in_celsius(httpx_mock):
+    """An intl Polymarket TMIN market settles in Celsius."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "eglc-tmin-0609", "London", "TMIN", "2026-06-09", venue="polymarket")
+
+    httpx_mock.add_response(
+        url=re.compile(re.escape(MESONET_ASOS_URL)),
+        text=_INTL_EGLC_CSV,
+    )
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 6, 12), "2026-06-12T00:00:00Z")
+    row = conn.execute(
+        "SELECT actual_value FROM outcomes WHERE market_id = ?", ("eglc-tmin-0609",)
+    ).fetchone()
+    conn.close()
+    assert (settled, waiting) == (1, 0)
+    # TMIN from obs that fall on 2026-06-09 local: min is 11.0C (22:50 UTC = 23:50 local on Jun-09)
+    assert row["actual_value"] == pytest.approx(11.0, abs=0.01)
+
+
+def test_intl_settlement_is_idempotent(httpx_mock):
+    """Running intl settlement twice settles 0 on the second pass (idempotent)."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "eglc-tmax-0609", "London", "TMAX", "2026-06-09", venue="polymarket")
+
+    httpx_mock.add_response(
+        url=re.compile(re.escape(MESONET_ASOS_URL)),
+        text=_INTL_EGLC_CSV,
+    )
+    with httpx.Client() as client:
+        r1_settled, _ = run_settlement(conn, client, date(2026, 6, 12), "t")
+        # Second pass: market already settled, no new request needed
+        r2_settled, r2_waiting = run_settlement(conn, client, date(2026, 6, 12), "t")
+    conn.close()
+    assert r1_settled == 1
+    assert (r2_settled, r2_waiting) == (0, 0)
+
+
+def test_intl_settlement_does_not_call_ncei(httpx_mock):
+    """Intl TMAX/TMIN markets must use ASOS, not NCEI."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "eglc-tmax-0609", "London", "TMAX", "2026-06-09", venue="polymarket")
+
+    ncei_called: list[bool] = []
+
+    def ncei_handler(request: httpx.Request) -> httpx.Response:
+        ncei_called.append(True)
+        return httpx.Response(200, json=[])
+
+    httpx_mock.add_response(
+        url=re.compile(re.escape(MESONET_ASOS_URL)),
+        text=_INTL_EGLC_CSV,
+    )
+    with httpx.Client() as client:
+        run_settlement(conn, client, date(2026, 6, 12), "t")
+    conn.close()
+    assert not ncei_called
+
+
+def test_intl_settlement_not_stored_as_fahrenheit(httpx_mock):
+    """Intl outcome must be stored as Celsius (<50), not as Fahrenheit (>50 for similar temps)."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "eglc-tmax-0609", "London", "TMAX", "2026-06-09", venue="polymarket")
+
+    httpx_mock.add_response(
+        url=re.compile(re.escape(MESONET_ASOS_URL)),
+        text=_INTL_EGLC_CSV,
+    )
+    with httpx.Client() as client:
+        run_settlement(conn, client, date(2026, 6, 12), "t")
+    row = conn.execute(
+        "SELECT actual_value FROM outcomes WHERE market_id = ?", ("eglc-tmax-0609",)
+    ).fetchone()
+    conn.close()
+    # 19C stored as Celsius; if mistakenly stored as F, 19*9/5+32 = 66.2 (>50)
+    assert row["actual_value"] < 50  # sanity guard: must be Celsius scale
+
+
+def test_intl_regrade_skips_intl_cities(httpx_mock):
+    """regrade_polymarket_settlements must not process intl markets (US-only operation)."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(
+        conn, "eglc-tmax-0609", "London", "TMAX", "2026-06-09", _INTL_TMAX_SPEC, venue="polymarket"
+    )
+    record_outcome(conn, "eglc-tmax-0609", 19.0, "2026-06-10T00:00:00Z")
+
+    # No ASOS mock: any call to ASOS would raise (unmocked URL)
+    with httpx.Client() as client:
+        regraded = regrade_polymarket_settlements(conn, client, "2026-06-15T00:00:00Z")
+
+    row = conn.execute(
+        "SELECT actual_value FROM outcomes WHERE market_id = ?", ("eglc-tmax-0609",)
+    ).fetchone()
+    conn.close()
+    assert regraded == 0  # not regraded: intl city excluded from regrade
+    assert row["actual_value"] == pytest.approx(19.0)  # unchanged
