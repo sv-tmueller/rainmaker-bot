@@ -277,10 +277,13 @@ def compute_live_calibration(conn: Conn) -> list[dict[str, Any]]:
         "JOIN outcomes o ON o.market_id = p.market_id "
         "JOIN markets m ON m.id = p.market_id "
         "JOIN runs r ON r.id = p.run_id "
-        "WHERE p.dist_params IS NOT NULL AND o.actual_value IS NOT NULL"
+        "WHERE p.dist_params IS NOT NULL AND o.actual_value IS NOT NULL "
+        "AND m.variable != 'PRCP'"
     ).fetchall()
 
     # (variable, lead) -> list of (mu, sigma, actual) for CRPS + coverage
+    # PRCP is excluded: its mu/sigma describe a gamma (mean/sqrt-var), not a Gaussian,
+    # so crps_gaussian and norm.cdf coverage are methodologically wrong for it.
     dist_groups: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
     for r in _latest_run_per_market_day([dict(row) for row in rows]):
         lead = (
@@ -312,7 +315,8 @@ def compute_live_calibration(conn: Conn) -> list[dict[str, Any]]:
         "JOIN markets m ON m.id = p.market_id "
         "JOIN runs r ON r.id = p.run_id "
         "WHERE p.bucket IS NOT NULL AND o.actual_value IS NOT NULL "
-        "AND COALESCE(p.side, 'YES') = 'YES'"
+        "AND COALESCE(p.side, 'YES') = 'YES' "
+        "AND m.variable != 'PRCP'"
     ).fetchall()
 
     # Apply _latest_run_per_market_day to YES rows for deduplication.
@@ -329,7 +333,10 @@ def compute_live_calibration(conn: Conn) -> list[dict[str, Any]]:
             continue  # unparsable date (e.g. test sentinel "t"): skip
         if lead < 0:
             continue
-        won = _won(r["variable"], r["bucket"], r["actual_value"], r.get("outcome_spec"))
+        try:
+            won = _won(r["variable"], r["bucket"], r["actual_value"], r.get("outcome_spec"))
+        except (ValueError, KeyError):
+            continue  # malformed bucket label: skip, never fail the snapshot
         rel_groups[(r["variable"], lead)].append((r["p_win"], won))
 
     # Combine into result rows; only emit groups that have dist samples.

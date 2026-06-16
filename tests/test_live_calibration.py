@@ -365,6 +365,35 @@ def test_write_snapshot_persists_calibration_rows():
     assert row["coverage_50"] is not None
 
 
+def test_compute_live_calibration_excludes_prcp():
+    """PRCP markets are excluded from CRPS/coverage and reliability.
+
+    PRCP mu/sigma describe a gamma (mean/sqrt-var), not a Gaussian, so
+    crps_gaussian and norm.cdf coverage are methodologically wrong for it.
+    """
+    from rainmaker.tracking import compute_live_calibration
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    # One TMAX market (should appear) and one PRCP market (should not)
+    _run(conn, "r1", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m-tmax", variable="TMAX", settlement_date="2026-05-31")
+    _pred(conn, "r1", "m-tmax", "70-71°F", p_win=0.70, mu=70.0, sigma=2.0)
+    _outcome(conn, "m-tmax", 70.0)
+    _run(conn, "r2", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m-prcp", variable="PRCP", settlement_date="2026-05-31")
+    _pred(conn, "r2", "m-prcp", '2" to 3"', p_win=0.35, mu=2.5, sigma=0.8)
+    _outcome(conn, "m-prcp", 2.7)
+    conn.commit()
+
+    rows = compute_live_calibration(conn)
+    conn.close()
+
+    variables = {r["variable"] for r in rows}
+    assert "PRCP" not in variables
+    assert "TMAX" in variables
+
+
 def test_compute_live_calibration_skips_bad_dist_params():
     """Rows with unparsable dist_params are skipped without raising."""
     from rainmaker.tracking import compute_live_calibration
