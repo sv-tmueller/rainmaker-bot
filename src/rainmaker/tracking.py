@@ -13,9 +13,12 @@ from collections import defaultdict
 from datetime import date
 from typing import Any
 
+from scipy.stats import norm
+
+from rainmaker.backtest import COVERAGE_LEVELS, crps_gaussian, reliability_bins
 from rainmaker.config import KALSHI_STATIONS, STATIONS
 from rainmaker.domain import BucketKind, parse_bucket_label, parse_precip_bracket_label
-from rainmaker.probability.calibration import CalibrationPair, compute_accuracy
+from rainmaker.probability.calibration import Accuracy, CalibrationPair, compute_accuracy
 from rainmaker.probability.outcomes import settles
 from rainmaker.probability.precip_outcomes import precip_settles
 from rainmaker.store.db import Conn
@@ -250,6 +253,113 @@ def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
     ]
 
 
+def compute_live_calibration(conn: Conn) -> list[dict[str, Any]]:
+    """Probability-calibration metrics pooled per (variable, lead) across all cities.
+
+    Three metrics, all from the stored mu/sigma/p_win against settled actuals:
+    - CRPS: one sample per (market, UTC day) from dist_params.
+    - Coverage at 50/80/90: same (market, UTC day) population.
+    - Reliability: (p_win, won) per YES bucket-prediction row.
+
+    Same deduplication as compute_live_accuracy: _latest_run_per_market_day
+    collapses intraday runs to the latest per (market, UTC day).
+
+    Pooled across cities: keyed by (variable, lead) only. No per-city split.
+    No price or recommended filter: calibration is a property of the forecast,
+    not of whether a bet was placed.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT p.run_id AS run_id, p.market_id AS market_id, "
+        "p.dist_params AS dist_params, m.variable AS variable, "
+        "m.settlement_date AS settlement_date, r.started_at AS started_at, "
+        "o.actual_value AS actual_value "
+        "FROM predictions p "
+        "JOIN outcomes o ON o.market_id = p.market_id "
+        "JOIN markets m ON m.id = p.market_id "
+        "JOIN runs r ON r.id = p.run_id "
+        "WHERE p.dist_params IS NOT NULL AND o.actual_value IS NOT NULL"
+    ).fetchall()
+
+    # (variable, lead) -> list of (mu, sigma, actual) for CRPS + coverage
+    dist_groups: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
+    for r in _latest_run_per_market_day([dict(row) for row in rows]):
+        lead = (
+            date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
+        ).days
+        if lead < 0:
+            continue
+        try:
+            params = json.loads(r["dist_params"])
+        except json.JSONDecodeError:
+            continue
+        mu, sigma = params.get("mu"), params.get("sigma")
+        if mu is None or sigma is None or sigma <= 0:
+            continue
+        dist_groups[(r["variable"], lead)].append((mu, sigma, r["actual_value"]))
+
+    # Reliability: YES bucket rows (all buckets, not just best-edge). No dedup here:
+    # each (run, market, bucket) is one (p_win, won) data point for the reliability diagram.
+    # We do apply _latest_run_per_market_day per market to avoid counting intraday
+    # re-runs twice -- collect YES rows first, then deduplicate at (market, UTC day).
+    yes_rows_raw = conn.execute(
+        "SELECT p.run_id AS run_id, p.market_id AS market_id, "
+        "p.p_win AS p_win, p.bucket AS bucket, "
+        "m.variable AS variable, m.settlement_date AS settlement_date, "
+        "m.outcome_spec AS outcome_spec, m.variable AS market_variable, "
+        "r.started_at AS started_at, o.actual_value AS actual_value "
+        "FROM predictions p "
+        "JOIN outcomes o ON o.market_id = p.market_id "
+        "JOIN markets m ON m.id = p.market_id "
+        "JOIN runs r ON r.id = p.run_id "
+        "WHERE p.bucket IS NOT NULL AND o.actual_value IS NOT NULL "
+        "AND COALESCE(p.side, 'YES') = 'YES'"
+    ).fetchall()
+
+    # Apply _latest_run_per_market_day to YES rows for deduplication.
+    yes_deduped = _latest_run_per_market_day([dict(row) for row in yes_rows_raw])
+
+    # (variable, lead) -> list of (p_win, won)
+    rel_groups: dict[tuple[str, int], list[tuple[float, bool]]] = defaultdict(list)
+    for r in yes_deduped:
+        try:
+            lead = (
+                date.fromisoformat(r["settlement_date"])
+                - date.fromisoformat(r["started_at"][:10])
+            ).days
+        except ValueError:
+            continue  # unparsable date (e.g. test sentinel "t"): skip
+        if lead < 0:
+            continue
+        won = _won(r["variable"], r["bucket"], r["actual_value"], r.get("outcome_spec"))
+        rel_groups[(r["variable"], lead)].append((r["p_win"], won))
+
+    # Combine into result rows; only emit groups that have dist samples.
+    out: list[dict[str, Any]] = []
+    for (variable, lead), samples in sorted(dist_groups.items()):
+        crps_vals = [crps_gaussian(mu, sigma, actual) for mu, sigma, actual in samples]
+        coverages: dict[float, list[bool]] = {q: [] for q in COVERAGE_LEVELS}
+        for mu, sigma, actual in samples:
+            cdf_actual = float(norm.cdf(actual, loc=mu, scale=sigma))
+            for q in COVERAGE_LEVELS:
+                coverages[q].append(abs(cdf_actual - 0.5) <= q / 2)
+        n = len(samples)
+        rel_pairs = rel_groups.get((variable, lead), [])
+        bins = reliability_bins(rel_pairs) if rel_pairs else []
+        out.append(
+            {
+                "variable": variable,
+                "lead_time": lead,
+                "n_samples": n,
+                "crps": sum(crps_vals) / n,
+                "coverage_50": sum(coverages[0.50]) / n,
+                "coverage_80": sum(coverages[0.80]) / n,
+                "coverage_90": sum(coverages[0.90]) / n,
+                "reliability_bins": [b.model_dump(mode="json") for b in bins],
+            }
+        )
+    return out
+
+
 def write_snapshot(conn: Conn, on_date: str, created_at: str) -> dict[str, Any]:
     """Compute the current P&L/calibration and upsert a snapshot row for on_date."""
     pnl = compute_pnl(conn)
@@ -266,6 +376,26 @@ def write_snapshot(conn: Conn, on_date: str, created_at: str) -> dict[str, Any]:
             lead_time=row["lead_time"],
             kind="live",
             accuracy=row["accuracy"],
+            updated_at=created_at,
+        )
+    for row in compute_live_calibration(conn):
+        save_accuracy(
+            conn,
+            station="ALL",
+            city=None,
+            variable=row["variable"],
+            lead_time=row["lead_time"],
+            kind="calibration",
+            accuracy=Accuracy(
+                n=row["n_samples"],
+                mae_f=0.0,  # not applicable for calibration rows
+                bias_f=0.0,  # not applicable for calibration rows
+                crps=row["crps"],
+                coverage_50=row["coverage_50"],
+                coverage_80=row["coverage_80"],
+                coverage_90=row["coverage_90"],
+                reliability_bins=row["reliability_bins"],
+            ),
             updated_at=created_at,
         )
     conn.execute(

@@ -237,7 +237,7 @@ def save_accuracy(
     conn: Conn,
     *,
     station: str,
-    city: str,
+    city: str | None,
     variable: str,
     lead_time: int,
     kind: str,
@@ -245,14 +245,21 @@ def save_accuracy(
     updated_at: str,
 ) -> None:
     """Upsert one accuracy row (keyed by station, variable, lead_time, kind)."""
+    reliability_json = (
+        json.dumps(accuracy.reliability_bins) if accuracy.reliability_bins is not None else None
+    )
     conn.execute(
         """
         INSERT INTO forecast_accuracy
-            (station, city, variable, lead_time, kind, n, mae_f, bias_f, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (station, city, variable, lead_time, kind, n, mae_f, bias_f,
+             crps, coverage_50, coverage_80, coverage_90, reliability, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(station, variable, lead_time, kind) DO UPDATE SET
             city = excluded.city, n = excluded.n, mae_f = excluded.mae_f,
-            bias_f = excluded.bias_f, updated_at = excluded.updated_at
+            bias_f = excluded.bias_f, crps = excluded.crps,
+            coverage_50 = excluded.coverage_50, coverage_80 = excluded.coverage_80,
+            coverage_90 = excluded.coverage_90, reliability = excluded.reliability,
+            updated_at = excluded.updated_at
         """,
         (
             station,
@@ -263,6 +270,11 @@ def save_accuracy(
             accuracy.n,
             accuracy.mae_f,
             accuracy.bias_f,
+            accuracy.crps,
+            accuracy.coverage_50,
+            accuracy.coverage_80,
+            accuracy.coverage_90,
+            reliability_json,
             updated_at,
         ),
     )
