@@ -200,7 +200,7 @@ def test_replay_market_collapses_per_lead_and_settles():
             PricePoint(t=x - 3 * day, p=0.20),
         ],
     }
-    bets = replay_market(
+    bets, _fills_used = replay_market(
         market,
         _tight_forecast_set(),
         actual=80.0,
@@ -522,13 +522,25 @@ def test_render_pnl_report_shows_trades_source_and_coverage():
         fill_coverage=FillCoverage(n_leads=8, fills_used=4),
         per_lead=[
             LeadPnl(
-                lead=0, n_bets=2, wins=2, losses=0, total_pnl=0.30,
-                roi=0.176, win_rate=1.0, mean_edge=0.12,
+                lead=0,
+                n_bets=2,
+                wins=2,
+                losses=0,
+                total_pnl=0.30,
+                roi=0.176,
+                win_rate=1.0,
+                mean_edge=0.12,
             ),
         ],
         overall=LeadPnl(
-            lead=-1, n_bets=2, wins=2, losses=0, total_pnl=0.30,
-            roi=0.176, win_rate=1.0, mean_edge=0.12,
+            lead=-1,
+            n_bets=2,
+            wins=2,
+            losses=0,
+            total_pnl=0.30,
+            roi=0.176,
+            win_rate=1.0,
+            mean_edge=0.12,
         ),
     )
     md, _payload = render_pnl_report(result)

@@ -380,7 +380,12 @@ def _parse_leads(spec: str) -> tuple[int, ...]:
 
 
 def _backtest_pnl(
-    city: str, days: int, leads: tuple[int, ...], spread: float, reports_dir: str
+    city: str,
+    days: int,
+    leads: tuple[int, ...],
+    spread: float,
+    reports_dir: str,
+    ask_source: str = "mid",
 ) -> None:
     end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
     start = end - timedelta(days=days)
@@ -398,6 +403,7 @@ def _backtest_pnl(
             leads=leads,
             city=None if city == "all" else city,
             spread=spread,
+            ask_source=ask_source,  # type: ignore[arg-type]
         )
     finally:
         client.close()
@@ -600,6 +606,12 @@ def main(argv: list[str] | None = None) -> None:
         help="bid/ask spread charged as an ask haircut (ask = mid + spread/2)",
     )
     btp.add_argument(
+        "--asks",
+        choices=["mid", "trades"],
+        default="mid",
+        help="ask price source: mid (default, uses token mid) or trades (uses real BUY fills)",
+    )
+    btp.add_argument(
         "--reports-dir", default=REPORTS_DIR, help="directory for the P/L backtest report"
     )
 
@@ -643,7 +655,9 @@ def main(argv: list[str] | None = None) -> None:
         _backtest(args.city, args.days, args.width, args.span, args.reports_dir, args.real)
         return
     if args.command == "backtest-pnl":
-        _backtest_pnl(args.city, args.days, _parse_leads(args.leads), args.spread, args.reports_dir)
+        _backtest_pnl(
+            args.city, args.days, _parse_leads(args.leads), args.spread, args.reports_dir, args.asks
+        )
         return
     if args.command == "settle-divergence":
         _settle_divergence(args.pages, args.reports_dir)
