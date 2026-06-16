@@ -80,6 +80,7 @@ class PnlBacktestResult(BaseModel):
 
     n_markets: int
     floor: float
+    floor_no: float | None = None  # per-side NO floor; None means flat (same as floor)
     min_sources: int
     min_edge: float
     spread: float = 0.0
@@ -164,6 +165,7 @@ def replay_market(
     min_edge: float,
     spread: float = 0.0,
     fill_histories: dict[str, list[FillPoint]] | None = None,
+    floor_no: float | None = None,
 ) -> tuple[list[Bet], int]:
     """One best-edge bet per lead, settled against the actual.
 
@@ -208,6 +210,7 @@ def replay_market(
             market_at_lead(market, mids, spread=spread, fills=fills),
             forecast_set,
             floor=floor,
+            floor_no=floor_no,
             min_sources=min_sources,
             min_sigma=min_sigma,
             min_edge=min_edge,
@@ -344,6 +347,7 @@ def backtest_pnl(
     on_or_after: date,
     leads: Sequence[int] = (0, 1, 2, 3),
     floor: float = CONFIDENCE_FLOOR,
+    floor_no: float | None = None,
     min_sources: int = 1,
     min_sigma: float = MIN_SIGMA_F,
     min_edge: float = MIN_EDGE,
@@ -394,9 +398,11 @@ def backtest_pnl(
             end_ts = int(settlement_dt.timestamp()) + 3600
             histories: dict[str, list[PricePoint]] = {}
             candidate_token_ids: list[str] = []
+            # Use the lowest floor for candidate selection (widest net across sides).
+            _candidate_floor = min(floor, floor_no) if floor_no is not None else floor
             for bucket in market.buckets:
                 p_win = bucket_probability(gaussian, bucket)
-                if p_win >= floor or (1 - p_win) >= floor:  # candidate on some side
+                if p_win >= floor or (1 - p_win) >= _candidate_floor:  # candidate on some side
                     histories[bucket.yes_token_id] = fetch_price_history(
                         bucket.yes_token_id, start_ts, end_ts, client
                     )
@@ -425,6 +431,7 @@ def backtest_pnl(
                 settlement_dt,
                 leads=leads,
                 floor=floor,
+                floor_no=floor_no,
                 min_sources=min_sources,
                 min_sigma=min_sigma,
                 min_edge=min_edge,
@@ -444,6 +451,7 @@ def backtest_pnl(
     return PnlBacktestResult(
         n_markets=n_markets,
         floor=floor,
+        floor_no=floor_no,
         min_sources=min_sources,
         min_edge=min_edge,
         spread=spread,
