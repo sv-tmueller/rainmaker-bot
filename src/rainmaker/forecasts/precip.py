@@ -4,6 +4,32 @@ Parallel to the temperature forecast modules: Open-Meteo (multi-model and
 ensemble) and NWS QPF supply the daily forecast horizon in inches, NCEI daily
 summaries supply observed-to-date and a per-month climatology, and the three
 combine into a single (mean, variance) for the monthly total.
+
+## Lag-1 autocorrelation variance inflation (issue #88)
+
+Real daily precipitation is positively autocorrelated (wet spells cluster), so
+treating days as independent understates the monthly-total variance and makes
+the gamma too narrow.
+
+For an AR(1) process the variance of the sum S_N = X_1 + ... + X_N is:
+
+    Var(S_N) = sigma^2 * [N + 2 * sum_{k=1}^{N-1} (N-k) * rho^k]
+
+The inflation factor f(N, rho) = Var(S_N) / (N * sigma^2) is computed by
+`variance_inflation_factor`. This is the exact finite-N form; using the
+asymptotic (1+rho)/(1-rho) over-inflates at short horizons (e.g. N=7 at
+rho=0.3 gives 1.86 vs the correct ~1.68).
+
+The inflation is applied only to the climatology tail contribution, where the
+wet-spell autocorrelation is exact. The forecast-horizon variance is inter-model
+spread (not weather autocorrelation), so it is left unchanged. The monthly-total
+mean is not affected.
+
+rho is fit from the NCEI daily-summaries history used for the climatology, pairing
+only consecutive same-month days (year-boundary pairs are spurious). The result is
+clamped to [0, 0.95] (attains 0.95 via min(rho, 0.95)); negative rho (drying spells,
+rarer) deflates incorrectly and is treated as 0. Near-zero-variance series fall back
+to rho=0.
 """
 
 import calendar
@@ -25,6 +51,7 @@ from rainmaker.forecasts.openmeteo import ENSEMBLE_URL, FORECAST_URL
 
 _PRECIP_FIELD = "precipitation_sum"
 _MM_PER_INCH = 25.4
+_RHO_MAX = 0.95
 
 
 class PrecipForecastSet(BaseModel):
@@ -37,6 +64,49 @@ class PrecipForecastSet(BaseModel):
     n_clim_days: int
 
 
+def variance_inflation_factor(n: int, rho: float) -> float:
+    """Finite-N AR(1) variance-inflation factor for the sum of N correlated days.
+
+    f(N, rho) = Var(S_N) / (N * sigma^2)
+              = 1 + (2/N) * sum_{k=1}^{N-1} (N-k) * rho^k
+
+    Boundary cases: f(1, rho) = 1 always; f(N, 0) = 1 for all N."""
+    if n <= 1 or rho == 0.0:
+        return 1.0
+    total = 0.0
+    rho_k = rho
+    for k in range(1, n):
+        total += (n - k) * rho_k
+        rho_k *= rho
+    return 1.0 + 2.0 * total / n
+
+
+def _lag1_from_dated_series(dated: list[tuple[date, float]]) -> float:
+    """Fit lag-1 autocorrelation from a sorted (date, value) series.
+
+    Only pairs where consecutive dates differ by exactly 1 day contribute to the
+    lag-1 covariance, so year-boundary or missing-day gaps are skipped."""
+    if len(dated) < 2:
+        return 0.0
+    vals = [v for _, v in dated]
+    mean = statistics.fmean(vals)
+    var = statistics.fmean([(v - mean) ** 2 for v in vals])
+    if var < 1e-12:
+        return 0.0
+    pairs = [
+        (dated[i][1] - mean) * (dated[i + 1][1] - mean)
+        for i in range(len(dated) - 1)
+        if (dated[i + 1][0] - dated[i][0]).days == 1
+    ]
+    if not pairs:
+        return 0.0
+    cov = statistics.fmean(pairs)
+    rho = cov / var
+    if rho <= 0.0:
+        return 0.0
+    return min(rho, _RHO_MAX)
+
+
 def monthly_total_moments(
     *,
     observed_total: float,
@@ -45,14 +115,21 @@ def monthly_total_moments(
     clim_daily_var: float,
     n_tail_days: int,
     floor: float,
+    rho: float = 0.0,
 ) -> tuple[float, float]:
     """Mean and variance of the monthly total: observed-to-date (deterministic) +
-    pooled forecast horizon + climatology tail. Daily precip is treated as
-    independent across days (a stated approximation that understates variance)."""
+    pooled forecast horizon + climatology tail.
+
+    rho is the lag-1 autocorrelation of daily precipitation. When rho > 0 the
+    climatology tail variance is inflated by variance_inflation_factor(n_tail_days,
+    rho) to account for wet-spell clustering. The forecast-horizon variance is
+    inter-model spread (not weather autocorrelation) and is left unchanged. The
+    mean is not affected by rho."""
     m_f = sum(statistics.fmean(day) for day in forecast_daily if day)
     v_f = sum(statistics.variance(day) for day in forecast_daily if len(day) >= 2)
     m = observed_total + m_f + n_tail_days * clim_daily_mean
-    v = v_f + n_tail_days * clim_daily_var
+    v_tail = n_tail_days * clim_daily_var * variance_inflation_factor(n_tail_days, rho)
+    v = v_f + v_tail
     return m, max(v, floor)
 
 
@@ -140,19 +217,26 @@ def fetch_nws_qpf(target: PrecipTarget, client: httpx.Client) -> dict[date, floa
 
 def fetch_precip_climatology(
     ghcnd_id: str, month: int, year: int, client: httpx.Client, *, lookback_years: int
-) -> tuple[float, float]:
-    """Climatological daily PRCP mean and variance for the target calendar month.
+) -> tuple[float, float, float]:
+    """Climatological daily PRCP mean, variance, and lag-1 autocorrelation for the
+    target calendar month.
 
     Reads the prior `lookback_years` of NCEI daily summaries and keeps only the
-    target month. Returns (0.0, 0.0) when no history is available."""
+    target month. Returns (0.0, 0.0, 0.0) when no history is available.
+
+    The lag-1 autocorrelation is fit only from consecutive-day pairs within the
+    historical series; year-boundary gaps (e.g. 2024-06-30 -> 2025-06-01) are
+    correctly skipped because `_lag1_from_dated_series` checks date diff == 1."""
     start = date(year - lookback_years, 1, 1)
     end = date(year - 1, 12, 31)
     daily = fetch_actuals(ghcnd_id, start, end, client, "PRCP")
-    month_vals = [v for d, v in daily.items() if d.month == month]
-    if not month_vals:
-        return (0.0, 0.0)
+    month_items = sorted((d, v) for d, v in daily.items() if d.month == month)
+    if not month_items:
+        return (0.0, 0.0, 0.0)
+    month_vals = [v for _, v in month_items]
     var = statistics.variance(month_vals) if len(month_vals) >= 2 else 0.0
-    return (statistics.fmean(month_vals), var)
+    rho = _lag1_from_dated_series(month_items)
+    return (statistics.fmean(month_vals), var, rho)
 
 
 def build_precip_forecast_set(
@@ -181,7 +265,7 @@ def build_precip_forecast_set(
         actuals = fetch_actuals(target.station.ghcnd_id, month_start, last_observed, client, "PRCP")
         observed_total = sum(v for d, v in actuals.items() if month_start <= d <= last_observed)
 
-    clim_mean, clim_var = fetch_precip_climatology(
+    clim_mean, clim_var, clim_rho = fetch_precip_climatology(
         target.station.ghcnd_id, month, year, client, lookback_years=lookback_years
     )
 
@@ -225,6 +309,7 @@ def build_precip_forecast_set(
         clim_daily_var=clim_var,
         n_tail_days=n_clim_days,
         floor=var_floor,
+        rho=clim_rho,
     )
     return PrecipForecastSet(
         target=target,
