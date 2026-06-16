@@ -53,7 +53,7 @@ class Accuracy(BaseModel):
     coverage_50: float | None = None
     coverage_80: float | None = None
     coverage_90: float | None = None
-    reliability_bins: list[dict] | None = None  # serialised ReliabilityBin dicts
+    reliability_bins: list[dict[str, object]] | None = None  # serialised ReliabilityBin dicts
 
 
 def _crps_gaussian(mu: float, sigma: float, actual: float) -> float:

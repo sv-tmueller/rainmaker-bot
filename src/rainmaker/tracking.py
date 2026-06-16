@@ -323,8 +323,7 @@ def compute_live_calibration(conn: Conn) -> list[dict[str, Any]]:
     for r in yes_deduped:
         try:
             lead = (
-                date.fromisoformat(r["settlement_date"])
-                - date.fromisoformat(r["started_at"][:10])
+                date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
             ).days
         except ValueError:
             continue  # unparsable date (e.g. test sentinel "t"): skip

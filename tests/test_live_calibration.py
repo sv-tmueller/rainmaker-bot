@@ -14,14 +14,12 @@ No per-city split -- pooled per (variable, lead).
 """
 
 import json
-import math
 
 import pytest
 from scipy.stats import norm
 
-from rainmaker.backtest import COVERAGE_LEVELS, crps_gaussian, reliability_bins
+from rainmaker.backtest import COVERAGE_LEVELS, crps_gaussian
 from rainmaker.store.db import connect, init_schema
-
 
 # ---------------------------------------------------------------------------
 # Helpers to build synthetic fixtures
@@ -37,8 +35,7 @@ def _run(conn, run_id, started_at):
 
 def _market(conn, market_id, *, city="NYC", variable="TMAX", settlement_date, venue=None):
     conn.execute(
-        "INSERT INTO markets (id, city, variable, settlement_date, venue) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO markets (id, city, variable, settlement_date, venue) VALUES (?, ?, ?, ?, ?)",
         (market_id, city, variable, settlement_date, venue),
     )
 
@@ -358,9 +355,7 @@ def test_write_snapshot_persists_calibration_rows():
 
     write_snapshot(conn, "2026-06-17", "2026-06-17T00:00:00Z")
 
-    row = conn.execute(
-        "SELECT * FROM forecast_accuracy WHERE kind = 'calibration'"
-    ).fetchone()
+    row = conn.execute("SELECT * FROM forecast_accuracy WHERE kind = 'calibration'").fetchone()
     conn.close()
 
     assert row is not None
