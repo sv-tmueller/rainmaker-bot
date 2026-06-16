@@ -1,0 +1,67 @@
+name: db-backup
+on:
+  schedule:
+    # Weekly Sunday 02:00 UTC: low-traffic window, between the 3h scheduled runs.
+    - cron: "0 2 * * 0"
+  workflow_dispatch: {}
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Guard DATABASE_URL is a Postgres DSN
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          case "$DATABASE_URL" in
+            postgres://*|postgresql://*) ;;
+            *) echo "DATABASE_URL is not a Postgres DSN; refusing to dump (would target ephemeral SQLite)"; exit 1 ;;
+          esac
+
+      - name: Guard BACKUP_PASSPHRASE is set
+        env:
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          if [ -z "$BACKUP_PASSPHRASE" ]; then
+            echo "BACKUP_PASSPHRASE is empty; refusing to run (dump would be unencrypted)"; exit 1
+          fi
+
+      - name: Install postgresql-client-17 from PGDG
+        run: |
+          # ubuntu-latest ships pg_dump 16; Supabase may run PG 17, which causes
+          # "server version mismatch" aborts. Installing from PGDG pins to 17.
+          sudo apt-get install -y curl ca-certificates
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          . /etc/os-release
+          sudo sh -c "echo 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $VERSION_CODENAME-pgdg main' > /etc/apt/sources.list.d/pgdg.list"
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
+
+      - name: Dump database (data only)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          DUMP_FILE="rainmaker-$(date -u +%Y%m%dT%H%M%SZ).sql"
+          pg_dump --data-only "$DATABASE_URL" > "$DUMP_FILE"
+          echo "DUMP_FILE=$DUMP_FILE" >> "$GITHUB_ENV"
+
+      - name: Encrypt dump
+        env:
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          gpg --batch --yes --symmetric --cipher-algo AES256 \
+              --pinentry-mode loopback \
+              --passphrase "$BACKUP_PASSPHRASE" \
+              "$DUMP_FILE"
+          rm "$DUMP_FILE"
+          echo "ENCRYPTED_FILE=${DUMP_FILE}.gpg" >> "$GITHUB_ENV"
+
+      - name: Upload encrypted dump
+        uses: actions/upload-artifact@v7
+        with:
+          name: db-backup-${{ github.run_id }}
+          path: ${{ env.ENCRYPTED_FILE }}
+          if-no-files-found: error
+          retention-days: 90
