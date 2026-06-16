@@ -119,3 +119,47 @@ forecast is at the archive horizon (~lead 1); the window is a recent 45 days; th
 flat 5c spread is conservative, so the true edge is likely closer to the 0c
 column. The regime-aware floor above remains a future refinement; 0.80 is a flat
 step toward it. Revisit as more settled history accrues.
+
+## Update 2026-06-16: per-side regime floor adopted (#85)
+
+The deferred "regime-aware floor" option above is now implemented. A sweep over
+190 closed Polymarket TMAX markets (730-day window, leads 0-3, real fill prices
+from the CLOB trades endpoint) scores each scheme. The analysis used the
+yes=0.80 family to isolate the pure NO-floor effect (YES floor unchanged):
+
+| Scheme | Bets | W-L | Win% | Total P/L | ROI |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| flat 0.80 (baseline) | 279 | 222-57 | 79.6% | +19.06u | +9.4% |
+| flat 0.85 | 247 | 199-48 | 80.6% | +12.30u | +6.6% |
+| no=0.75, yes=0.80 | 309 | 240-69 | 77.7% | +23.58u | +10.9% |
+| no=0.70, yes=0.80 | 325 | 240-85 | 73.8% | +17.44u | +7.8% |
+| no=0.65, yes=0.80 | 344 | 244-100 | 70.9% | +13.77u | +6.0% |
+| no=0.75, yes=0.85 | 309 | 240-69 | 77.7% | +22.63u | +10.4% |
+| no=0.70, yes=0.85 | 325 | 240-85 | 73.8% | +16.49u | +7.4% |
+| no=0.65, yes=0.85 | 344 | 244-100 | 70.9% | +12.82u | +5.5% |
+
+The decision rule is the marginal cohort, not total P/L (the totals share a
+common base). Reading the 0.05-step increments in the yes=0.80 column:
+
+| Added cohort | Added bets | Added P/L | Added P/L per bet |
+| --- | ---: | ---: | ---: |
+| 0.80 -> 0.75 (p_no in [0.75, 0.80)) | +30 | +4.52u | +0.15u |
+| 0.75 -> 0.70 (p_no in [0.70, 0.75)) | +16 | -6.14u | -0.38u |
+| 0.70 -> 0.65 (p_no in [0.65, 0.70)) | +19 | -3.67u | -0.19u |
+
+The 0.75 threshold is exactly where marginal value turns negative. The 30 added
+NO bets at p_no in [0.75, 0.80) deliver +4.52u at +15% P/L per bet. The next
+cohort destroys value. This aligns with the calibration evidence: the NO
+(longshot) regime is well-calibrated at p_no > ~0.75; below that the forecast
+becomes less reliable.
+
+Decision: adopt `CONFIDENCE_FLOOR_NO = 0.75`, keep `CONFIDENCE_FLOOR = 0.80`
+(YES floor unchanged). The YES floor does not change because the yes=0.80 and
+yes=0.85 columns confirm NO improvement from raising it.
+
+Caveats: this sweep is TMAX-only (no precip P/L evidence). The precip path
+accepts `floor_no` in its API but is not relaxed here - no evidence to do so.
+`min_sources` was 1 in the backtest (archive is one source); the live gate uses
+2. Fill coverage was partial for some low-volume buckets, which may fall back to
+the mid price; this slightly optimistic pricing is the same caveat as the
+original 0.80 decision.

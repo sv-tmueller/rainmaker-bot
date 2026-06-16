@@ -12,11 +12,12 @@ from rainmaker.config import (
     MIN_SIGMA_F,
     MIN_SOURCES,
     PRECIP_VAR_FLOOR,
+    PrecipStation,
     Station,
     Target,
     build_target,
 )
-from rainmaker.domain import Bucket, Market
+from rainmaker.domain import Bucket, Market, PrecipBracket, PrecipMonthlyMarket, PrecipTarget
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.forecasts.precip import PrecipForecastSet
 from rainmaker.polymarket.precip_markets import parse_precip_event
@@ -643,3 +644,172 @@ def test_c_floor_binds_at_min_sigma_c() -> None:
     # And the floored value must be distinctly less than the F floor,
     # proving this test would fail if the wrong floor were passed.
     assert report.sigma < MIN_SIGMA_F
+
+
+# ---------------------------------------------------------------------------
+# Per-side floor: lower bar for NO (longshot) regime, higher for YES (#85)
+# ---------------------------------------------------------------------------
+
+
+def test_per_side_floor_no_recommended_yes_blocked():
+    """A NO bet whose p_no clears floor_no but not floor_yes must be recommended;
+    a YES bet at the same probability must be blocked.
+
+    This is the gate-binding property. A flat-floor mutation (floor_no = floor_yes)
+    collapses the asymmetry: the NO bet flips to recommended=False.
+
+    Concrete wiring: floor_no=0.80, floor_yes=0.90, bucket "72-73F" with forecast
+    centered at 70F, sigma=1.5F (floored). p_win(YES) for 72-73F ~ 0.149;
+    p_no ~ 0.851. This clears floor_no=0.80 but not floor_yes=0.90.
+    """
+    market = _market(
+        [
+            _bucket(
+                "72-73\u00b0F",
+                "range",
+                lo=72,
+                hi=73,
+                best_ask=0.20,
+                no_ask=0.15,
+            )
+        ]
+    )
+    # Forecast centered at 70F, sigma floored to 1.5F.
+    # p_win(YES) for 72-73 ~ 0.149 (Z=1.67); p_no ~ 0.851.
+    fs = _forecast_set([69, 70, 70, 71, 71])
+
+    # Per-side floor: floor_no=0.80, floor_yes=0.90, min_sources=2.
+    report = evaluate_market(
+        market,
+        fs,
+        floor=0.90,
+        floor_no=0.80,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.05,
+    )
+    sides = {o.side: o for o in report.outcomes}
+    yes, no = sides["YES"], sides["NO"]
+
+    # Gate-binding assertions: prove the test is not vacuous.
+    assert yes.p_win < 0.90, f"YES p_win={yes.p_win} should be below floor_yes=0.90"
+    assert no.p_win > 0.80, f"NO p_win={no.p_win} should clear floor_no=0.80"
+    assert no.p_win < 0.90, f"NO p_win={no.p_win} should be below floor_yes=0.90"
+    assert no.edge >= 0.05, f"NO edge={no.edge} must clear min_edge"
+
+    assert yes.recommended is False, "YES must be blocked (p_win < floor_yes=0.90)"
+    assert no.recommended is True, "NO must be recommended (p_win > floor_no=0.80)"
+
+    # Flat-floor mutation: floor_no = floor_yes = 0.90 collapses the asymmetry.
+    report_flat = evaluate_market(
+        market,
+        fs,
+        floor=0.90,
+        floor_no=0.90,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.05,
+    )
+    no_flat = next(o for o in report_flat.outcomes if o.side == "NO")
+    assert no_flat.recommended is False, (
+        "NO must flip to not-recommended when floor_no = floor_yes = 0.90 (flat-floor mutation)"
+    )
+
+
+def test_precip_per_side_floor_no_recommended_yes_blocked():
+    """A precip NO bet clearing floor_no but not floor_yes must be recommended;
+    a YES at the same probability must be blocked. Gate-binding property for
+    the precip path (evaluate_precip_market).
+
+    Concrete wiring: mean=2.5 inches, var=0.6 in^2 (gamma fit); bracket "3-4 inches"
+    gives p_yes ~ 0.199, p_no ~ 0.801. With floor_yes=0.90, floor_no=0.80,
+    and no_ask=0.70, edge_no ~ 0.10 > min_edge=0.05.
+    The NO bet clears floor_no=0.80; YES does not clear floor_yes=0.90.
+
+    Flat-floor mutation (floor_no = floor_yes = 0.90) blocks the NO bet.
+    """
+    station = PrecipStation(
+        city="Test City",
+        resolution_name="Test Station",
+        name="Test Station",
+        lat=40.0,
+        lon=-74.0,
+        timezone="America/New_York",
+        ghcnd_id="USW00094728",
+    )
+    target = PrecipTarget(
+        station=station,
+        variable="PRCP",
+        year=2026,
+        month=6,
+        settlement_date=date(2026, 6, 30),
+    )
+    # One bracket: "3-4 inches" -> p_yes ~ 0.199, p_no ~ 0.801
+    # no_ask=0.70: edge_no = 0.801 - 0.70 ~ 0.10, clears min_edge=0.05
+    bracket = PrecipBracket(
+        label='3-4"',
+        kind="range",
+        lo=3.0,
+        hi=4.0,
+        threshold=None,
+        yes_token_id="tok1",
+        best_ask=0.25,
+        best_bid=0.30,
+        yes_price=0.25,
+        no_ask=0.70,
+    )
+    market = PrecipMonthlyMarket(
+        id="test-precip-per-side",
+        slug="test-precip-per-side",
+        title="Test Precip Per-Side",
+        target=target,
+        buckets=[bracket],
+    )
+    fs = PrecipForecastSet(
+        target=target,
+        mean=2.5,
+        var=0.6,
+        coverage=[
+            SourceCoverage(source="open-meteo", ok=True, n_samples=40),
+            SourceCoverage(source="nws", ok=True, n_samples=3),
+        ],
+        n_observed_days=5,
+        n_forecast_days=7,
+        n_clim_days=18,
+    )
+
+    report = evaluate_precip_market(
+        market,
+        fs,
+        floor=0.90,
+        floor_no=0.80,
+        min_sources=2,
+        min_edge=0.05,
+        var_floor=PRECIP_VAR_FLOOR,
+    )
+    sides = {o.side: o for o in report.outcomes}
+    yes, no = sides["YES"], sides["NO"]
+
+    # Gate-binding assertions.
+    assert yes.p_win < 0.90, f"YES p_win={yes.p_win} should be below floor_yes=0.90"
+    assert no.p_win > 0.80, f"NO p_win={no.p_win} should clear floor_no=0.80"
+    assert no.p_win < 0.90, f"NO p_win={no.p_win} should be below floor_yes=0.90"
+    assert no.edge >= 0.05, f"NO edge={no.edge} must clear min_edge"
+
+    assert yes.recommended is False, "YES must be blocked (p_win < floor_yes=0.90)"
+    assert no.recommended is True, "NO must be recommended (p_win > floor_no=0.80)"
+
+    # Flat-floor mutation: floor_no = floor_yes = 0.90 collapses the asymmetry.
+    report_flat = evaluate_precip_market(
+        market,
+        fs,
+        floor=0.90,
+        floor_no=0.90,
+        min_sources=2,
+        min_edge=0.05,
+        var_floor=PRECIP_VAR_FLOOR,
+    )
+    no_flat = next(o for o in report_flat.outcomes if o.side == "NO")
+    assert no_flat.recommended is False, (
+        "NO must flip to not-recommended when floor_no = floor_yes = 0.90 (flat-floor mutation)"
+    )

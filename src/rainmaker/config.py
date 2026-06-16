@@ -378,6 +378,12 @@ MIN_SIGMA_C = MIN_SIGMA_F * 5 / 9  # same physical spread expressed in Celsius (
 # 0.80, relaxed from 0.90: the spread-adjusted P/L backtest showed the higher
 # floor suppressed profitable bets (see docs/architecture/recommendation-gate.md, #58).
 CONFIDENCE_FLOOR = 0.80
+# Per-side NO floor (regime-aware, #85): the NO (longshot) regime is well-calibrated
+# down to ~0.75 while the YES (favorite) regime is overconfident. A sweep over
+# 730 days of closed Polymarket TMAX markets showed the 0.75-0.80 increment adds
+# +EV bets; the 0.70-0.75 increment destroys value. Keep YES at 0.80.
+# See docs/architecture/recommendation-gate.md for the sweep table.
+CONFIDENCE_FLOOR_NO = 0.75
 MIN_SOURCES = 2
 MIN_EDGE = 0.05
 PRECIP_VAR_FLOOR = 0.01  # in^2: variance floor for the monthly-total gamma (~0.1in std)

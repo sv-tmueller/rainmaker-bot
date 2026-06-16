@@ -58,8 +58,15 @@ def evaluate_market(
     min_sources: int,
     min_sigma: float,
     min_edge: float,
+    floor_no: float | None = None,
     calibration: Calibration | None = None,
 ) -> MarketReport:
+    """Edge-rank a temperature market.
+
+    floor applies to YES bets. floor_no applies to NO bets; when None it
+    falls back to floor (flat behaviour, preserving all existing call sites).
+    """
+    no_floor = floor_no if floor_no is not None else floor
     unit = market.target.station.unit
     n_sources = sum(1 for c in forecast_set.coverage if c.ok and c.n_samples > 0)
     # Intl markets (ghcnd_id is None) have no NCEI/ASOS settlement proxy, so NWS
@@ -119,7 +126,7 @@ def evaluate_market(
             p_no = 1 - p_win
             edge_no = p_no - bucket.no_ask
             recommended_no = (
-                p_no >= floor and n_sources >= effective_min_sources and edge_no >= min_edge
+                p_no >= no_floor and n_sources >= effective_min_sources and edge_no >= min_edge
             )
             outcomes.append(
                 RankedOutcome(
@@ -150,12 +157,18 @@ def evaluate_precip_market(
     min_sources: int,
     min_edge: float,
     var_floor: float,
+    floor_no: float | None = None,
 ) -> MarketReport:
     """Edge-rank a monthly precipitation market via the gamma over inch brackets.
 
     The parallel of evaluate_market for the precip path: same YES/NO gates
     (confidence floor, min sources, min edge), same MarketReport, but the
-    distribution is a method-of-moments gamma and calibration is not applied."""
+    distribution is a method-of-moments gamma and calibration is not applied.
+
+    floor applies to YES bets. floor_no applies to NO bets; when None it
+    falls back to floor (flat behaviour, preserving all existing call sites).
+    """
+    no_floor = floor_no if floor_no is not None else floor
     n_sources = sum(1 for c in forecast_set.coverage if c.ok and c.n_samples > 0)
     gamma = fit_gamma(forecast_set.mean, forecast_set.var, floor=var_floor)
     outcomes: list[RankedOutcome] = []
@@ -180,7 +193,7 @@ def evaluate_precip_market(
         if bracket.no_ask is not None and 0 < bracket.no_ask < 1:
             p_no = 1 - p_win
             edge_no = p_no - bracket.no_ask
-            recommended_no = p_no >= floor and n_sources >= min_sources and edge_no >= min_edge
+            recommended_no = p_no >= no_floor and n_sources >= min_sources and edge_no >= min_edge
             outcomes.append(
                 RankedOutcome(
                     bucket_label=bracket.label,
