@@ -43,8 +43,13 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
+          # ubuntu-latest's /usr/bin/pg_dump still resolves to 16 after the
+          # postgresql-client-17 install, so call the versioned binary directly.
+          # pg_dump 16 aborts against Supabase's PG 17 server on a version check.
+          PG_DUMP=/usr/lib/postgresql/17/bin/pg_dump
+          "$PG_DUMP" --version
           DUMP_FILE="rainmaker-$(date -u +%Y%m%dT%H%M%SZ).sql"
-          pg_dump --data-only "$DATABASE_URL" > "$DUMP_FILE"
+          "$PG_DUMP" --data-only "$DATABASE_URL" > "$DUMP_FILE"
           echo "DUMP_FILE=$DUMP_FILE" >> "$GITHUB_ENV"
 
       - name: Encrypt dump
