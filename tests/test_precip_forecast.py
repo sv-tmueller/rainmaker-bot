@@ -10,9 +10,11 @@ from rainmaker.backfill import NCEI_URL
 from rainmaker.forecasts.openmeteo import ENSEMBLE_URL, FORECAST_URL
 from rainmaker.forecasts.precip import (
     build_precip_forecast_set,
+    fit_lag1_autocorrelation,
     monthly_total_moments,
     parse_nws_qpf,
     parse_precip_open_meteo,
+    variance_inflation_factor,
 )
 from rainmaker.polymarket.precip_markets import parse_precip_event
 
@@ -188,3 +190,115 @@ def test_build_precip_forecast_set_pools_all_sources(httpx_mock):
     assert fs.n_observed_days == 5
     assert fs.n_forecast_days == 7
     assert fs.n_observed_days + fs.n_forecast_days + fs.n_clim_days == 30
+
+
+# ---------------------------------------------------------------------------
+# Lag-1 autocorrelation inflation factor (issue #88)
+# ---------------------------------------------------------------------------
+
+# The finite-N AR(1) variance-inflation factor for the sum of N correlated days:
+#   f(N, rho) = Var(S_N) / (N * sigma^2)
+# For AR(1): Var(S_N) = sigma^2 * [N + 2 * sum_{k=1}^{N-1} (N-k) * rho^k]
+# Small-N identities (derived analytically):
+#   f(2, rho) = 1 + rho
+#   f(3, rho) = (3 + 4*rho + 2*rho^2) / 3
+#   f(N, 0)   = 1  for all N  (no-op boundary)
+
+
+def test_variance_inflation_factor_n2_rho05():
+    # f(2, 0.5) = 1 + 0.5 = 1.5
+    assert variance_inflation_factor(2, 0.5) == pytest.approx(1.5)
+
+
+def test_variance_inflation_factor_n3_rho05():
+    # f(3, 0.5) = (3 + 4*0.5 + 2*0.25) / 3 = (3 + 2 + 0.5) / 3 = 5.5 / 3
+    assert variance_inflation_factor(3, 0.5) == pytest.approx(5.5 / 3)
+
+
+def test_variance_inflation_factor_rho_zero_is_noop():
+    # With no autocorrelation the inflated variance must equal the independence sum.
+    for n in (1, 5, 10, 30):
+        assert variance_inflation_factor(n, 0.0) == pytest.approx(1.0), f"n={n}"
+
+
+def test_variance_inflation_factor_rho_zero_n1():
+    # N=1: only one day, no lag-1 pair, factor is always 1.
+    assert variance_inflation_factor(1, 0.5) == pytest.approx(1.0)
+
+
+def test_monthly_total_moments_rho_zero_is_noop():
+    # Default rho=0 must reproduce the pre-existing independence result exactly.
+    m0, v0 = monthly_total_moments(
+        observed_total=0.5,
+        forecast_daily=[[0.1, 0.2]],
+        clim_daily_mean=0.10,
+        clim_daily_var=0.03,
+        n_tail_days=20,
+        floor=0.001,
+        rho=0.0,
+    )
+    m1, v1 = monthly_total_moments(
+        observed_total=0.5,
+        forecast_daily=[[0.1, 0.2]],
+        clim_daily_mean=0.10,
+        clim_daily_var=0.03,
+        n_tail_days=20,
+        floor=0.001,
+    )
+    assert m0 == pytest.approx(m1)
+    assert v0 == pytest.approx(v1)
+
+
+def test_monthly_total_moments_rho_inflates_variance():
+    # rho=0.5 with 20 climatology tail days must produce a strictly wider variance
+    # than rho=0. The expected inflation factor on the tail contribution is
+    # variance_inflation_factor(20, 0.5); the overall variance increases.
+    _, v_base = monthly_total_moments(
+        observed_total=0.0,
+        forecast_daily=[],
+        clim_daily_mean=0.10,
+        clim_daily_var=0.04,
+        n_tail_days=20,
+        floor=0.001,
+        rho=0.0,
+    )
+    _, v_inflated = monthly_total_moments(
+        observed_total=0.0,
+        forecast_daily=[],
+        clim_daily_mean=0.10,
+        clim_daily_var=0.04,
+        n_tail_days=20,
+        floor=0.001,
+        rho=0.5,
+    )
+    expected_factor = variance_inflation_factor(20, 0.5)
+    assert v_inflated == pytest.approx(v_base * expected_factor, rel=1e-6)
+    assert v_inflated > v_base
+
+
+def test_fit_lag1_autocorrelation_known_series():
+    # A simple alternating pattern [0, 1, 0, 1, ...] has lag-1 autocorrelation of -1.
+    # After clamping to [0, 0.95) it should return 0.0.
+    series = [float(i % 2) for i in range(20)]
+    rho = fit_lag1_autocorrelation(series)
+    # Alternating series: negative autocorr -> clamped to 0
+    assert rho == pytest.approx(0.0)
+
+
+def test_fit_lag1_autocorrelation_all_identical_returns_zero():
+    # Constant series: variance is 0, autocorrelation undefined -> fallback to 0.
+    assert fit_lag1_autocorrelation([0.5] * 30) == pytest.approx(0.0)
+
+
+def test_fit_lag1_autocorrelation_short_series_returns_zero():
+    # Fewer than 2 pairs: can't compute.
+    assert fit_lag1_autocorrelation([]) == pytest.approx(0.0)
+    assert fit_lag1_autocorrelation([1.0]) == pytest.approx(0.0)
+
+
+def test_fit_lag1_autocorrelation_positively_correlated():
+    # A series with clear positive autocorrelation: blocks of same value.
+    # [0,0,0,...,1,1,1,...] has high positive lag-1 autocorrelation.
+    series = [0.0] * 15 + [1.0] * 15
+    rho = fit_lag1_autocorrelation(series)
+    assert rho > 0.3
