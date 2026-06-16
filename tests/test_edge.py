@@ -481,14 +481,16 @@ def _gate_market_intl() -> Market:
 
 
 def _gate_market_us() -> Market:
-    """US market with the same cheap tail bucket so edge is positive."""
+    """US market: forecast centered at 70F, bucket "68F or higher", so p_win > CONFIDENCE_FLOOR
+    and edge > MIN_EDGE. Only the source gate (n_sources=1 < min_sources=2) blocks it.
+    """
     target = Target(station=_US_STATION_FOR_GATE, variable="TMAX", local_date=date(2026, 5, 31))
     return Market(
         id="gate_us",
         slug="gate-us",
         title="Highest temperature in NYC on May 31?",
         target=target,
-        buckets=[_bucket("54°F or below", "below", threshold=54, best_ask=0.05)],
+        buckets=[_bucket("68°F or higher", "above", threshold=68, best_ask=0.05)],
     )
 
 
@@ -520,7 +522,7 @@ def _single_source_c(target: Target) -> ForecastSet:
 
 
 def _single_source_f(target: Target) -> ForecastSet:
-    """One live source, forecast centered at 70F (far from below-54F threshold)."""
+    """One live source (NWS absent), forecast centered at 70F (above the 68F threshold)."""
     samples = [
         ForecastSample(
             source="open-meteo",
@@ -593,8 +595,12 @@ def test_us_market_single_source_blocked() -> None:
         min_edge=MIN_EDGE,
     )
     assert report.n_sources == 1
-    # Even with positive edge, US 1-source must not be recommended.
-    assert not any(o.recommended for o in report.outcomes)
+    yes = next(o for o in report.outcomes if o.side == "YES")
+    # Floor and edge gates pass: the source gate is the only binding constraint.
+    assert yes.p_win >= CONFIDENCE_FLOOR, f"p_win={yes.p_win} must clear CONFIDENCE_FLOOR"
+    assert yes.edge >= MIN_EDGE, f"edge={yes.edge} must clear MIN_EDGE"
+    # US 1-source must not be recommended despite passing the other two gates.
+    assert yes.recommended is False
 
 
 def test_ghcnd_none_discriminator_cannot_reach_us_stations() -> None:
