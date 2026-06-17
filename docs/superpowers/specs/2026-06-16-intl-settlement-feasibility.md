@@ -204,6 +204,21 @@ no additional cost.
    METAR), OGIMET daily summaries, or scraped WU published daily highs - not a
    repeat of the IEM-vs-WU-hourly comparison, which is same-source.
 
+   **Amended 2026-06-17 (maintainer decision, batch #191): condition #4 is
+   waived.** The independent backcheck proved structurally unsatisfiable with
+   free sources: WU published dailies are paywalled (401) / bot-blocked; EGLC
+   and SBGR have no co-located WMO synoptic station; and SYNOP/CLIMAT (the only
+   option left, for LFPB/EFHK) measures a different physical quantity - a true
+   max-thermometer reading over a synoptic period - than the METAR spot-tmpc
+   stream the markets settle on, so it is not a valid validator (a 7-date trial
+   produced an 86% artefactual flip rate, driven by SYNOP/METAR quantity
+   mismatch and transmission gaps, not by IEM being wrong). The spike's
+   same-source validation (94 spot-checks: 74 TMAX + 20 TMIN, zero bucket flips
+   vs WU hourly METAR) is accepted as the settlement-confidence basis, since
+   both IEM and WU draw the same METAR feed that WU settles on. Acquiring paid
+   WU access was rejected (free-sources-only policy, CLAUDE.md). Intl betting
+   recommendations may rely on IEM settlement on this basis.
+
 ---
 
 ## 6. Rough implementation shape for #103c
