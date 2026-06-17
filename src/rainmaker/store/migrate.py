@@ -31,6 +31,19 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
             "ALTER TABLE calibration ADD COLUMN var_b REAL",
         ],
     ),
+    # Probability-calibration columns for forecast_accuracy rows with kind='calibration'.
+    # Pooled per (variable, lead) across cities; station is the sentinel 'ALL'.
+    # reliability is stored as a JSON TEXT array of ReliabilityBin dicts.
+    (
+        "0009_forecast_accuracy_calibration",
+        [
+            "ALTER TABLE forecast_accuracy ADD COLUMN crps REAL",
+            "ALTER TABLE forecast_accuracy ADD COLUMN coverage_50 REAL",
+            "ALTER TABLE forecast_accuracy ADD COLUMN coverage_80 REAL",
+            "ALTER TABLE forecast_accuracy ADD COLUMN coverage_90 REAL",
+            "ALTER TABLE forecast_accuracy ADD COLUMN reliability TEXT",
+        ],
+    ),
 ]
 
 

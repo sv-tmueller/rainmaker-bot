@@ -48,6 +48,12 @@ class Accuracy(BaseModel):
     n: int
     mae_f: float  # mean absolute error, degrees F
     bias_f: float  # mean signed error (mu - actual), degrees F
+    # Probability-calibration metrics; None for rows computed without dist_params.
+    crps: float | None = None
+    coverage_50: float | None = None
+    coverage_80: float | None = None
+    coverage_90: float | None = None
+    reliability_bins: list[dict[str, object]] | None = None  # serialised ReliabilityBin dicts
 
 
 def _crps_gaussian(mu: float, sigma: float, actual: float) -> float:
