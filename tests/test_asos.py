@@ -480,6 +480,41 @@ def test_intl_local_day_bucketing_includes_prior_utc_day_obs(httpx_mock):
     assert result[date(2026, 6, 9)] == pytest.approx(19.0, abs=0.01)
 
 
+def test_intl_local_day_bucketing_negative_offset_sao_paulo(httpx_mock):
+    """SBGR (Sao Paulo, UTC-3): a NEXT-UTC-day obs falls on the target local day
+    and must be included; a same-UTC-day obs that is the PRIOR local day must be
+    excluded. Negative-offset mirror of the EGLC (UTC+1) boundary tests."""
+    # Local day 2026-06-09 in America/Sao_Paulo (UTC-3) = UTC 2026-06-09 03:00 to 2026-06-10 02:59.
+    csv = (
+        "station,valid,tmpc\n"
+        # UTC 2026-06-09 02:30 = local 2026-06-08 23:30 (PRIOR local day) -> EXCLUDED.
+        # Hottest reading; if it leaked in, TMAX would be 30.0.
+        "SBGR,2026-06-09 02:30,30.0\n"
+        # Within local 2026-06-09:
+        "SBGR,2026-06-09 12:30,25.0\n"
+        "SBGR,2026-06-09 18:30,24.0\n"
+        # UTC 2026-06-10 02:30 = local 2026-06-09 23:30 (NEXT UTC day, target day) -> INCLUDED.
+        # This is the true daily max.
+        "SBGR,2026-06-10 02:30,26.0\n"
+        # UTC 2026-06-10 03:30 = local 2026-06-10 00:30 (NEXT local day) -> EXCLUDED.
+        "SBGR,2026-06-10 03:30,35.0\n"
+    )
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=csv)
+    with httpx.Client() as client:
+        result = fetch_asos_daily_extreme(
+            "SBGR",
+            date(2026, 6, 8),
+            date(2026, 6, 10),
+            client,
+            "TMAX",
+            local_tz="America/Sao_Paulo",
+            target_date=date(2026, 6, 9),
+        )
+    # 26.0 (next UTC day, local 06-09) is the max; 30.0 (prior local day) and
+    # 35.0 (next local day) must be excluded.
+    assert result[date(2026, 6, 9)] == pytest.approx(26.0, abs=0.01)
+
+
 def test_intl_omits_report_type_param(httpx_mock):
     """Intl requests must NOT send report_type (to include SPECI obs)."""
     fixture = (FIXTURES / "mesonet_asos_eglc_2026-06-09.csv").read_text()
