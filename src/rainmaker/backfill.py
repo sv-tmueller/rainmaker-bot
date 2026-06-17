@@ -268,9 +268,16 @@ def _calibration_actuals(
     Kalshi-only stations (KNYC, KMDW) -> NCEI GHCND daily-summaries (unchanged).
     """
     asos_code = ICAO_TO_ASOS_STATION.get(station.icao)
-    if asos_code is not None:
+    # Guard the US ASOS path (Fahrenheit, UTC bucketing) to F-unit stations. Intl
+    # (Celsius) stations share ICAO_TO_ASOS_STATION for settlement but are
+    # uncalibrated by design and have no calibration-actuals path, so refuse them
+    # loudly rather than return silently-wrong Fahrenheit. Unreachable today
+    # (_distinct_stations never yields INTL_STATIONS); defensive against a future caller.
+    if asos_code is not None and station.unit == "F":
         return fetch_asos_daily_extreme(asos_code, start, end, client, variable)
-    return fetch_actuals(station.ghcnd_id, start, end, client, variable)  # type: ignore[arg-type]
+    if station.ghcnd_id is None:
+        raise ValueError(f"no calibration-actuals path for intl station {station.icao}")
+    return fetch_actuals(station.ghcnd_id, start, end, client, variable)
 
 
 def build_pairs(

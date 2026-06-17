@@ -6,33 +6,41 @@ Idempotent: already-settled markets are skipped, and a market whose data is
 not published yet is left for a later run.
 
 Settlement source routing:
-  Polymarket TMAX/TMIN -> ASOS (Iowa State Mesonet): matches Polymarket's resolution source.
-  Polymarket PRCP      -> NCEI GSOM: no ASOS precip path.
-  Kalshi (all)         -> NCEI GHCND: Kalshi settles on the NOAA daily climate report.
-  NULL venue (legacy)  -> NCEI GHCND: safe fallback, does not send legacy rows to ASOS.
+  Polymarket TMAX/TMIN (US)   -> ASOS (Iowa State Mesonet): Fahrenheit, UTC bucketing.
+  Polymarket TMAX/TMIN (intl) -> ASOS (Iowa State Mesonet): Celsius, local-day bucketing.
+  Polymarket PRCP             -> NCEI GSOM: no ASOS precip path.
+  Kalshi (all)                -> NCEI GHCND: Kalshi settles on the NOAA daily climate report.
+  NULL venue (legacy)         -> NCEI GHCND: safe fallback, does not send legacy rows to ASOS.
 
-Batching (ASOS path):
-  Polymarket TMAX/TMIN markets are grouped by (asos_station, variable). All markets
+Batching (US ASOS path):
+  US Polymarket TMAX/TMIN markets are grouped by (asos_station, variable). All markets
   in a group share one Mesonet request covering their full date range. This collapses
   O(markets) requests to O(distinct station x variable) <= ~22 per run.
+
+Intl ASOS path:
+  Each intl market is fetched individually with a ±1 UTC-day padded window and
+  local-day bucketing (no report_type filter; all obs types including SPECI).
 """
 
 import json
 import sys
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import httpx
 
 from rainmaker.backfill import fetch_actuals, fetch_monthly_precip
-from rainmaker.config import PRECIP_STATIONS, STATIONS
+from rainmaker.config import INTL_STATIONS, PRECIP_STATIONS, STATIONS
 from rainmaker.forecasts.asos import ICAO_TO_ASOS_STATION, fetch_asos_daily_extreme
 from rainmaker.probability.outcomes import settles
 from rainmaker.probability.precip_outcomes import precip_settles
 from rainmaker.store.db import Conn
 from rainmaker.store.query import settled_polymarket_temp_markets, unsettled_markets
 from rainmaker.store.record import record_outcome
+
+# Set of city names that are international (Celsius, local-day bucketing).
+_INTL_CITIES: frozenset[str] = frozenset(INTL_STATIONS.keys())
 
 
 def _legacy_ghcnd(market: dict[str, str]) -> str | None:
@@ -46,8 +54,11 @@ def _legacy_ghcnd(market: dict[str, str]) -> str | None:
 
 
 def _asos_code_for(city: str) -> str | None:
-    """Return the Mesonet 3-letter ASOS code for a city, or None if unmapped."""
-    station = STATIONS.get(city)
+    """Return the IEM ASOS code for a city, or None if unmapped.
+
+    Checks US STATIONS first, then INTL_STATIONS. Returns None for unknown cities.
+    """
+    station = STATIONS.get(city) or INTL_STATIONS.get(city)
     if station is None:
         return None
     return ICAO_TO_ASOS_STATION.get(station.icao)
@@ -124,17 +135,19 @@ def run_settlement(
     """Settle every unsettled past market. Returns (settled, waiting).
 
     Routes by venue and variable:
-    - Polymarket TMAX/TMIN -> ASOS (Iowa State Mesonet), batched by station+variable
-    - Polymarket PRCP      -> NCEI GSOM
-    - Kalshi (all)         -> NCEI GHCND
-    - NULL venue (legacy)  -> NCEI GHCND (safe fallback)
+    - Polymarket TMAX/TMIN (US)   -> ASOS, Fahrenheit, batched by station+variable
+    - Polymarket TMAX/TMIN (intl) -> ASOS, Celsius, local-day bucketing, one per market
+    - Polymarket PRCP             -> NCEI GSOM
+    - Kalshi (all)                -> NCEI GHCND
+    - NULL venue (legacy)         -> NCEI GHCND (safe fallback)
     """
     all_markets = unsettled_markets(conn, today)
     settled = 0
     waiting = 0
 
     # Separate Polymarket TMAX/TMIN markets (ASOS path) from everything else.
-    asos_markets: list[dict[str, Any]] = []
+    us_asos_markets: list[dict[str, Any]] = []
+    intl_asos_markets: list[dict[str, Any]] = []
     other_markets: list[dict[str, Any]] = []
 
     for m in all_markets:
@@ -149,15 +162,18 @@ def run_settlement(
             continue
 
         if venue == "polymarket" and variable in {"TMAX", "TMIN"}:
-            asos_markets.append(m)
+            if m["city"] in _INTL_CITIES:
+                intl_asos_markets.append(m)
+            else:
+                us_asos_markets.append(m)
         else:
             other_markets.append(m)
 
-    # --- ASOS batch path ---
+    # --- US ASOS batch path ---
     # Group by (asos_code, variable), fetch once per group over [min_date, max_date].
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
 
-    for m in asos_markets:
+    for m in us_asos_markets:
         asos_code = _asos_code_for(m["city"])
         if asos_code is None:
             print(
@@ -189,6 +205,46 @@ def run_settlement(
                 continue
             record_outcome(conn, m["market_id"], value, settled_at)
             settled += 1
+
+    # --- Intl ASOS path ---
+    # One request per market. UTC window padded ±1 day covers any timezone offset.
+    # local_tz drives local-day bucketing and Celsius return.
+    for m in intl_asos_markets:
+        asos_code = _asos_code_for(m["city"])
+        if asos_code is None:
+            print(
+                f"skipping {m['market_id']}: no station for {m['city']!r}",
+                file=sys.stderr,
+            )
+            continue
+        intl_station = INTL_STATIONS[m["city"]]
+        target = date.fromisoformat(m["settlement_date"])
+        # Pad ±1 UTC day so the full local day is always in the fetch window.
+        fetch_start = target - timedelta(days=1)
+        fetch_end = target + timedelta(days=1)
+        try:
+            lookup = fetch_asos_daily_extreme(
+                asos_code,
+                fetch_start,
+                fetch_end,
+                client,
+                m["variable"],
+                local_tz=intl_station.timezone,
+                target_date=target,
+            )
+        except httpx.HTTPError as exc:
+            print(
+                f"waiting on {m['market_id']}: ASOS fetch failed: {exc}",
+                file=sys.stderr,
+            )
+            waiting += 1
+            continue
+        value = lookup.get(target)
+        if value is None:
+            waiting += 1
+            continue
+        record_outcome(conn, m["market_id"], value, settled_at)
+        settled += 1
 
     # --- NCEI path (Kalshi, PRCP, NULL-venue legacy) ---
     for m in other_markets:
@@ -230,12 +286,19 @@ def regrade_polymarket_settlements(conn: Conn, client: httpx.Client, regraded_at
     returns no data for the settlement date are skipped (not counted).
 
     Re-runnable: running twice converges to the same ASOS value.
+
+    Note: intl cities are excluded from regrade. They settled in Celsius via the
+    local-day path; regrade operates in Fahrenheit (US-only). Intl settlement
+    is idempotent by design (IEM is the authoritative source, same as Wunderground).
     """
     all_markets = settled_polymarket_temp_markets(conn)
 
     # Group by (asos_code, variable), fetch once per group.
+    # Intl cities are excluded: they settled in Celsius; regrade is US-only.
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for m in all_markets:
+        if m["city"] in _INTL_CITIES:
+            continue
         asos_code = _asos_code_for(m["city"])
         if asos_code is None:
             # No ASOS mapping for this city: skip silently (should not occur for
