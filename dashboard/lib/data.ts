@@ -39,6 +39,35 @@ export type AccSlot = { live: AccCell | null; backtest: AccCell | null };
 export type AccRow = { city: string; cells: Record<number, AccSlot> };
 export type Accuracy = { leads: number[]; rows: AccRow[] };
 
+export type ReliabilityBin = {
+  lo: number;
+  hi: number;
+  predicted_mean: number;
+  observed_freq: number;
+  count: number;
+};
+
+export type CalibrationCell = {
+  n: number;
+  crps: number;
+  coverage50: number;
+  coverage80: number;
+  coverage90: number;
+  reliabilityBins: ReliabilityBin[];
+};
+
+export type CalibrationRow = {
+  variable: string;
+  lead: number;
+  cell: CalibrationCell;
+};
+
+export type CalibrationData = {
+  leads: number[];
+  variables: string[];
+  rows: CalibrationRow[];
+};
+
 export type SettledBet = {
   date: string;
   title: string;
@@ -57,7 +86,7 @@ export async function getDashboardData() {
   const [runsQ, snapsQ, accQ, outcomesQ] = await Promise.all([
     db.from("runs").select("id, started_at, coverage").order("started_at", { ascending: false }).limit(1),
     db.from("tracking_snapshot").select("*").order("snapshot_date", { ascending: true }),
-    db.from("forecast_accuracy").select("city, lead_time, kind, n, mae_f, bias_f").order("city").order("lead_time"),
+    db.from("forecast_accuracy").select("city, variable, lead_time, kind, n, mae_f, bias_f, crps, coverage_50, coverage_80, coverage_90, reliability").order("city").order("lead_time"),
     db.from("outcomes").select("market_id, actual_value, settled_at").order("settled_at", { ascending: false }).limit(30),
   ]);
 
@@ -193,19 +222,54 @@ export async function getDashboardData() {
     nScored: s.n_scored as number,
   }));
 
-  // Assemble accuracy pivot.
-  // TMAX-only today; add variable to the key when TMIN accuracy lands.
+  // Assemble accuracy pivot (MAE/bias rows only; kind='calibration' rows feed CalibrationPanel).
   const accMap = new Map<string, AccRow>();
   const leadSet = new Set<number>();
+  const calRows: CalibrationRow[] = [];
+  const calLeadSet = new Set<number>();
+  const calVarSet = new Set<string>();
   for (const r of accQ.data ?? []) {
-    const city = r.city as string;
     const lead = r.lead_time as number;
     if (lead < 0) continue; // a run after settlement is a catch-up, not a forecast
+    const kind = r.kind as string;
+
+    if (kind === "calibration") {
+      // Calibration rows: station='ALL', variable+lead are the keys.
+      const variable = (r.variable as string | null) ?? "";
+      if (!variable) continue;
+      let bins: ReliabilityBin[] = [];
+      try {
+        const parsed = JSON.parse((r.reliability as string | null) ?? "[]");
+        if (Array.isArray(parsed)) bins = parsed as ReliabilityBin[];
+      } catch {
+        // unparsable reliability JSON: leave bins empty
+      }
+      calLeadSet.add(lead);
+      calVarSet.add(variable);
+      calRows.push({
+        variable,
+        lead,
+        cell: {
+          n: r.n as number,
+          crps: (r.crps as number | null) ?? 0,
+          coverage50: (r.coverage_50 as number | null) ?? 0,
+          coverage80: (r.coverage_80 as number | null) ?? 0,
+          coverage90: (r.coverage_90 as number | null) ?? 0,
+          reliabilityBins: bins,
+        },
+      });
+      continue;
+    }
+
+    // kind 'live' or 'backtest': feed the per-city MAE/bias AccuracyGrid.
+    if (kind !== "live" && kind !== "backtest") continue;
+    const city = (r.city as string | null) ?? "";
+    if (!city) continue;
     leadSet.add(lead);
     const row = accMap.get(city) ?? { city, cells: {} };
     const cell = { n: r.n as number, mae: r.mae_f as number, bias: r.bias_f as number };
     const slot = row.cells[lead] ?? { live: null, backtest: null };
-    if (r.kind === "backtest") slot.backtest = cell;
+    if (kind === "backtest") slot.backtest = cell;
     else slot.live = cell;
     row.cells[lead] = slot;
     accMap.set(city, row);
@@ -213,6 +277,11 @@ export async function getDashboardData() {
   const accuracy: Accuracy = {
     leads: [...leadSet].sort((a, b) => a - b),
     rows: [...accMap.values()].sort((a, b) => a.city.localeCompare(b.city)),
+  };
+  const calibration: CalibrationData = {
+    leads: [...calLeadSet].sort((a, b) => a - b),
+    variables: [...calVarSet].sort(),
+    rows: calRows,
   };
 
   // Assemble settled bets.
@@ -258,5 +327,5 @@ export async function getDashboardData() {
       .map(({ settledAt: _settledAt, ...rest }) => rest);
   }
 
-  return { run, bets, snapshots, accuracy, settled };
+  return { run, bets, snapshots, accuracy, calibration, settled };
 }
