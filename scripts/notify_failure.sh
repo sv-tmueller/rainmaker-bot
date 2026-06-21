@@ -9,9 +9,12 @@ RUN_URL="${2:?run URL required}"
 ISSUE_TITLE="ops: scheduled workflow failing"
 BODY="Workflow **${WORKFLOW_NAME}** failed.\n\nRun: ${RUN_URL}"
 
-# Search for an existing open issue with the exact title.
+# Search for an existing open issue with the exact title. The server-side
+# title search keeps the ops issue in the result set even past the default
+# 30-item page; the exact-title select guards against a substring match.
 ISSUE_NUMBER=$(gh issue list \
   --state open \
+  --search "${ISSUE_TITLE} in:title" \
   --json number,title \
   --jq ".[] | select(.title == \"${ISSUE_TITLE}\") | .number" \
   | head -1)
