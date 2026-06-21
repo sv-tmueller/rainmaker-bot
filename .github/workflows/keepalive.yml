@@ -1,0 +1,38 @@
+name: keepalive
+on:
+  schedule:
+    # Daily at 07:00 UTC. Resets Supabase's 7-day inactivity timer so prod
+    # never pauses even during a multi-day outage of the main scheduled-run (#198).
+    - cron: "0 7 * * *"
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  issues: write
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Ping production DB
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          case "$DATABASE_URL" in
+            postgres://*|postgresql://*) ;;
+            *) echo "DATABASE_URL is not a Postgres DSN; refusing to run"; exit 1 ;;
+          esac
+          psql "$DATABASE_URL" -c 'select 1'
+  notify:
+    runs-on: ubuntu-latest
+    needs: [ping]
+    if: failure()
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Alert on failure
+        run: |
+          bash scripts/notify_failure.sh \
+            "keepalive" \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
