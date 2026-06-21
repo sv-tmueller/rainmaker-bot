@@ -5,7 +5,7 @@ on:
     # never pauses even during a multi-day outage of the main scheduled-run (#198).
     - cron: "0 7 * * *"
   workflow_dispatch: {}
-  # TEMP: push trigger to verify on feature branch (removed before merge)
+  # Trigger on branch push for live verification only (removed after PR merges).
   push:
     branches: [fix/198-db-keepalive-alerting]
 permissions:
@@ -25,7 +25,6 @@ jobs:
             postgres://*|postgresql://*) ;;
             *) echo "DATABASE_URL is not a Postgres DSN; refusing to run"; exit 1 ;;
           esac
-          echo "TEMP: forced failure for alert-path verification"; exit 1
           psql "$DATABASE_URL" -c 'select 1'
   notify:
     runs-on: ubuntu-latest
