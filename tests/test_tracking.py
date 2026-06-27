@@ -1,9 +1,15 @@
 import json
+import math
 
 import pytest
 
 from rainmaker.store.db import connect, init_schema
-from rainmaker.tracking import compute_calibration, compute_pnl
+from rainmaker.tracking import (
+    _wilson_interval,
+    compute_attribution,
+    compute_calibration,
+    compute_pnl,
+)
 
 
 def _setup(conn):
@@ -723,3 +729,229 @@ def test_legacy_fallback_null_outcome_spec():
     pnl = compute_pnl(conn)
     conn.close()
     assert (pnl["wins"], pnl["losses"]) == (1, 0)
+
+
+# ---------------------------------------------------------------------------
+# Attribution tests (TDD: these must fail until compute_attribution is added)
+# ---------------------------------------------------------------------------
+
+
+def test_wilson_interval_known_value():
+    # k=8 wins out of n=10: standard Wilson 95% CI at z=1.96
+    # lo = (p + z^2/2n - z*sqrt(p(1-p)/n + z^2/4n^2)) / (1 + z^2/n)
+    # Expected: lo ~ 0.4902, hi ~ 0.9433
+    lo, hi = _wilson_interval(8, 10)
+    assert lo == pytest.approx(0.4902, abs=1e-3)
+    assert hi == pytest.approx(0.9433, abs=1e-3)
+
+
+def test_wilson_interval_n0_edge():
+    # n=0: undefined; return (0.0, 1.0) to signal full uncertainty
+    lo, hi = _wilson_interval(0, 0)
+    assert lo == 0.0
+    assert hi == 1.0
+
+
+def _setup_attribution_fixture(conn):
+    """Three bets across two cities, two venues, two variables, three lead buckets.
+
+    Bet A: NYC, polymarket (NULL venue), TMAX
+      started_at=2026-05-28T00:00:00, settlement_date=2026-05-30 -> lead=2
+      edge=0.12  -> bucket [.10,.20)
+      p_win=0.88 -> bucket [.80,.90)
+      ask=0.40, actual=71 (70-71 wins) -> WIN, pnl=+0.60, staked=0.40
+
+    Bet B: LAX, kalshi, TMIN
+      started_at=2026-05-29T00:00:00, settlement_date=2026-05-30 -> lead=1
+      edge=0.22  -> bucket [.20,inf)
+      p_win=0.93 -> bucket [.90,.95)
+      ask=0.35, actual=75 (70-71 does NOT win) -> LOSS, pnl=-0.35, staked=0.35
+
+    Bet C: NYC, kalshi, TMAX
+      started_at=2026-05-26T00:00:00, settlement_date=2026-05-30 -> lead=4 -> bucket 3+
+      edge=0.08  -> bucket [.05,.10)
+      p_win=0.78 -> bucket [.75,.80)
+      ask=0.45, actual=71 (70-71 wins) -> WIN, pnl=+0.55, staked=0.45
+
+    Overall: n=3, wins=2, losses=1, total_pnl=0.80, total_staked=1.20, roi=0.80/1.20
+    """
+    init_schema(conn)
+    # Bet A: NYC, polymarket (NULL venue), TMAX, lead=2, edge=0.12, p_win=0.88, win
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("rA", "2026-05-28T00:00:00", "ok"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue) VALUES (?, ?, ?, ?, ?)",
+        ("mA", "NYC", "TMAX", "2026-05-30", None),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("rA", "mA", "70-71°F", 0.40, 0.40, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("rA", "mA", "70-71°F", 0.88, 0.12, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("mA", 71.0, "t"),  # 71 in 70-71 -> wins
+    )
+    # Bet B: LAX, kalshi, TMIN, lead=1, edge=0.22, p_win=0.93, loss
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("rB", "2026-05-29T00:00:00", "ok"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue) VALUES (?, ?, ?, ?, ?)",
+        ("mB", "LAX", "TMIN", "2026-05-30", "kalshi"),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("rB", "mB", "70-71°F", 0.35, 0.35, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("rB", "mB", "70-71°F", 0.93, 0.22, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("mB", 75.0, "t"),  # 75 NOT in 70-71 -> loss
+    )
+    # Bet C: NYC, kalshi, TMAX, lead=4 (3+ bucket), edge=0.08, p_win=0.78, win
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("rC", "2026-05-26T00:00:00", "ok"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue) VALUES (?, ?, ?, ?, ?)",
+        ("mC", "NYC", "TMAX", "2026-05-30", "kalshi"),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("rC", "mC", "70-71°F", 0.45, 0.45, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("rC", "mC", "70-71°F", 0.78, 0.08, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("mC", 71.0, "t"),  # 71 in 70-71 -> wins
+    )
+    conn.commit()
+
+
+def test_compute_attribution_per_segment_values():
+    """Per-segment n/wins/losses/roi match hand-computed values from the fixture."""
+    conn = connect(":memory:")
+    _setup_attribution_fixture(conn)
+    result = compute_attribution(conn)
+    conn.close()
+
+    # --- city dimension ---
+    by_city = {s["segment"]: s for s in result["city"]}
+    # NYC: bets A (win, pnl=+0.60, staked=0.40) + C (win, pnl=+0.55, staked=0.45)
+    nyc = by_city["NYC"]
+    assert nyc["n"] == 2
+    assert nyc["wins"] == 2
+    assert nyc["losses"] == 0
+    assert nyc["roi"] == pytest.approx((0.60 + 0.55) / (0.40 + 0.45))
+    # LAX: bet B (loss, pnl=-0.35, staked=0.35)
+    lax = by_city["LAX"]
+    assert lax["n"] == 1
+    assert lax["wins"] == 0
+    assert lax["losses"] == 1
+    assert lax["roi"] == pytest.approx(-0.35 / 0.35)
+
+    # --- venue dimension ---
+    by_venue = {s["segment"]: s for s in result["venue"]}
+    # polymarket: bet A (win)
+    pm = by_venue["polymarket"]
+    assert pm["n"] == 1
+    assert pm["wins"] == 1
+    assert pm["roi"] == pytest.approx(0.60 / 0.40)
+    # kalshi: bets B (loss) + C (win)
+    kal = by_venue["kalshi"]
+    assert kal["n"] == 2
+    assert kal["wins"] == 1
+    assert kal["losses"] == 1
+    assert kal["roi"] == pytest.approx((-0.35 + 0.55) / (0.35 + 0.45))
+
+    # --- variable dimension ---
+    by_var = {s["segment"]: s for s in result["variable"]}
+    # TMAX: bets A + C (both win)
+    assert by_var["TMAX"]["n"] == 2
+    assert by_var["TMAX"]["wins"] == 2
+    # TMIN: bet B (loss)
+    assert by_var["TMIN"]["n"] == 1
+    assert by_var["TMIN"]["wins"] == 0
+
+    # --- lead dimension ---
+    by_lead = {s["segment"]: s for s in result["lead"]}
+    # lead=1: bet B
+    assert by_lead["1"]["n"] == 1
+    assert by_lead["1"]["wins"] == 0
+    # lead=2: bet A
+    assert by_lead["2"]["n"] == 1
+    assert by_lead["2"]["wins"] == 1
+    # lead=4 -> 3+ bucket: bet C
+    assert by_lead["3+"]["n"] == 1
+    assert by_lead["3+"]["wins"] == 1
+
+    # --- edge bucket dimension ---
+    by_edge = {s["segment"]: s for s in result["edge"]}
+    # edge=0.12 -> [.10,.20): bet A (win)
+    assert by_edge["[.10,.20)"]["n"] == 1
+    assert by_edge["[.10,.20)"]["wins"] == 1
+    # edge=0.22 -> [.20,inf): bet B (loss)
+    assert by_edge["[.20,inf)"]["n"] == 1
+    assert by_edge["[.20,inf)"]["wins"] == 0
+    # edge=0.08 -> [.05,.10): bet C (win)
+    assert by_edge["[.05,.10)"]["n"] == 1
+    assert by_edge["[.05,.10)"]["wins"] == 1
+
+    # --- p_win bucket dimension ---
+    by_pw = {s["segment"]: s for s in result["p_win"]}
+    # p_win=0.88 -> [.80,.90): bet A
+    assert by_pw["[.80,.90)"]["n"] == 1
+    assert by_pw["[.80,.90)"]["wins"] == 1
+    # p_win=0.93 -> [.90,.95): bet B
+    assert by_pw["[.90,.95)"]["n"] == 1
+    assert by_pw["[.90,.95)"]["wins"] == 0
+    # p_win=0.78 -> [.75,.80): bet C
+    assert by_pw["[.75,.80)"]["n"] == 1
+    assert by_pw["[.75,.80)"]["wins"] == 1
+
+
+def test_compute_attribution_consistency_with_compute_pnl():
+    """Each dimension's summed n/wins/losses and recomputed ROI match compute_pnl."""
+    conn = connect(":memory:")
+    _setup_attribution_fixture(conn)
+    pnl = compute_pnl(conn)
+    result = compute_attribution(conn)
+    conn.close()
+
+    for dim in ("city", "venue", "variable", "lead", "edge", "p_win"):
+        segs = result[dim]
+        total_n = sum(s["n"] for s in segs)
+        total_wins = sum(s["wins"] for s in segs)
+        total_losses = sum(s["losses"] for s in segs)
+        total_pnl_sum = sum(s["pnl"] for s in segs)
+        total_staked = sum(s["staked"] for s in segs)
+        roi_recomputed = total_pnl_sum / total_staked if total_staked else 0.0
+
+        assert total_n == pnl["n_bets"], f"{dim}: n mismatch"
+        assert total_wins == pnl["wins"], f"{dim}: wins mismatch"
+        assert total_losses == pnl["losses"], f"{dim}: losses mismatch"
+        assert total_pnl_sum == pytest.approx(pnl["total_pnl"]), f"{dim}: pnl mismatch"
+        assert roi_recomputed == pytest.approx(pnl["roi"]), f"{dim}: roi mismatch"
