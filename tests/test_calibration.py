@@ -211,7 +211,7 @@ def test_apply_corrects_mu_and_sigma():
         n_samples=50,
     )
     out, calibrated = apply_calibration(g, cal, min_sigma=1.5, min_samples=30)
-    assert calibrated is True
+    assert calibrated == "full"
     assert out.mu == pytest.approx(69.0)
     assert out.sigma == pytest.approx(3.0)  # sqrt(1 + 2*4)
 
@@ -244,16 +244,134 @@ def test_apply_falls_back_when_too_few_samples():
         n_samples=5,
     )
     out, calibrated = apply_calibration(g, cal, min_sigma=1.5, min_samples=30)
-    assert calibrated is False
+    assert calibrated == "uncalibrated"
     assert out.mu == 70.0  # bias not applied
     assert out.sigma > 2.0  # widened
 
 
 def test_apply_none_falls_back():
     out, calibrated = apply_calibration(Gaussian(mu=70.0, sigma=2.0), None, min_sigma=1.5)
-    assert calibrated is False
+    assert calibrated == "uncalibrated"
     assert out.mu == 70.0
     assert out.sigma == pytest.approx(2.5)  # 2.0 * UNCALIBRATED_WIDEN 1.25, above min_sigma 1.5
+
+
+# ---------------------------------------------------------------------------
+# apply_calibration: bias-only regime (MIN_CAL_BIAS_SAMPLES <= n < MIN_CAL_SAMPLES)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_bias_only_corrects_mu_not_variance():
+    """n=15 in [10, 30): bias is applied to mu, spread stays widened-raw."""
+    g = Gaussian(mu=70.0, sigma=2.0)
+    cal = Calibration(
+        station="KLGA",
+        variable="TMAX",
+        lead_time=1,
+        bias=2.0,
+        var_a=0.0,
+        var_b=1.0,
+        n_samples=15,
+    )
+    out, state = apply_calibration(g, cal, min_sigma=1.5, min_samples=30, min_bias_samples=10)
+    assert state == "bias_only"
+    # mu shifted by bias
+    assert out.mu == pytest.approx(68.0)  # 70.0 - 2.0
+    # sigma stays widened-raw (2.0 * 1.25 = 2.5, above min_sigma 1.5)
+    assert out.sigma == pytest.approx(2.5)
+
+
+def test_apply_bias_only_pathological_variance_does_not_fire():
+    """The load-bearing invariant: var_a=100, var_b=5 must NOT influence sigma in bias-only.
+
+    With g.sigma=2.0, if EMOS fired: sqrt(100 + 5*4) = sqrt(120) ~ 10.95.
+    The correct bias-only sigma is max(2.0*1.25, 1.5) = 2.5.
+    """
+    g = Gaussian(mu=70.0, sigma=2.0)
+    cal = Calibration(
+        station="KLGA",
+        variable="TMAX",
+        lead_time=1,
+        bias=1.0,
+        var_a=100.0,
+        var_b=5.0,
+        n_samples=15,
+    )
+    out, state = apply_calibration(g, cal, min_sigma=1.5, min_samples=30, min_bias_samples=10)
+    assert state == "bias_only"
+    # Must be 2.5, NOT sqrt(120) ~ 10.95
+    assert out.sigma == pytest.approx(2.5)
+
+
+def test_apply_boundary_n9_is_uncalibrated():
+    """n=9 < MIN_CAL_BIAS_SAMPLES=10 -> uncalibrated, mu unchanged."""
+    g = Gaussian(mu=70.0, sigma=2.0)
+    cal = Calibration(
+        station="KLGA",
+        variable="TMAX",
+        lead_time=1,
+        bias=3.0,
+        var_a=0.0,
+        var_b=1.0,
+        n_samples=9,
+    )
+    out, state = apply_calibration(g, cal, min_sigma=1.5, min_samples=30, min_bias_samples=10)
+    assert state == "uncalibrated"
+    assert out.mu == pytest.approx(70.0)  # bias NOT applied
+
+
+def test_apply_boundary_n10_is_bias_only():
+    """n=10 == MIN_CAL_BIAS_SAMPLES -> bias_only, mu corrected."""
+    g = Gaussian(mu=70.0, sigma=2.0)
+    cal = Calibration(
+        station="KLGA",
+        variable="TMAX",
+        lead_time=1,
+        bias=3.0,
+        var_a=0.0,
+        var_b=1.0,
+        n_samples=10,
+    )
+    out, state = apply_calibration(g, cal, min_sigma=1.5, min_samples=30, min_bias_samples=10)
+    assert state == "bias_only"
+    assert out.mu == pytest.approx(67.0)  # 70.0 - 3.0
+
+
+def test_apply_boundary_n29_is_bias_only():
+    """n=29 < MIN_CAL_SAMPLES=30 -> bias_only, spread is widened-raw."""
+    g = Gaussian(mu=70.0, sigma=2.0)
+    cal = Calibration(
+        station="KLGA",
+        variable="TMAX",
+        lead_time=1,
+        bias=1.0,
+        var_a=5.0,
+        var_b=2.0,
+        n_samples=29,
+    )
+    out, state = apply_calibration(g, cal, min_sigma=1.5, min_samples=30, min_bias_samples=10)
+    assert state == "bias_only"
+    assert out.mu == pytest.approx(69.0)
+    # sigma is widened-raw (2.0*1.25=2.5), NOT sqrt(5+2*4)=sqrt(13)~3.6
+    assert out.sigma == pytest.approx(2.5)
+
+
+def test_apply_boundary_n30_is_full():
+    """n=30 == MIN_CAL_SAMPLES -> full EMOS, var_a/var_b applied."""
+    g = Gaussian(mu=70.0, sigma=2.0)
+    cal = Calibration(
+        station="KLGA",
+        variable="TMAX",
+        lead_time=1,
+        bias=1.0,
+        var_a=1.0,
+        var_b=2.0,
+        n_samples=30,
+    )
+    out, state = apply_calibration(g, cal, min_sigma=1.5, min_samples=30, min_bias_samples=10)
+    assert state == "full"
+    assert out.mu == pytest.approx(69.0)
+    assert out.sigma == pytest.approx(3.0)  # sqrt(1 + 2*4)
 
 
 # ---------------------------------------------------------------------------

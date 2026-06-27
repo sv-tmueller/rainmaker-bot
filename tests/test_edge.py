@@ -206,8 +206,8 @@ def test_evaluate_market_applies_calibration():
     cald = evaluate_market(
         market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0, calibration=cal
     )
-    assert raw.calibrated is False
-    assert cald.calibrated is True
+    assert raw.calibrated == "uncalibrated"
+    assert cald.calibrated == "full"
     assert raw.mu is not None and cald.mu is not None
     assert cald.mu == raw.mu - 2.0  # bias shifts mu down
 
@@ -221,9 +221,36 @@ def test_evaluate_market_low_sample_calibration_falls_back():
     out = evaluate_market(
         market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0, calibration=cal
     )
-    assert out.calibrated is False
+    assert out.calibrated == "uncalibrated"
     assert out.mu == 70.5  # bias not applied below MIN_CAL_SAMPLES
     assert out.sigma is not None and out.sigma > 1.5  # widened fallback
+
+
+def test_evaluate_market_bias_only_calibration():
+    """n in [10, 30) -> bias_only: mu is shifted, sigma is widened-raw (not EMOS)."""
+    market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.20)])
+    fs = _forecast_set([70, 70, 71, 71])  # raw fit mean 70.5
+    cal = Calibration(
+        station="KLGA",
+        variable="TMAX",
+        lead_time=1,
+        bias=2.0,
+        var_a=100.0,  # pathological var_a: must not fire in bias_only
+        var_b=5.0,
+        n_samples=15,
+    )
+    raw = evaluate_market(market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0)
+    cald = evaluate_market(
+        market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0, calibration=cal
+    )
+    assert cald.calibrated == "bias_only"
+    assert raw.mu is not None and cald.mu is not None
+    # mu is shifted by bias
+    assert cald.mu == pytest.approx(raw.mu - 2.0)
+    # sigma must be widened-raw, not sqrt(100 + 5*g.sigma^2) which would be huge
+    # raw.sigma uses fit_gaussian sigma (floored at 1.5); apply_calibration widens it to 1.875
+    assert cald.sigma is not None and cald.sigma < 5.0  # not pathological EMOS value
+    assert cald.sigma == pytest.approx(1.875)  # max(1.5*1.25, 1.5) = 1.875
 
 
 def test_recommended_requires_min_edge():
@@ -345,7 +372,7 @@ def test_evaluate_precip_market_ranks_brackets():
     assert report.variable == "PRCP"
     assert report.station == "Central Park NY"
     assert report.settlement_date == date(2026, 6, 30)
-    assert report.calibrated is False
+    assert report.calibrated == "uncalibrated"
     assert report.n_sources == 2
     assert report.mu == pytest.approx(2.5)
     assert report.sigma == pytest.approx(math.sqrt(0.6))

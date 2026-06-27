@@ -43,7 +43,7 @@ class MarketReport(BaseModel):
     mu: float | None
     sigma: float | None
     n_sources: int
-    calibrated: bool
+    calibrated: Literal["uncalibrated", "bias_only", "full"]
     coverage: list[SourceCoverage]
     outcomes: list[RankedOutcome]
     excluded_no_ask: list[str]
@@ -87,7 +87,12 @@ def evaluate_market(
     )
     if not forecast_set.samples:
         return MarketReport(
-            **common, calibrated=False, mu=None, sigma=None, outcomes=[], excluded_no_ask=[]
+            **common,
+            calibrated="uncalibrated",
+            mu=None,
+            sigma=None,
+            outcomes=[],
+            excluded_no_ask=[],
         )
 
     # Forecast sources always produce F values. For C markets, convert to C so
@@ -95,7 +100,7 @@ def evaluate_market(
     samples = [_f_to_c(s) for s in forecast_set.samples] if unit == "C" else forecast_set.samples
     gaussian = fit_gaussian(samples, min_sigma=min_sigma)
     # Apply calibration only when a cell is provided; with none, use the raw fit.
-    calibrated = False
+    calibrated: Literal["uncalibrated", "bias_only", "full"] = "uncalibrated"
     if calibration is not None:
         gaussian, calibrated = apply_calibration(gaussian, calibration, min_sigma=min_sigma)
     outcomes: list[RankedOutcome] = []
@@ -215,7 +220,7 @@ def evaluate_precip_market(
         mu=forecast_set.mean,
         sigma=math.sqrt(forecast_set.var),
         n_sources=n_sources,
-        calibrated=False,
+        calibrated="uncalibrated",
         coverage=forecast_set.coverage,
         outcomes=outcomes,
         excluded_no_ask=excluded,
