@@ -214,14 +214,14 @@ def _wilson_interval(wins: int, n: int) -> tuple[float, float]:
 def _lead_bucket(settlement_date: str, started_at: str) -> str:
     """Map (settlement_date, started_at) to a lead-time bucket label.
 
-    Negatives (run after settlement) fold into '<0 (catch-up)' rather than
-    being dropped, so every bet lands in exactly one bucket and the dimension
-    totals reconcile with compute_pnl.
+    Buckets: 0, 1, 2, 3+ (3 or more days), <0 (catch-up run after settlement).
+    Negatives fold into '<0 (catch-up)' rather than being dropped so every bet
+    lands in exactly one bucket and dimension totals reconcile with compute_pnl.
     """
     lead = (date.fromisoformat(settlement_date) - date.fromisoformat(started_at[:10])).days
     if lead < 0:
         return "<0 (catch-up)"
-    if lead <= 3:
+    if lead <= 2:
         return str(lead)
     return "3+"
 

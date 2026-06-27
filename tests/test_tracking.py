@@ -751,6 +751,16 @@ def test_wilson_interval_n0_edge():
     assert hi == 1.0
 
 
+def test_lead_bucket_boundary():
+    """lead=3 must land in '3+', not a spurious standalone '3' bucket."""
+    from rainmaker.tracking import _lead_bucket
+
+    assert _lead_bucket("2026-05-30", "2026-05-27T00:00:00") == "3+"  # lead=3
+    assert _lead_bucket("2026-05-30", "2026-05-28T00:00:00") == "2"  # lead=2
+    assert _lead_bucket("2026-05-30", "2026-05-26T00:00:00") == "3+"  # lead=4
+    assert _lead_bucket("2026-05-30", "2026-05-31T00:00:00") == "<0 (catch-up)"  # lead=-1
+
+
 def _setup_attribution_fixture(conn):
     """Three bets across two cities, two venues, two variables, three lead buckets.
 
