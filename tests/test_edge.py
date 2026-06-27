@@ -468,16 +468,26 @@ _INTL_STATION_FOR_GATE = Station(
 
 
 def _gate_market_intl() -> Market:
-    """Intl market with an above-18C tail bucket priced cheaply so p_win is high."""
+    """Intl market with two buckets to exercise both YES and NO recommended paths.
+
+    Forecast centered at 20C:
+    - "18C or higher": p_win ~ 0.9+, best_ask=0.05 -> edge >> min_edge (YES side live)
+    - "25C or higher": no best_ask so YES excluded; no_ask=0.05 -> p_no ~ 0.98,
+      edge_no >> min_edge (NO side live). This forces the test to cover the NO branch.
+    Both sides would be recommended for a US station; the intl gate must force both off.
+    """
     target = Target(station=_INTL_STATION_FOR_GATE, variable="TMAX", local_date=date(2026, 6, 15))
-    # Forecast will be centered at 20C; "18C or higher" captures most of the mass.
-    # best_ask=0.05 -> edge = p_win - 0.05 >> min_edge when p_win is near 1.
     return Market(
         id="gate_intl",
         slug="gate-intl",
         title="Highest temperature in London on Jun 15?",
         target=target,
-        buckets=[_bucket("18°C or higher", "above", threshold=18, best_ask=0.05)],
+        buckets=[
+            _bucket("18°C or higher", "above", threshold=18, best_ask=0.05),
+            # no best_ask so the YES side is excluded; cheap no_ask means the NO side
+            # would be recommended (p_no ~ 0.98, edge_no ~ 0.93) absent the intl gate.
+            _bucket("25°C or higher", "above", threshold=25, no_ask=0.05),
+        ],
     )
 
 
@@ -548,20 +558,20 @@ def _single_source_f(target: Target) -> ForecastSet:
     )
 
 
-def test_intl_market_single_source_recommended() -> None:
-    """An intl market (ghcnd_id=None) with real n_sources=1 must produce recommended=True.
+def test_intl_market_never_recommended() -> None:
+    """An intl market (ghcnd_id=None) must never produce recommended=True, on any side.
 
-    This is the RED test: before the gate change, min_sources=2 blocks all intl recs
-    when n_sources=1. After the fix, evaluate_market internally relaxes to
-    effective_min_sources=1 for ghcnd_id=None stations.
+    Even when all other gates pass (confidence floor, min_sources relaxed to 1,
+    edge positive), the uncalibratable flag forces recommended off for both YES and
+    NO outcomes. Advisory display is unaffected: outcomes list is non-empty and
+    mu/sigma are set.
     """
     market = _gate_market_intl()
     assert market.target.station.ghcnd_id is None
 
     fs = _single_source_c(market.target)
-    assert sum(1 for c in fs.coverage if c.ok and c.n_samples > 0) == 1  # real 1-source
+    assert sum(1 for c in fs.coverage if c.ok and c.n_samples > 0) == 1
 
-    # Call site always passes MIN_SOURCES=2; the function relaxes internally for intl.
     report = evaluate_market(
         market,
         fs,
@@ -570,10 +580,13 @@ def test_intl_market_single_source_recommended() -> None:
         min_sigma=MIN_SIGMA_C,
         min_edge=MIN_EDGE,
     )
-    assert report.n_sources == 1
-    yes = [o for o in report.outcomes if o.side == "YES"]
-    assert len(yes) == 1
-    assert yes[0].recommended is True
+    # Advisory display must still render (intl markets stay in the report).
+    assert report.outcomes, "outcomes must be non-empty so advisory still renders"
+    assert report.mu is not None, "mu must be set so advisory still renders"
+    # Recommended must be off for every outcome, both YES and NO sides.
+    assert all(
+        not o.recommended for o in report.outcomes
+    ), f"intl market must not recommend any outcome; got {report.outcomes}"
 
 
 def test_us_market_single_source_blocked() -> None:

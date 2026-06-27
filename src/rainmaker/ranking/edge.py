@@ -73,6 +73,9 @@ def evaluate_market(
     # (US-only) never returns data. One live source is the maximum available.
     # US markets always require min_sources because they have both NWS and open-meteo.
     effective_min_sources = 1 if market.target.station.ghcnd_id is None else min_sources
+    # Markets with no GHCN-D id cannot be calibrated (no actuals history to fit against).
+    # Force recommended off while leaving the forecast and advisory display intact.
+    uncalibratable = market.target.station.ghcnd_id is None
     common: dict[str, Any] = dict(
         market_id=market.id,
         title=market.title,
@@ -107,7 +110,12 @@ def evaluate_market(
         # bets (pay 0.99 to win 0.01) out of the recommendations.
         if bucket.best_ask is not None and bucket.best_ask > 0:
             edge = p_win - bucket.best_ask
-            recommended = p_win >= floor and n_sources >= effective_min_sources and edge >= min_edge
+            recommended = (
+                not uncalibratable
+                and p_win >= floor
+                and n_sources >= effective_min_sources
+                and edge >= min_edge
+            )
             outcomes.append(
                 RankedOutcome(
                     bucket_label=bucket.label,
@@ -126,7 +134,10 @@ def evaluate_market(
             p_no = 1 - p_win
             edge_no = p_no - bucket.no_ask
             recommended_no = (
-                p_no >= no_floor and n_sources >= effective_min_sources and edge_no >= min_edge
+                not uncalibratable
+                and p_no >= no_floor
+                and n_sources >= effective_min_sources
+                and edge_no >= min_edge
             )
             outcomes.append(
                 RankedOutcome(
