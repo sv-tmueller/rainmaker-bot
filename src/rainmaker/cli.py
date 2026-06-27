@@ -61,7 +61,12 @@ from rainmaker.store.record import (
     save_accuracy,
     save_calibration,
 )
-from rainmaker.tracking import compute_calibration, compute_pnl, write_snapshot
+from rainmaker.tracking import (
+    compute_attribution,
+    compute_calibration,
+    compute_pnl,
+    write_snapshot,
+)
 
 SUPPORTED_VARIABLES = {"TMAX", "TMIN"}
 
@@ -504,6 +509,43 @@ def _track(db_path: str) -> None:
     print(f"calibration: Brier {brier}, recommended hit rate {hit} (n={cal['n']})")
 
 
+def _attribution(db_path: str) -> None:
+    if "://" not in db_path:
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        result = compute_attribution(conn)
+    finally:
+        conn.close()
+    dim_labels = {
+        "city": "City",
+        "venue": "Venue",
+        "variable": "Variable",
+        "lead": "Lead (days)",
+        "edge": "Edge bucket",
+        "p_win": "p_win bucket",
+    }
+    for dim, label in dim_labels.items():
+        segs = result[dim]
+        if not segs:
+            continue
+        print(f"\n--- {label} ---")
+        print(
+            f"{'Segment':<20} {'n':>5} {'W':>5} {'L':>5} {'Win%':>7} "
+            f"{'CI_lo':>7} {'CI_hi':>7} {'ROI':>8}"
+        )
+        for s in segs:
+            win_pct = f"{s['win_pct']:.0%}" if s["n"] else "n/a"
+            lo = f"{s['wilson_lo']:.3f}"
+            hi = f"{s['wilson_hi']:.3f}"
+            roi = f"{s['roi']:+.1%}"
+            print(
+                f"{s['segment']:<20} {s['n']:>5} {s['wins']:>5} {s['losses']:>5} "
+                f"{win_pct:>7} {lo:>7} {hi:>7} {roi:>8}"
+            )
+
+
 def _snapshot(db_path: str) -> None:
     on_date = _today().isoformat()
     if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
@@ -655,6 +697,11 @@ def main(argv: list[str] | None = None) -> None:
     track = sub.add_parser("track", help="report P&L and calibration over settled markets")
     track.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
+    attr = sub.add_parser(
+        "attribution", help="per-segment P&L breakdown by city/venue/variable/lead/edge/p_win"
+    )
+    attr.add_argument("--db", default=DB_PATH, help="SQLite database path")
+
     snapshot = sub.add_parser("snapshot", help="write a daily P&L/calibration snapshot row")
     snapshot.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
@@ -685,5 +732,7 @@ def main(argv: list[str] | None = None) -> None:
         _prune(db)
     elif args.command == "track":
         _track(db)
+    elif args.command == "attribution":
+        _attribution(db)
     elif args.command == "snapshot":
         _snapshot(db)
