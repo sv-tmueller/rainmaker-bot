@@ -584,9 +584,9 @@ def test_intl_market_never_recommended() -> None:
     assert report.outcomes, "outcomes must be non-empty so advisory still renders"
     assert report.mu is not None, "mu must be set so advisory still renders"
     # Recommended must be off for every outcome, both YES and NO sides.
-    assert all(
-        not o.recommended for o in report.outcomes
-    ), f"intl market must not recommend any outcome; got {report.outcomes}"
+    assert all(not o.recommended for o in report.outcomes), (
+        f"intl market must not recommend any outcome; got {report.outcomes}"
+    )
 
 
 def test_us_market_single_source_blocked() -> None:
