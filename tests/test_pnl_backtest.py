@@ -7,13 +7,14 @@ from typing import Any
 import httpx
 import pytest
 
+import rainmaker.pnl_backtest as pnl_backtest_mod
 from rainmaker.backfill import (
     HISTORICAL_FORECAST_URL,
     NCEI_URL,
     fetch_historical_forecasts,
     fetch_historical_samples,
 )
-from rainmaker.config import MIN_SIGMA_F, OPENMETEO_MODELS, STATIONS, build_target
+from rainmaker.config import INTL_STATIONS, MIN_SIGMA_F, OPENMETEO_MODELS, STATIONS, build_target
 from rainmaker.domain import Bucket, Market
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.pnl_backtest import (
@@ -954,3 +955,79 @@ def test_backtest_pnl_threads_caps_through(httpx_mock):
     assert result2 is not None
     assert result2.max_edge == pytest.approx(0.50)
     assert result2.max_p_win is None
+
+
+# Phase G - intl station skip (#218)
+
+
+def test_backtest_pnl_skips_intl_stations_before_fetch_actuals(
+    monkeypatch: pytest.MonkeyPatch, httpx_mock: Any
+) -> None:
+    """backtest_pnl skips stations with ghcnd_id=None before calling fetch_actuals.
+
+    An intl station (ghcnd_id=None) would cause fetch_actuals to build an
+    empty-station NCEI query and 400. The guard skips the whole group so
+    fetch_actuals is never called with None. US stations are unaffected.
+    """
+    london = INTL_STATIONS["London"]
+    assert london.ghcnd_id is None, "pre-condition: London has no NCEI proxy"
+
+    us_target = build_target("NYC", "TMAX", date(2026, 3, 2))
+    intl_target = us_target.model_copy(update={"station": london})
+
+    us_market = _market(
+        [_bucket("38°F or higher", "above", threshold=38, yes_token_id="d0", no_token_id="d1")]
+    )
+    intl_market = us_market.model_copy(update={"id": "intl1", "target": intl_target})
+
+    settlement_dt = datetime(2026, 3, 2, 12, tzinfo=UTC)
+
+    # Replace _parse_closed_markets so both markets arrive in the per-station loop.
+    monkeypatch.setattr(
+        pnl_backtest_mod,
+        "_parse_closed_markets",
+        lambda *a, **k: [
+            (us_market, settlement_dt, {}),
+            (intl_market, settlement_dt, {}),
+        ],
+    )
+
+    # Record every ghcnd_id passed to fetch_actuals.
+    fetched_ids: list[str | None] = []
+    original_fetch_actuals = pnl_backtest_mod.fetch_actuals
+
+    def spy_fetch_actuals(ghcnd_id: Any, *args: Any, **kwargs: Any) -> Any:
+        fetched_ids.append(ghcnd_id)
+        return original_fetch_actuals(ghcnd_id, *args, **kwargs)
+
+    monkeypatch.setattr(pnl_backtest_mod, "fetch_actuals", spy_fetch_actuals)
+
+    # Mock HTTP calls. Both responses are reusable so pre-fix (intl station not
+    # yet skipped) extra requests don't cause teardown errors; post-fix only the
+    # US station's requests actually fire.
+    httpx_mock.add_callback(
+        lambda req: httpx.Response(200, json=_hist_fixture()),
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)),
+        is_reusable=True,
+    )
+    httpx_mock.add_callback(
+        lambda req: httpx.Response(200, json=_actuals_fixture()),
+        url=re.compile(re.escape(NCEI_URL)),
+        is_reusable=True,
+    )
+    httpx_mock.add_callback(
+        _clob_callback, url=re.compile(re.escape(CLOB_PRICES_URL)), is_reusable=True
+    )
+
+    with httpx.Client() as client:
+        result = backtest_pnl([], client, on_or_after=date(2026, 3, 1), leads=(0, 1, 2, 3))
+
+    # The intl group must never have reached fetch_actuals with None.
+    assert None not in fetched_ids, (
+        f"fetch_actuals was called with None (intl station not skipped): {fetched_ids}"
+    )
+    # US station was processed: fetch_actuals was called once with a real id.
+    assert fetched_ids == [STATIONS["NYC"].ghcnd_id]
+    # US station contributed markets; intl contributed none.
+    assert result is not None
+    assert result.n_markets >= 1

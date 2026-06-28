@@ -277,3 +277,31 @@ Pending the sweep numbers. Once the table is filled in, evaluate:
    no-ship: leave the gates uncapped and revisit once more live history accrues.
 
 Decision authority: operator, after reviewing the filled-in tables.
+
+## Update 2026-06-28: edge/confidence cap rejected (#205/#218)
+
+The cap sweep was run over the 730-day closed-market universe with `--asks trades`,
+leads 0,1 (leads 2-3 produce no bets; closed-market discovery is mildly
+non-deterministic, ~166-185 markets/run).
+
+| Cap | Bets | Win rate | ROI |
+| --- | ---: | ---: | ---: |
+| uncapped | 221 | 75% | +8.2% |
+| edge <= 0.30 | 231 | 77% | +2.9% |
+| edge <= 0.20 | 182 | 80% | +0.7% |
+| p_win <= 0.90 | 120 | 61% | -6.1% |
+
+Decision: do not ship a cap. Both cap types monotonically reduce ROI. The
+high-edge / high-confidence bets are the profitable ones in the backtest - the
+opposite of the recent live signal (#201), where those bets underperformed. The
+live underperformance is likely the overconfidence now addressed by bias
+calibration (#201); the backtest uses calibrated forecasts. Revisit once
+calibration has re-measured live performance.
+
+Caveats: the 730-day universe is the same archive used for the #85 floor
+decision; it is in-sample for the floor but out-of-sample for the cap question.
+`min_sources` is relaxed to 1 in the backtest (archive is one source), so
+recommended is a superset of the live two-source gate. Closed-market discovery
+is mildly non-deterministic (~166-185 markets/run), so the sign of the ROI gap
+holds but magnitudes are noisy. Run with `--asks trades`, leads 0,1 (leads 2-3 produce
+no bets).

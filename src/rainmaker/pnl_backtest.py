@@ -414,9 +414,11 @@ def backtest_pnl(
     total_fills_used = 0
     for group in by_station.values():
         station = group[0][0].target.station
+        if station.ghcnd_id is None:
+            continue  # intl stations have no NCEI proxy; cannot grade (mirrors #204)
         dates = [m.target.local_date for m, _, _ in group]
         samples_by_date = fetch_historical_samples(station, min(dates), max(dates), client)
-        actuals = fetch_actuals(station.ghcnd_id, min(dates), max(dates), client, "TMAX")  # type: ignore[arg-type]
+        actuals = fetch_actuals(station.ghcnd_id, min(dates), max(dates), client, "TMAX")
         for market, settlement_dt, cond_ids in group:
             samples = samples_by_date.get(market.target.local_date)
             actual = actuals.get(market.target.local_date)
