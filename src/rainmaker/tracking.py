@@ -14,6 +14,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 from scipy.stats import norm
 
 from rainmaker.backtest import COVERAGE_LEVELS, crps_gaussian, reliability_bins
@@ -335,8 +336,7 @@ def _yes_token_for_bucket(raw: str | None, bucket_label: str) -> str | None:
         return None
     try:
         market = Market.model_validate(json.loads(raw))
-    except Exception:
-        # ValidationError (precip market, wrong shape), JSONDecodeError, TypeError
+    except (ValidationError, json.JSONDecodeError, TypeError):
         return None
     for b in market.buckets:
         if b.label == bucket_label:
@@ -361,20 +361,34 @@ def _clv_segment_stats(rows: list[dict[str, Any]], key: str) -> list[dict[str, A
     )
 
 
-def compute_clv(conn: Conn, client: httpx.Client) -> dict[str, Any]:
-    """Closing-line value for recommended Polymarket bets.
+def compute_clv(conn: Conn, client: httpx.Client, lead_hours: int = 24) -> dict[str, Any]:
+    """Closing-line value for recommended Polymarket bets at a fixed pre-settlement lead.
 
     Population: same deduped bets as compute_pnl with venue='polymarket'.
     Advised price: r['ask'] (stored YES ask for YES bets, NO ask for NO bets).
-    Closing price: last CLOB mid point strictly before the synthesized settlement
-    timestamp (settlement_date at 12:00:00 UTC).
 
-    Note: the settlement timestamp is synthesized as settlement_date at 12:00 UTC
-    because daily temp markets publish endDate ~12:00 UTC (enforced by the 6<=hour<=18
-    guard in polymarket/markets.py) but the persisted Market stores only the local_date.
+    The "closing price" is the last CLOB mid point strictly before reference_ts,
+    where reference_ts = settlement_ts - lead_hours * 3600. The default lead of
+    24h measures how our advised price compares to the day-ahead market.
+
+    Settlement timestamp: synthesized as settlement_date at 12:00:00 UTC. This is
+    faithful because Polymarket daily temperature markets publish endDate ~12:00 UTC,
+    enforced by the 6<=hour<=18 guard in polymarket/markets.py. At a 24h reference
+    that +-6h window shifts the actual read to 18-30h before settlement, firmly in
+    the flat day-ahead region of the CLOB time series where prices are stable.
+    (Persisting endDate per market is correctly deferred; see #219.)
+
+    Fetch window: [reference_ts - 6 days, reference_ts). The upper bound is
+    reference_ts rather than settlement_ts; this prevents accidentally including
+    convergence-phase prices that land between reference_ts and settlement.
 
     CLV signs: YES bet -> yes_close - ask; NO bet -> (1 - yes_close) - ask.
     Positive CLV means we bought below the closing line (edge captured).
+
+    n_coincident: count of bets where abs(CLV) < 1e-9 (the yes_close == advised on
+    the YES scale). A high count signals that our advised price was captured at the
+    same moment the reference price was recorded (e.g. lead-1 bet recorded ~24h out).
+    The epsilon (1e-9) is chosen to be smaller than any meaningful price difference.
 
     Caveat: the advised price is an ask; the closing price is the CLOB mid (the
     only price the prices-history endpoint returns). A symmetric half-spread haircut
@@ -384,9 +398,12 @@ def compute_clv(conn: Conn, client: httpx.Client) -> dict[str, Any]:
     Returns:
         n_bets: total deduped Polymarket bets (must equal compute_pnl(conn, 'polymarket')['n_bets'])
         n_clv: subset with a successful closing-price fetch
+        n_coincident: bets where abs(CLV) < 1e-9 (advised == close on YES scale)
         mean_clv: mean CLV over n_clv bets (None when n_clv == 0)
         by_segment: per-dimension mean CLV over n_clv bets, keyed by dim name
     """
+    _EPS = 1e-9  # threshold for "advised == close" (see n_coincident in docstring)
+
     bets = _best_per_market_run(_filter_venue(_settled_rows(conn), "polymarket"))
     n_bets = len(bets)
 
@@ -400,12 +417,14 @@ def compute_clv(conn: Conn, client: httpx.Client) -> dict[str, Any]:
         # by the 6<=hour<=18 guard in polymarket/markets.py; only local_date is persisted.
         y, mo, d = (int(x) for x in settlement_date.split("-"))
         settlement_ts = int(datetime(y, mo, d, 12, 0, 0, tzinfo=UTC).timestamp())
-        start_ts = settlement_ts - 7 * 24 * 3600
+        reference_ts = settlement_ts - lead_hours * 3600
+        # Anchor window start to reference_ts to exclude convergence-phase prices.
+        start_ts = reference_ts - 6 * 24 * 3600
         try:
-            points = fetch_price_history(token, start_ts, settlement_ts, client)
+            points = fetch_price_history(token, start_ts, reference_ts, client)
         except httpx.HTTPError:
             continue
-        yes_close = last_before(points, settlement_ts)
+        yes_close = last_before(points, reference_ts)
         if yes_close is None:
             continue
         side = r.get("side") or "YES"
@@ -420,6 +439,7 @@ def compute_clv(conn: Conn, client: httpx.Client) -> dict[str, Any]:
         clv_rows.append(tagged)
 
     n_clv = len(clv_rows)
+    n_coincident = sum(1 for r in clv_rows if abs(r["_clv"]) < _EPS)
     mean_clv = sum(r["_clv"] for r in clv_rows) / n_clv if n_clv else None
 
     by_segment: dict[str, list[dict[str, Any]]] = {}
@@ -446,6 +466,7 @@ def compute_clv(conn: Conn, client: httpx.Client) -> dict[str, Any]:
     return {
         "n_bets": n_bets,
         "n_clv": n_clv,
+        "n_coincident": n_coincident,
         "mean_clv": mean_clv,
         "by_segment": by_segment,
     }
