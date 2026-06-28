@@ -86,6 +86,8 @@ class PnlBacktestResult(BaseModel):
     spread: float = 0.0
     ask_source: Literal["mid", "trades"] = "mid"
     fill_coverage: FillCoverage | None = None
+    max_edge: float | None = None  # upper edge cap applied in replay; None = no cap
+    max_p_win: float | None = None  # upper p_win cap applied in replay; None = no cap
     per_lead: list[LeadPnl]
     overall: LeadPnl
 
@@ -166,6 +168,8 @@ def replay_market(
     spread: float = 0.0,
     fill_histories: dict[str, list[FillPoint]] | None = None,
     floor_no: float | None = None,
+    max_edge: float | None = None,
+    max_p_win: float | None = None,
 ) -> tuple[list[Bet], int]:
     """One best-edge bet per lead, settled against the actual.
 
@@ -216,6 +220,18 @@ def replay_market(
             min_edge=min_edge,
         )
         recommended = [o for o in report.outcomes if o.recommended]
+        if not recommended:
+            continue
+        # Apply upper caps after evaluate_market, before picking the best bet.
+        # A capped lead falls through to the next-best recommended bet; if none
+        # remain, the lead is skipped (no bet for this lead).
+        if max_edge is not None or max_p_win is not None:
+            recommended = [
+                o
+                for o in recommended
+                if (max_edge is None or o.edge <= max_edge)
+                and (max_p_win is None or o.p_win <= max_p_win)
+            ]
         if not recommended:
             continue
         best = max(recommended, key=lambda o: (o.edge, o.p_win, o.bucket_label, o.side))
@@ -296,6 +312,19 @@ def render_pnl_report(result: PnlBacktestResult) -> tuple[str, dict[str, Any]]:
             f"({cov.fills_used}/{cov.n_leads}); remaining slots fall back to mid.",
         )
         lines.append("")
+    if result.max_edge is not None or result.max_p_win is not None:
+        cap_parts = []
+        if result.max_edge is not None:
+            cap_parts.append(f"max_edge={_pct(result.max_edge)}")
+        if result.max_p_win is not None:
+            cap_parts.append(f"max_p_win={_pct(result.max_p_win)}")
+        lines.append(
+            f"Upper cap applied in replay ({', '.join(cap_parts)}): recommended outcomes "
+            "above the cap are excluded before picking the best-edge bet. A capped lead "
+            "falls through to the next-best recommended bet; it is skipped only when no "
+            "recommended bet remains under the cap.",
+        )
+        lines.append("")
     lines += [
         "| Lead | Bets | W-L | Win rate | Total P/L | ROI | Mean edge |",
         "| --- | --- | --- | --- | --- | --- | --- |",
@@ -354,6 +383,8 @@ def backtest_pnl(
     city: str | None = None,
     spread: float = 0.0,
     ask_source: Literal["mid", "trades"] = "mid",
+    max_edge: float | None = None,
+    max_p_win: float | None = None,
 ) -> PnlBacktestResult | None:
     """Replay closed markets at their historical CLOB price and score the P/L.
 
@@ -437,6 +468,8 @@ def backtest_pnl(
                 min_edge=min_edge,
                 spread=spread,
                 fill_histories=fill_histories,
+                max_edge=max_edge,
+                max_p_win=max_p_win,
             )
             bets.extend(market_bets)
             total_n_leads += len(leads)
@@ -457,6 +490,8 @@ def backtest_pnl(
         spread=spread,
         ask_source=ask_source,
         fill_coverage=fill_coverage,
+        max_edge=max_edge,
+        max_p_win=max_p_win,
         per_lead=per_lead,
         overall=overall,
     )

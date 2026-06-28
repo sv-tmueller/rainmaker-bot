@@ -645,3 +645,279 @@ def test_render_pnl_report_shows_trades_source_and_coverage():
     assert "trades" in lowered or "fill" in lowered
     # coverage should appear as "4 of 8 lead-market slots..."
     assert "4 of 8" in md
+
+
+# Phase F - upper edge / confidence cap (#205)
+#
+# All cap tests use a forecast centered at 70F (tight cluster of samples).
+# Two far-off buckets are used as NO bets: "79-80F" and "85-86F".
+# At 70F mean the p_yes for those is tiny, so p_no ~ 1. Edge = p_no - no_ask.
+# mid=0.20 -> no_ask=0.80 -> edge ~ 0.20 (higher edge, cheaper NO)
+# mid=0.10 -> no_ask=0.90 -> edge ~ 0.10 (lower edge, pricier NO)
+
+
+def _settlement_ts() -> tuple[datetime, int]:
+    dt = datetime(2026, 3, 2, 12, tzinfo=UTC)
+    return dt, int(dt.timestamp())
+
+
+def _far_histories_two_buckets() -> dict[str, list[PricePoint]]:
+    """Price histories for 79-80F (higher edge) and 85-86F (lower edge) NO bets."""
+    _, x = _settlement_ts()
+    return {
+        "ya": [PricePoint(t=x, p=0.20)],  # 79-80F: no_ask=0.80, edge~0.20
+        "yb": [PricePoint(t=x, p=0.10)],  # 85-86F: no_ask=0.90, edge~0.10
+    }
+
+
+def _far_market_two_buckets() -> Market:
+    """Market with two far-off buckets; both produce recommended NO bets at 70F center."""
+    return _market(
+        [
+            _bucket("79-80°F", "range", lo=79, hi=80, yes_token_id="ya", no_token_id="na"),
+            _bucket("85-86°F", "range", lo=85, hi=86, yes_token_id="yb", no_token_id="nb"),
+        ]
+    )
+
+
+def _replay_far(
+    market: Market,
+    histories: dict[str, list[PricePoint]],
+    actual: float = 72.0,
+    **kwargs: Any,
+) -> tuple[list[Bet], int]:
+    settlement, _ = _settlement_ts()
+    return replay_market(
+        market,
+        _tight_forecast_set(),
+        actual,
+        histories,
+        settlement,
+        leads=(0,),
+        floor=0.80,
+        min_sources=1,
+        min_sigma=1.5,
+        min_edge=0.05,
+        **kwargs,
+    )
+
+
+# F1: max_edge=None reproduces the unbounded result
+
+
+def test_cap_max_edge_none_reproduces_unbounded():
+    market = _far_market_two_buckets()
+    histories = _far_histories_two_buckets()
+
+    bets_unbounded, _ = _replay_far(market, histories)
+    bets_capped, _ = _replay_far(market, histories, max_edge=None, max_p_win=None)
+
+    assert len(bets_unbounded) == len(bets_capped)
+    if bets_unbounded:
+        assert bets_unbounded[0].edge == pytest.approx(bets_capped[0].edge)
+        assert bets_unbounded[0].bucket_label == bets_capped[0].bucket_label
+
+
+# F2: max_edge=1.0 also reproduces the unbounded result (nothing excluded)
+
+
+def test_cap_max_edge_1_reproduces_unbounded():
+    market = _far_market_two_buckets()
+    histories = _far_histories_two_buckets()
+
+    bets_unbounded, _ = _replay_far(market, histories)
+    bets_capped, _ = _replay_far(market, histories, max_edge=1.0)
+
+    assert len(bets_unbounded) == len(bets_capped)
+    if bets_unbounded:
+        assert bets_unbounded[0].edge == pytest.approx(bets_capped[0].edge)
+
+
+# F3: cap excludes the only recommended bet -> lead drops to no bet
+
+
+def test_cap_excludes_only_bet_lead_drops():
+    """Single bucket market; tight cap below the bet's edge -> no bet."""
+    _, x = _settlement_ts()
+    market = _market(
+        [_bucket("79-80°F", "range", lo=79, hi=80, yes_token_id="yb", no_token_id="nb")]
+    )
+    histories = {"yb": [PricePoint(t=x, p=0.20)]}  # no_ask=0.80, edge~0.20
+
+    bets_no_cap, _ = _replay_far(market, histories)
+    assert len(bets_no_cap) == 1, "pre-condition: unbounded replay produces a bet"
+    top_edge = bets_no_cap[0].edge
+
+    # Cap strictly below the only bet's edge.
+    bets_capped, _ = _replay_far(market, histories, max_edge=top_edge * 0.5)
+    assert len(bets_capped) == 0
+
+
+# F4: cap excludes top bet but lower-edge bucket survives -> substitution
+
+
+def test_cap_substitutes_lower_edge_bet():
+    """Fall-through: top bet capped, lower-edge recommended bet substitutes.
+
+    Bet count stays 1 for the lead; bucket and edge change to the survivor.
+    """
+    market = _far_market_two_buckets()
+    _, x = _settlement_ts()
+    # "ya" (79-80F) has no_ask=0.80, so edge ~ p_no - 0.80 ~ 0.20.
+    # "yb" (85-86F) has no_ask=0.90, so edge ~ p_no - 0.90 ~ 0.10.
+    # Unbounded picks ya (higher edge). Cap just below ya's edge -> yb substitutes.
+    histories = _far_histories_two_buckets()
+
+    bets_unbounded, _ = _replay_far(market, histories)
+    assert len(bets_unbounded) == 1
+    assert bets_unbounded[0].bucket_label == "79-80°F"
+    edge_a = bets_unbounded[0].edge
+
+    # Verify "yb" is also independently recommended.
+    _, x2 = _settlement_ts()
+    settlement2, _ = _settlement_ts()
+    bets_b_only, _ = replay_market(
+        _market([_bucket("85-86°F", "range", lo=85, hi=86, yes_token_id="yb", no_token_id="nb")]),
+        _tight_forecast_set(),
+        72.0,
+        {"yb": [PricePoint(t=x2, p=0.10)]},
+        settlement2,
+        leads=(0,),
+        floor=0.80,
+        min_sources=1,
+        min_sigma=1.5,
+        min_edge=0.05,
+    )
+    assert len(bets_b_only) == 1, "pre-condition: 85-86F bucket is independently recommended"
+
+    # Cap strictly below ya's edge: ya excluded, yb substitutes.
+    bets_capped, _ = _replay_far(market, histories, max_edge=edge_a * 0.9)
+    assert len(bets_capped) == 1  # still one bet (substitution, not deletion)
+    assert bets_capped[0].bucket_label == "85-86°F"  # yb took over
+    assert bets_capped[0].edge < edge_a  # lower edge
+
+
+# F5: max_p_win is side-agnostic
+
+
+def test_cap_max_p_win_side_agnostic():
+    """A NO bet with p_no>0.97 is excluded by max_p_win=0.97.
+
+    Uses a single far-off bucket: p_no near 1. With max_p_win=0.97 it is excluded.
+    """
+    _, x = _settlement_ts()
+    market = _market(
+        [_bucket("85-86°F", "range", lo=85, hi=86, yes_token_id="yb", no_token_id="nb")]
+    )
+    histories = {"yb": [PricePoint(t=x, p=0.10)]}  # no_ask=0.90, p_no~1
+
+    bets_no_cap, _ = _replay_far(market, histories)
+    assert len(bets_no_cap) == 1, "pre-condition: a NO bet is recommended"
+    assert bets_no_cap[0].side == "NO"
+    assert bets_no_cap[0].p_win > 0.97  # p_no is near 1 at 70F center
+
+    # max_p_win=0.97 excludes it.
+    bets_capped, _ = _replay_far(market, histories, max_p_win=0.97)
+    assert len(bets_capped) == 0
+
+
+# F6: PnlBacktestResult carries caps and render discloses them; JSON round-trips
+
+
+def test_pnl_backtest_result_carries_caps_and_render_discloses():
+    result = PnlBacktestResult(
+        n_markets=2,
+        floor=0.80,
+        min_sources=1,
+        min_edge=0.05,
+        max_edge=0.30,
+        max_p_win=0.97,
+        per_lead=[
+            LeadPnl(
+                lead=0,
+                n_bets=1,
+                wins=1,
+                losses=0,
+                total_pnl=0.10,
+                roi=0.20,
+                win_rate=1.0,
+                mean_edge=0.10,
+            ),
+        ],
+        overall=LeadPnl(
+            lead=-1,
+            n_bets=1,
+            wins=1,
+            losses=0,
+            total_pnl=0.10,
+            roi=0.20,
+            win_rate=1.0,
+            mean_edge=0.10,
+        ),
+    )
+    # JSON round-trip preserves the new fields.
+    dumped = result.model_dump(mode="json")
+    assert dumped["max_edge"] == pytest.approx(0.30)
+    assert dumped["max_p_win"] == pytest.approx(0.97)
+    loaded = PnlBacktestResult.model_validate(dumped)
+    assert loaded.max_edge == pytest.approx(0.30)
+    assert loaded.max_p_win == pytest.approx(0.97)
+
+    # render_pnl_report discloses the caps.
+    md, payload = render_pnl_report(result)
+    lowered = md.lower()
+    assert "max_edge" in lowered or "edge cap" in lowered or "upper" in lowered
+    assert "0.30" in md or "30%" in md  # max_edge value disclosed
+    assert "0.97" in md or "97%" in md  # max_p_win value disclosed
+    # payload round-trips via model_dump
+    assert payload == result.model_dump(mode="json")
+
+
+def test_pnl_backtest_result_no_caps_render_no_crash():
+    """When no cap is set, render produces the standard table without extra disclosure."""
+    result = _sample_result()  # no max_edge/max_p_win set (defaults to None)
+    md, _ = render_pnl_report(result)
+    assert "# Betting P/L backtest" in md
+    assert "| ALL |" in md
+    # No cap disclosure line expected.
+    assert "upper" not in md.lower() or "edge cap" not in md.lower()
+
+
+def test_backtest_pnl_threads_caps_through(httpx_mock):
+    """backtest_pnl accepts max_edge/max_p_win and stores them in the result."""
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+    )
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    httpx_mock.add_callback(
+        _clob_callback, url=re.compile(re.escape(CLOB_PRICES_URL)), is_reusable=True
+    )
+    with httpx.Client() as client:
+        result = backtest_pnl(
+            _closed_events(),
+            client,
+            on_or_after=date(2026, 3, 1),
+            leads=(0, 1, 2, 3),
+            max_edge=None,
+            max_p_win=None,
+        )
+    assert result is not None
+    assert result.max_edge is None
+    assert result.max_p_win is None
+
+    # Re-use the same mocked responses for second call.
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+    )
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    with httpx.Client() as client:
+        result2 = backtest_pnl(
+            _closed_events(),
+            client,
+            on_or_after=date(2026, 3, 1),
+            leads=(0, 1, 2, 3),
+            max_edge=0.50,
+        )
+    assert result2 is not None
+    assert result2.max_edge == pytest.approx(0.50)
+    assert result2.max_p_win is None
