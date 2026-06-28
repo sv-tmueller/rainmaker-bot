@@ -85,11 +85,14 @@ def _latest_run_per_market_day(rows: list[dict[str, Any]]) -> list[dict[str, Any
 
 def _settled_rows(conn: Conn) -> list[dict[str, Any]]:
     # Match the price to the prediction's side; legacy rows with a null side are YES.
+    # city and settlement_date are carried for compute_attribution; compute_pnl and
+    # compute_calibration ignore these extra keys.
     rows = conn.execute(
         "SELECT p.market_id AS market_id, p.run_id AS run_id, p.bucket AS bucket, "
         "p.side AS side, p.p_win AS p_win, p.edge AS edge, "
         "p.recommended AS recommended, m.variable AS variable, m.venue AS venue, "
-        "m.outcome_spec AS outcome_spec, r.started_at AS started_at, "
+        "m.outcome_spec AS outcome_spec, m.city AS city, "
+        "m.settlement_date AS settlement_date, r.started_at AS started_at, "
         "pr.price AS ask, o.actual_value AS actual_value "
         "FROM predictions p "
         "JOIN markets m ON m.id = p.market_id "
@@ -191,6 +194,128 @@ def compute_calibration(conn: Conn, venue: str | None = None) -> dict[str, Any]:
     bets = _best_per_market_run(rows)
     hit_rate = sum(1 for r in bets if _bet_won(r)) / len(bets) if bets else None
     return {"n": len(yes_rows), "brier": brier, "hit_rate": hit_rate}
+
+
+def _wilson_interval(wins: int, n: int) -> tuple[float, float]:
+    """Wilson score 95% confidence interval for a proportion.
+
+    Returns (lo, hi). When n=0, returns (0.0, 1.0) to signal full uncertainty.
+    """
+    if n == 0:
+        return (0.0, 1.0)
+    z = 1.96
+    p = wins / n
+    denom = 1 + z**2 / n
+    center = (p + z**2 / (2 * n)) / denom
+    margin = z * (p * (1 - p) / n + z**2 / (4 * n**2)) ** 0.5 / denom
+    return (center - margin, center + margin)
+
+
+def _lead_bucket(settlement_date: str, started_at: str) -> str:
+    """Map (settlement_date, started_at) to a lead-time bucket label.
+
+    Buckets: 0, 1, 2, 3+ (3 or more days), <0 (catch-up run after settlement).
+    Negatives fold into '<0 (catch-up)' rather than being dropped so every bet
+    lands in exactly one bucket and dimension totals reconcile with compute_pnl.
+    """
+    lead = (date.fromisoformat(settlement_date) - date.fromisoformat(started_at[:10])).days
+    if lead < 0:
+        return "<0 (catch-up)"
+    if lead <= 2:
+        return str(lead)
+    return "3+"
+
+
+def _edge_bucket(edge: float | None) -> str:
+    """Map edge to a half-open bucket label. NULL or sub-0.05 edges share one bucket."""
+    if edge is None or edge < 0.05:
+        return "<.05"
+    if edge < 0.10:
+        return "[.05,.10)"
+    if edge < 0.20:
+        return "[.10,.20)"
+    return "[.20,inf)"
+
+
+def _p_win_bucket(p_win: float) -> str:
+    """Map p_win to a half-open bucket label. Sub-0.75 values share the lowest bucket."""
+    if p_win < 0.75:
+        return "<.75"
+    if p_win < 0.80:
+        return "[.75,.80)"
+    if p_win < 0.90:
+        return "[.80,.90)"
+    if p_win < 0.95:
+        return "[.90,.95)"
+    return "[.95,1.0]"
+
+
+def _segment_stats(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    """Group rows by key, compute per-segment stats, return sorted by segment label."""
+    groups: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"n": 0, "wins": 0, "losses": 0, "pnl": 0.0, "staked": 0.0}
+    )
+    for r in rows:
+        seg = r[key]
+        ask = r["ask"]
+        g = groups[seg]
+        g["n"] += 1
+        g["staked"] += ask
+        if _bet_won(r):
+            g["wins"] += 1
+            g["pnl"] += 1 - ask
+        else:
+            g["losses"] += 1
+            g["pnl"] -= ask
+
+    out: list[dict[str, Any]] = []
+    for seg, g in sorted(groups.items()):
+        n = g["n"]
+        wins = g["wins"]
+        lo, hi = _wilson_interval(wins, n)
+        out.append(
+            {
+                "segment": seg,
+                "n": n,
+                "wins": wins,
+                "losses": g["losses"],
+                "win_pct": wins / n if n else 0.0,
+                "wilson_lo": lo,
+                "wilson_hi": hi,
+                "pnl": g["pnl"],
+                "staked": g["staked"],
+                "roi": g["pnl"] / g["staked"] if g["staked"] else 0.0,
+            }
+        )
+    return out
+
+
+def compute_attribution(conn: Conn) -> dict[str, list[dict[str, Any]]]:
+    """Per-segment P&L attribution across six dimensions.
+
+    Built from a single deduplicated bet list (same population as compute_pnl).
+    Each dimension is an exhaustive partition, so per-dimension totals reconcile
+    with compute_pnl's headline n/wins/losses/pnl/roi.
+    """
+    bets = _best_per_market_run(_settled_rows(conn))
+    # Attach bucketed keys for each attribution dimension
+    tagged: list[dict[str, Any]] = []
+    for r in bets:
+        t = dict(r)
+        t["_venue"] = r.get("venue") or "polymarket"
+        t["_lead"] = _lead_bucket(r["settlement_date"], r["started_at"])
+        t["_edge"] = _edge_bucket(r.get("edge"))
+        t["_p_win"] = _p_win_bucket(r["p_win"])
+        tagged.append(t)
+
+    return {
+        "city": _segment_stats([{**t, "_key": t["city"]} for t in tagged], "_key"),
+        "venue": _segment_stats([{**t, "_key": t["_venue"]} for t in tagged], "_key"),
+        "variable": _segment_stats([{**t, "_key": t["variable"]} for t in tagged], "_key"),
+        "lead": _segment_stats([{**t, "_key": t["_lead"]} for t in tagged], "_key"),
+        "edge": _segment_stats([{**t, "_key": t["_edge"]} for t in tagged], "_key"),
+        "p_win": _segment_stats([{**t, "_key": t["_p_win"]} for t in tagged], "_key"),
+    }
 
 
 def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
