@@ -532,39 +532,12 @@ def _gate_market_us() -> Market:
     )
 
 
-def _single_source_c(target: Target) -> ForecastSet:
-    """One live source (NWS absent), forecast values as F, centered at 20C (68F)."""
-    samples = [
-        ForecastSample(
-            source="open-meteo",
-            model="m",
-            member=None,
-            station=target.station.icao,
-            variable="TMAX",
-            target_date=target.local_date,
-            lead_time_days=1,
-            value_f=68.0 + offset,  # 20C +/- small F offsets
-            issued_at=None,
-        )
-        for offset in (-2.0, -1.0, 0.0, 1.0, 2.0)
-    ]
-    return ForecastSet(
-        target=target,
-        samples=samples,
-        coverage=[
-            SourceCoverage(source="open-meteo", ok=True, n_samples=5),
-            # NWS absent: the real intl scenario (NWS is US-only)
-            SourceCoverage(source="nws", ok=False, n_samples=0, error="not available"),
-        ],
-    )
-
-
 def _two_source_c(target: Target) -> ForecastSet:
     """Two live sources (open-meteo + NWS both ok), forecast centered at 20C (68F).
 
-    Mirror of _single_source_c but with the NWS coverage entry set ok=True, n_samples=5
-    so n_sources == 2 and the source gate passes. Use in tests where all other gates
-    must pass so the uncalibratable guard is the only binding constraint.
+    Both coverage entries are ok=True, n_samples=5 so n_sources == 2 and the source
+    gate passes. Use in tests where all other gates must pass so the uncalibratable
+    guard is the only binding constraint.
     """
     samples = [
         ForecastSample(
