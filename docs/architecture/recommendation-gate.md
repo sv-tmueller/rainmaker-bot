@@ -281,9 +281,8 @@ Decision authority: operator, after reviewing the filled-in tables.
 ## Update 2026-06-28: edge/confidence cap rejected (#205/#218)
 
 The cap sweep was run over the 730-day closed-market universe with `--asks trades`,
-leads 0,1 (leads 2-3 produce no bets). Closed-market discovery is mildly
-non-deterministic (~166-185 markets/run), so ROI direction is robust but
-magnitudes are noisy.
+leads 0,1 (leads 2-3 produce no bets; closed-market discovery is mildly
+non-deterministic, ~166-185 markets/run).
 
 | Cap | Bets | Win rate | ROI |
 | --- | ---: | ---: | ---: |
@@ -303,6 +302,6 @@ Caveats: the 730-day universe is the same archive used for the #85 floor
 decision; it is in-sample for the floor but out-of-sample for the cap question.
 `min_sources` is relaxed to 1 in the backtest (archive is one source), so
 recommended is a superset of the live two-source gate. Closed-market discovery
-is non-deterministic (~166-185 markets/run), so ROI direction is robust but
-magnitudes are noisy. Run with `--asks trades`, leads 0,1 (leads 2-3 produce
+is mildly non-deterministic (~166-185 markets/run), so the sign of the ROI gap
+holds but magnitudes are noisy. Run with `--asks trades`, leads 0,1 (leads 2-3 produce
 no bets).
