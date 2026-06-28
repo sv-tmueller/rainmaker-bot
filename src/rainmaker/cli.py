@@ -564,9 +564,11 @@ def _clv(db_path: str) -> None:
         conn.close()
     n_bets = result["n_bets"]
     n_clv = result["n_clv"]
+    n_coincident = result["n_coincident"]
     mean_clv = result["mean_clv"]
     clv_str = "n/a" if mean_clv is None else f"{mean_clv:+.4f}"
     print(f"CLV: mean {clv_str} ({n_clv}/{n_bets} bets with closing price)")
+    print(f"  coincident (CLV~0): {n_coincident}/{n_clv} bets")
     dim_labels = {
         "city": "City",
         "venue": "Venue",

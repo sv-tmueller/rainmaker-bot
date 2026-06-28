@@ -1042,30 +1042,45 @@ def test_compute_attribution_consistency_with_compute_pnl():
 
 
 # ---------------------------------------------------------------------------
-# CLV tests (TDD: these must fail until compute_clv is added)
+# CLV tests
 # ---------------------------------------------------------------------------
 
 # Settlement date 2026-05-30 -> synthesized settlement_ts = 2026-05-30 12:00:00 UTC
 # = 1780142400 unix seconds.
 #
+# At a 24h lead: reference_ts = 1780142400 - 86400 = 1780056000 (~25h before settlement).
+# The day-ahead CLOB point (the "closing" price we measure against) sits at
+# t = 1780052400 (1780142400 - 90000, 25h before settlement, strictly before reference_ts).
+# The near-settlement point at _TS_BEFORE (1780138800, 1h before) is AFTER reference_ts
+# and must be excluded (it is the convergence trap: its price differs from the day-ahead
+# price, so if last_before accidentally uses it the expected CLV would not match).
+#
 # YES bet on market mC (city NYC, TMAX, settlement 2026-05-30):
 #   yes_token_id = "token-yes-70-71"
 #   ask = 0.40
-#   price series: point at t=1780138800 (1h before) p=0.80, point at t=1780146000 (1h after) p=0.95
-#   last_before(1780142400) = 0.80
+#   price series (3 points):
+#     t=1780052400 (25h before): p=0.80  <- day-ahead price, the CLV reference
+#     t=1780138800 (1h before):  p=0.98  <- convergence trap: excluded by fixed lead
+#     t=1780146000 (1h after):   p=0.95  <- after settlement: excluded
+#   last_before(reference_ts=1780056000) = 0.80
 #   CLV_yes = 0.80 - 0.40 = 0.40
 #
 # NO bet on market mD (city Los Angeles, TMAX, settlement 2026-05-30):
 #   yes_token_id = "token-yes-72-73"
 #   no_ask = 0.70 (stored as prices.price for the NO side)
-#   price series: point at t=1780138800 p=0.15, point at t=1780146000 p=0.10
-#   last_before(1780142400) = 0.15
+#   price series (3 points):
+#     t=1780052400 (25h before): p=0.15  <- day-ahead price, the CLV reference
+#     t=1780138800 (1h before):  p=0.02  <- convergence trap: excluded by fixed lead
+#     t=1780146000 (1h after):   p=0.10  <- after settlement: excluded
+#   last_before(reference_ts=1780056000) = 0.15
 #   CLV_no = (1 - 0.15) - 0.70 = 0.85 - 0.70 = 0.15
 
 _SETTLEMENT_TS = 1780142400  # 2026-05-30 12:00:00 UTC
-_TS_BEFORE = 1780138800  # 1h before settlement
-_TS_AFTER = 1780146000  # 1h after settlement
-_START_TS = _SETTLEMENT_TS - 7 * 24 * 3600  # 7 days before
+_REFERENCE_TS = _SETTLEMENT_TS - 86400  # 24h lead = 1780056000
+_TS_DAY_AHEAD = _SETTLEMENT_TS - 90000  # 1780052400, 25h before; strictly before reference_ts
+_TS_BEFORE = 1780138800  # 1h before settlement (convergence trap, excluded by fixed lead)
+_TS_AFTER = 1780146000  # 1h after settlement (always excluded)
+_START_TS = _REFERENCE_TS - 6 * 24 * 3600  # window start anchored to reference
 
 _TOKEN_YES = "token-yes-70-71"
 _TOKEN_NO_MARKET = "token-yes-72-73"  # YES token for the market that has a NO bet
@@ -1181,12 +1196,23 @@ def _setup_clv_fixture(conn) -> None:
     conn.commit()
 
 
-def _clob_series(yes_close: float, at_settlement: float = 0.95) -> dict:
-    """CLOB history fixture with one point before and one at/after settlement."""
+def _clob_series(yes_close: float, trap: float | None = None, at_settlement: float = 0.95) -> dict:
+    """CLOB history fixture with a day-ahead point, a convergence trap, and a post-settlement point.
+
+    yes_close: the day-ahead price at _TS_DAY_AHEAD (what CLV is measured against).
+    trap: the near-settlement price at _TS_BEFORE; differs from yes_close so the test
+          proves the fixed lead excludes it. Defaults to a value far from yes_close.
+    at_settlement: price at _TS_AFTER (after settlement, always excluded).
+    """
+    if trap is None:
+        # Default trap: a convergence value clearly different from the day-ahead price
+        # so any test that accidentally picks it would produce the wrong CLV.
+        trap = 1.0 - yes_close  # guaranteed to differ from yes_close (unless 0.5)
     return {
         "history": [
-            {"t": _TS_BEFORE, "p": yes_close},  # last before: this is the closing price
-            {"t": _TS_AFTER, "p": at_settlement},  # after settlement: must be excluded
+            {"t": _TS_DAY_AHEAD, "p": yes_close},  # day-ahead price: the CLV reference
+            {"t": _TS_BEFORE, "p": trap},  # convergence trap: excluded by 24h fixed lead
+            {"t": _TS_AFTER, "p": at_settlement},  # after settlement: always excluded
         ]
     }
 
@@ -1374,3 +1400,168 @@ def test_clv_aggregate_and_per_segment(httpx_mock):
     by_lead = {s["segment"]: s for s in result["by_segment"]["lead"]}
     assert by_lead["1"]["mean_clv"] == pytest.approx(0.275)
     assert by_lead["1"]["n"] == 2
+
+
+def test_clv_fixed_lead_excludes_convergence_trap(httpx_mock):
+    """The 24h fixed lead selects the day-ahead price, not the near-settlement trap.
+
+    The series has 3 points:
+      _TS_DAY_AHEAD (25h before): p=0.80 <- day-ahead; reference_ts=24h -> this is included
+      _TS_BEFORE (1h before):     p=0.98 <- convergence trap; AFTER reference_ts -> excluded
+      _TS_AFTER (1h after):       p=0.95 <- always excluded
+
+    If the implementation still uses settlement_ts as the last_before deadline
+    (old behaviour), it picks the trap (0.98) and CLV_yes = 0.98 - 0.40 = 0.58 != 0.40.
+    If it correctly uses reference_ts (24h lead), it picks 0.80 and CLV_yes = 0.40.
+    """
+    import re
+
+    from rainmaker.polymarket.prices import CLOB_PRICES_URL
+    from rainmaker.tracking import compute_clv
+
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-70-71"),
+        json=_clob_series(yes_close=0.80, trap=0.98),
+    )
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-72-73"),
+        json=_clob_series(yes_close=0.15, trap=0.02),
+    )
+
+    conn = connect(":memory:")
+    _setup_clv_fixture(conn)
+    with httpx.Client() as client:
+        result = compute_clv(conn, client)
+    conn.close()
+
+    # Both bets have a day-ahead point strictly before reference_ts.
+    assert result["n_clv"] == 2
+    # YES: 0.80 - 0.40 = 0.40; NO: (1 - 0.15) - 0.70 = 0.15
+    assert result["mean_clv"] == pytest.approx(0.275)
+    # If the trap (0.98) were used instead: YES CLV = 0.98 - 0.40 = 0.58 != 0.40
+    by_city = {s["segment"]: s for s in result["by_segment"]["city"]}
+    assert by_city["NYC"]["mean_clv"] == pytest.approx(0.40)
+
+
+def test_clv_n_coincident_zero_when_prices_differ(httpx_mock):
+    """n_coincident is 0 when the day-ahead price differs from the advised price."""
+    import re
+
+    from rainmaker.polymarket.prices import CLOB_PRICES_URL
+    from rainmaker.tracking import compute_clv
+
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-70-71"),
+        json=_clob_series(yes_close=0.80),
+    )
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-72-73"),
+        json=_clob_series(yes_close=0.15),
+    )
+
+    conn = connect(":memory:")
+    _setup_clv_fixture(conn)
+    with httpx.Client() as client:
+        result = compute_clv(conn, client)
+    conn.close()
+
+    # YES: ask=0.40, close=0.80 -> CLV=0.40 (not coincident)
+    # NO: no_ask=0.70, close=0.15 -> CLV = (1-0.15) - 0.70 = 0.15 (not coincident)
+    assert result["n_coincident"] == 0
+
+
+def test_clv_n_coincident_one_when_close_equals_advised(httpx_mock):
+    """n_coincident is 1 when the day-ahead price equals the advised price on the YES scale."""
+    import re
+
+    from rainmaker.polymarket.prices import CLOB_PRICES_URL
+    from rainmaker.tracking import compute_clv
+
+    # YES bet: ask=0.40, day-ahead price=0.40 -> CLV=0, coincident
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-70-71"),
+        json=_clob_series(yes_close=0.40),
+    )
+    # NO bet: no_ask=0.70, day-ahead yes_close=0.15 -> CLV=(1-0.15)-0.70=0.15, not coincident
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-72-73"),
+        json=_clob_series(yes_close=0.15),
+    )
+
+    conn = connect(":memory:")
+    _setup_clv_fixture(conn)
+    with httpx.Client() as client:
+        result = compute_clv(conn, client)
+    conn.close()
+
+    # Only the YES bet is coincident (yes_close == ask == 0.40, CLV==0)
+    assert result["n_coincident"] == 1
+
+
+def test_clv_precip_market_drops_from_n_clv_not_n_bets(httpx_mock):
+    """A PrecipMonthlyMarket.model_dump() in raw drops from n_clv; n_bets is unchanged.
+
+    PrecipMonthlyMarket does not validate as a Market (different structure), so
+    _yes_token_for_bucket returns None and the bet is excluded from n_clv coverage.
+    The existing n_bets count (the deduped Polymarket bet population) is unaffected.
+    """
+    import re
+
+    from rainmaker.config import PRECIP_STATIONS
+    from rainmaker.domain import PrecipBracket, PrecipMonthlyMarket, PrecipTarget
+    from rainmaker.polymarket.prices import CLOB_PRICES_URL
+    from rainmaker.tracking import compute_clv
+
+    # Token fetch for the valid YES bet (mC) succeeds.
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-70-71"),
+        json=_clob_series(yes_close=0.80),
+    )
+
+    conn = connect(":memory:")
+    _setup_clv_fixture(conn)
+
+    # Replace mD's raw column with a PrecipMonthlyMarket.model_dump() JSON.
+    # This is what the raw column looks like for a precip market bet.
+    from datetime import date
+
+    precip_station = PRECIP_STATIONS["NYC"]
+    target = PrecipTarget(
+        station=precip_station,
+        variable="PRCP",
+        year=2026,
+        month=5,
+        settlement_date=date(2026, 5, 31),
+    )
+    bracket = PrecipBracket(
+        label='<2"',
+        kind="below",
+        lo=None,
+        hi=None,
+        threshold=2.0,
+        yes_token_id="token-precip-yes",
+        best_ask=0.30,
+        best_bid=0.25,
+        yes_price=0.30,
+    )
+    precip_market = PrecipMonthlyMarket(
+        id="mD",
+        slug="nyc-prcp-2026-05",
+        title="NYC May 2026 precipitation",
+        target=target,
+        buckets=[bracket],
+    )
+    raw_precip = json.dumps(precip_market.model_dump(mode="json"))
+    conn.execute("UPDATE markets SET raw = ? WHERE id = ?", (raw_precip, "mD"))
+    conn.commit()
+
+    with httpx.Client() as client:
+        result = compute_clv(conn, client)
+    conn.close()
+
+    # n_bets = 2 (both mC and mD are valid Polymarket recommended settled bets)
+    assert result["n_bets"] == 2
+    # n_clv = 1: mD drops because its raw is a PrecipMonthlyMarket, not a Market
+    assert result["n_clv"] == 1
+    # No crash; mean_clv is over the one successful bet
+    assert result["mean_clv"] == pytest.approx(0.80 - 0.40)  # YES CLV = 0.40

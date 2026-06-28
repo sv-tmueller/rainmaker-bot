@@ -711,3 +711,91 @@ def test_run_routes_precip_market(monkeypatch, tmp_path, capsys):
     conn = connect(str(db))
     assert count_rows(conn, "predictions") >= 6  # one per inch bracket, persisted
     conn.close()
+
+
+def test_clv_command_prints_summary(httpx_mock, tmp_path, capsys):
+    """rainmaker clv prints CLV summary and n_coincident line.
+
+    Seeds one polymarket bet with a CLOB series that has a valid day-ahead
+    point. The command must print the summary line and the coincident count.
+    """
+    import json as _json
+    import re
+
+    from rainmaker.config import STATIONS, Target
+    from rainmaker.polymarket.prices import CLOB_PRICES_URL
+    from rainmaker.store.db import connect as _connect
+    from rainmaker.store.db import init_schema
+
+    # Settlement 2026-05-30 12:00 UTC = 1780142400; reference = 24h before = 1780056000
+    _SETT_TS = 1780142400
+    _DAY_AHEAD_T = _SETT_TS - 90000  # 1780052400, strictly before reference_ts
+
+    # Build a market raw with one bucket carrying the YES token.
+    station = STATIONS["NYC"]
+    target = Target(station=station, variable="TMAX", local_date=date(2026, 5, 30))
+    bucket = Bucket(
+        label="70-71°F",
+        kind="range",
+        lo=70,
+        hi=71,
+        threshold=None,
+        yes_token_id="clv-test-token",
+        best_ask=0.40,
+        best_bid=None,
+        yes_price=0.40,
+    )
+    mkt = Market(
+        id="clv-m1",
+        slug="nyc-tmax-2026-05-30",
+        title="NYC TMAX 2026-05-30",
+        target=target,
+        buckets=[bucket],
+    )
+    raw = _json.dumps(mkt.model_dump(mode="json"))
+
+    db = str(tmp_path / "clv.db")
+    conn = _connect(db)
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("r1", "2026-05-29T00:00:00", "ok"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue, raw) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("clv-m1", "NYC", "TMAX", "2026-05-30", "polymarket", raw),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, side, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "clv-m1", "70-71°F", "YES", 0.40, 0.40, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, side, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "clv-m1", "70-71°F", "YES", 0.88, 0.20, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("clv-m1", 71.0, "t"),
+    )
+    conn.commit()
+    conn.close()
+
+    # Mock the CLOB fetch: day-ahead point only (strictly before reference_ts)
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=clv-test-token"),
+        json={"history": [{"t": _DAY_AHEAD_T, "p": 0.80}]},
+    )
+
+    cli.main(["clv", "--db", db])
+
+    out = capsys.readouterr().out
+    # Should print the CLV summary line
+    assert "CLV:" in out
+    # Should include the coincident count
+    assert "coincident" in out.lower()
+    # 1/1 bets have a closing price
+    assert "1/1" in out
