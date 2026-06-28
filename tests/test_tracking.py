@@ -1194,16 +1194,27 @@ def test_clv_per_bet_yes_and_no_side(httpx_mock):
     assert result["mean_clv"] == pytest.approx((0.40 + 0.15) / 2)
 
 
-def test_clv_population_tiebacks_to_pnl_polymarket_filter():
+def test_clv_population_tiebacks_to_pnl_polymarket_filter(httpx_mock):
     """compute_clv n_bets must equal compute_pnl with venue='polymarket'."""
+    import re
+
+    from rainmaker.polymarket.prices import CLOB_PRICES_URL
     from rainmaker.tracking import compute_clv, compute_pnl
+
+    # Mock both token fetches so compute_clv stays offline.
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-70-71"),
+        json=_clob_series(yes_close=0.80),
+    )
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-72-73"),
+        json=_clob_series(yes_close=0.15),
+    )
 
     conn = connect(":memory:")
     _setup_clv_fixture(conn)
     pnl_poly = compute_pnl(conn, venue="polymarket")
 
-    # compute_clv with no HTTP calls - we only check n_bets (no fetch needed for population count)
-    # Pass a client that would raise if called (all bets are in the population = n_bets matches)
     with httpx.Client() as client:
         result = compute_clv(conn, client)
     conn.close()
