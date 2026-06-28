@@ -114,7 +114,7 @@ def test_calibration_wiring_changes_result_with_enough_pairs():
     cal = fit_calibration("KLGA", "TMAX", 1, pairs)
     assert abs(cal.bias - 5.0) < 0.01
     g_cal, was_calibrated = apply_calibration(raw_g, cal, min_sigma=MIN_SIGMA_F, min_samples=n)
-    assert was_calibrated is True
+    assert was_calibrated == "full"
     # Calibrated mu must differ from raw mu by the fitted bias
     assert g_cal.mu != raw_g.mu
     assert abs(g_cal.mu - (raw_g.mu - cal.bias)) < 0.001

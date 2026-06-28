@@ -6,6 +6,12 @@ from rainmaker.ranking.edge import MarketReport, RankedOutcome
 
 RecommendedPair = tuple[MarketReport, RankedOutcome]
 
+_CAL_LABEL = {
+    "full": "calibrated",
+    "uncalibrated": "uncalibrated",
+    "bias_only": "bias-corrected",
+}
+
 
 class Report(BaseModel):
     run_date: date
@@ -73,7 +79,7 @@ def render_terminal(report: Report) -> str:
         )
         lines.append(f"  sources: {m.n_sources}")
         if m.mu is not None and m.sigma is not None:
-            cal = "calibrated" if m.calibrated else "uncalibrated"
+            cal = _CAL_LABEL[m.calibrated]
             if m.variable == "PRCP":
                 lines.append(f"  forecast: mu={m.mu:.2f}in sigma={m.sigma:.2f}in ({cal})")
             else:
@@ -135,7 +141,7 @@ def render_markdown(report: Report) -> str:
         )
         lines.append(f"- sources: {m.n_sources}")
         if m.mu is not None and m.sigma is not None:
-            cal = "calibrated" if m.calibrated else "uncalibrated"
+            cal = _CAL_LABEL[m.calibrated]
             if m.variable == "PRCP":
                 lines.append(f"- forecast: mu={m.mu:.2f}in sigma={m.sigma:.2f}in ({cal})")
             else:

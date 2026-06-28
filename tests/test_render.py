@@ -16,7 +16,7 @@ def _market_report() -> MarketReport:
         mu=70.5,
         sigma=2.0,
         n_sources=2,
-        calibrated=True,
+        calibrated="full",
         coverage=[
             SourceCoverage(source="nws", ok=True, n_samples=1),
             SourceCoverage(source="open-meteo", ok=True, n_samples=124),
@@ -89,7 +89,7 @@ def test_render_handles_empty_samples_market():
         mu=None,
         sigma=None,
         n_sources=0,
-        calibrated=False,
+        calibrated="uncalibrated",
         coverage=[SourceCoverage(source="nws", ok=False, n_samples=0, error="down")],
         outcomes=[],
         excluded_no_ask=[],
@@ -134,7 +134,7 @@ def _rec_market(city: str, title: str, edge: float) -> MarketReport:
         mu=70.0,
         sigma=2.0,
         n_sources=2,
-        calibrated=False,
+        calibrated="uncalibrated",
         coverage=[],
         outcomes=[
             RankedOutcome(
@@ -178,7 +178,7 @@ def test_render_shows_side_for_no_bet():
         mu=70.5,
         sigma=2.0,
         n_sources=2,
-        calibrated=True,
+        calibrated="full",
         coverage=[SourceCoverage(source="nws", ok=True, n_samples=1)],
         outcomes=[
             RankedOutcome(
@@ -210,7 +210,7 @@ def test_render_uses_inch_unit_for_precip():
         mu=3.06,
         sigma=2.0,
         n_sources=2,
-        calibrated=False,
+        calibrated="uncalibrated",
         coverage=[SourceCoverage(source="open-meteo", ok=True, n_samples=40)],
         outcomes=[
             RankedOutcome(
@@ -238,7 +238,7 @@ def test_render_summary_says_none_when_no_recommendations():
         mu=70.5,
         sigma=2.0,
         n_sources=2,
-        calibrated=False,
+        calibrated="uncalibrated",
         coverage=[SourceCoverage(source="nws", ok=True, n_samples=1)],
         outcomes=[
             RankedOutcome(
@@ -264,7 +264,7 @@ def test_coverage_str_includes_error_for_failed_source():
         mu=None,
         sigma=None,
         n_sources=0,
-        calibrated=False,
+        calibrated="uncalibrated",
         coverage=[
             SourceCoverage(source="nws", ok=False, n_samples=0, error="timeout"),
             SourceCoverage(source="open-meteo", ok=True, n_samples=80),
@@ -295,7 +295,7 @@ def test_coverage_str_error_none_still_renders_gracefully():
         mu=None,
         sigma=None,
         n_sources=0,
-        calibrated=False,
+        calibrated="uncalibrated",
         coverage=[SourceCoverage(source="nws", ok=False, n_samples=0, error=None)],
         outcomes=[],
         excluded_no_ask=[],
@@ -323,7 +323,7 @@ def test_render_shows_partial_data_note_when_only_mu_set():
         mu=70.5,
         sigma=None,
         n_sources=1,
-        calibrated=False,
+        calibrated="uncalibrated",
         coverage=[SourceCoverage(source="nws", ok=True, n_samples=1)],
         outcomes=[],
         excluded_no_ask=[],
@@ -347,7 +347,7 @@ def test_render_shows_partial_data_note_when_only_sigma_set():
         mu=None,
         sigma=2.0,
         n_sources=1,
-        calibrated=False,
+        calibrated="uncalibrated",
         coverage=[SourceCoverage(source="nws", ok=True, n_samples=1)],
         outcomes=[],
         excluded_no_ask=[],
@@ -371,7 +371,7 @@ def test_render_partial_data_precip_path():
         mu=3.06,
         sigma=None,
         n_sources=1,
-        calibrated=False,
+        calibrated="uncalibrated",
         coverage=[SourceCoverage(source="open-meteo", ok=True, n_samples=40)],
         outcomes=[],
         excluded_no_ask=[],
@@ -381,3 +381,29 @@ def test_render_partial_data_precip_path():
     md = render_markdown(report)
     assert "partial" in text
     assert "partial" in md
+
+
+def test_render_bias_corrected_label():
+    """bias_only state renders as 'bias-corrected', not 'calibrated' or 'uncalibrated'."""
+    rep = MarketReport(
+        market_id="m10",
+        title="Highest temperature in NYC on May 31?",
+        city="NYC",
+        station="KLGA",
+        variable="TMAX",
+        settlement_date=date(2026, 5, 31),
+        mu=70.5,
+        sigma=2.5,
+        n_sources=2,
+        calibrated="bias_only",
+        coverage=[SourceCoverage(source="nws", ok=True, n_samples=1)],
+        outcomes=[],
+        excluded_no_ask=[],
+    )
+    report = Report(run_date=date(2026, 5, 31), markets=[rep])
+    text = render_terminal(report)
+    md = render_markdown(report)
+    assert "bias-corrected" in text
+    assert "bias-corrected" in md
+    assert "uncalibrated" not in text
+    assert "uncalibrated" not in md

@@ -6,18 +6,22 @@ Gaussian. EMOS (Ensemble Model Output Statistics, Gneiting et al. 2005):
   predictive var  = var_a + var_b * ensemble_var   (a, b >= 0)
 
 Parameters (bias, var_a, var_b) are fit by minimizing mean CRPS over the cell's
-pairs. Until a cell has enough pairs we do not trust the fit and fall back to a
-conservatively widened raw spread.
+pairs. Three regimes gated on n_samples:
+  < MIN_CAL_BIAS_SAMPLES  -> uncalibrated: mu unchanged, sigma widened-raw.
+  < MIN_CAL_SAMPLES       -> bias-only: mu - bias, sigma still widened-raw.
+                             var_a/var_b are not used (they overfit on < 30 points).
+  >= MIN_CAL_SAMPLES      -> full EMOS: mu - bias, sigma from sqrt(var_a + var_b*sigma^2).
 """
 
 from math import pi, sqrt
+from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 from scipy.optimize import minimize
 from scipy.stats import norm
 
-from rainmaker.config import MIN_CAL_SAMPLES, UNCALIBRATED_WIDEN
+from rainmaker.config import MIN_CAL_BIAS_SAMPLES, MIN_CAL_SAMPLES, UNCALIBRATED_WIDEN
 from rainmaker.probability.distribution import Gaussian
 
 
@@ -137,16 +141,22 @@ def apply_calibration(
     *,
     min_sigma: float,
     min_samples: int = MIN_CAL_SAMPLES,
-) -> tuple[Gaussian, bool]:
-    """Return (corrected gaussian, calibrated?).
+    min_bias_samples: int = MIN_CAL_BIAS_SAMPLES,
+) -> tuple[Gaussian, Literal["uncalibrated", "bias_only", "full"]]:
+    """Return (corrected gaussian, calibration state).
 
-    Falls back to a widened raw spread with calibrated=False when the cell is
-    missing or has too few pairs to trust.
+    Three regimes on n_samples:
+    - "uncalibrated": cal is None or n < min_bias_samples. mu unchanged, sigma widened-raw.
+    - "bias_only": min_bias_samples <= n < min_samples. mu shifted by bias, sigma widened-raw.
+      var_a/var_b are ignored (they overfit on fewer than min_samples points).
+    - "full": n >= min_samples. Full EMOS: mu - bias and sigma from sqrt(var_a + var_b*sigma^2).
     """
-    if cal is None or cal.n_samples < min_samples:
-        widened = max(g.sigma * UNCALIBRATED_WIDEN, min_sigma)
-        return Gaussian(mu=g.mu, sigma=widened), False
+    widened = max(g.sigma * UNCALIBRATED_WIDEN, min_sigma)
+    if cal is None or cal.n_samples < min_bias_samples:
+        return Gaussian(mu=g.mu, sigma=widened), "uncalibrated"
+    if cal.n_samples < min_samples:
+        return Gaussian(mu=g.mu - cal.bias, sigma=widened), "bias_only"
     mu = g.mu - cal.bias
     pred_var = cal.var_a + cal.var_b * g.sigma**2
     sigma = max(sqrt(max(pred_var, 0.0)), min_sigma)
-    return Gaussian(mu=mu, sigma=sigma), True
+    return Gaussian(mu=mu, sigma=sigma), "full"
