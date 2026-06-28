@@ -163,3 +163,117 @@ accepts `floor_no` in its API but is not relaxed here - no evidence to do so.
 2. Fill coverage was partial for some low-volume buckets, which may fall back to
 the mid price; this slightly optimistic pricing is the same caveat as the
 original 0.80 decision.
+
+## Update 2026-06-27: upper edge / confidence cap (#205)
+
+### What was built
+
+Two optional upper-bound parameters added to `backtest-pnl`: `--max-edge` and
+`--max-p-win` (both `float | None`, default None = no cap). The cap is applied
+inside `replay_market` after `evaluate_market` returns the `recommended` list,
+but before the best-edge `max(...)` pick. Any recommended outcome with
+`edge > max_edge` or `p_win > max_p_win` is dropped; the replay then picks the
+best of what remains. If no recommended bet survives the cap, the lead is
+skipped (no bet). A capped lead falls through to the next-best recommended bet
+rather than being deleted entirely. The live ranking path (`edge.py`) is
+untouched (seam B): the golden e2e is unaffected by construction.
+
+The filter is side-agnostic: `RankedOutcome.p_win` and `.edge` already encode
+the chosen side (a NO outcome stores `p_no` as `p_win`).
+
+`PnlBacktestResult` carries `max_edge` and `max_p_win`; `render_pnl_report`
+discloses them when set.
+
+### Sweep tables (numbers pending a data-access run)
+
+Each row is a full alternative policy replayed over the 730-day closed-market
+universe (190 TMAX markets, leads 0-3, floor 0.80 flat - no asymmetric NO
+floor). Read totals directly (unlike the lower-floor sweeps, the upper cap rows
+are not nested supersets - each row is a standalone policy over the same
+universe, so totals are directly comparable without a marginal-cohort
+decomposition).
+
+Note: `backtest-pnl` has no `--floor-no` flag, so the backtest runs at the flat
+0.80 floor on both sides. This is looser than the live NO gate
+(`CONFIDENCE_FLOOR_NO=0.75`), meaning the sweep is a superset on that axis too
+(same spirit as the `min_sources=1` superset caveat above).
+
+Preferred pricing mode: `--asks trades` (real CLOB fills; no spread added).
+Fall back to `--spread 0.05` only if trades coverage is too thin at the extremes
+and produces anomalous results; disclose which was used.
+
+**Upper edge cap sweep** (`max_p_win` left unset):
+
+| max_edge | Bets | W-L | Win% | Total P/L | ROI |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| none (baseline) | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+| 0.50 | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+| 0.30 | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+| 0.20 | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+| 0.10 | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+
+Commands to reproduce (ALL row from each run):
+
+```
+# Baseline (no cap)
+uv run rainmaker backtest-pnl --days 730 --leads 0,1,2,3 --asks trades
+
+# max_edge caps
+uv run rainmaker backtest-pnl --days 730 --leads 0,1,2,3 --asks trades --max-edge 0.50
+uv run rainmaker backtest-pnl --days 730 --leads 0,1,2,3 --asks trades --max-edge 0.30
+uv run rainmaker backtest-pnl --days 730 --leads 0,1,2,3 --asks trades --max-edge 0.20
+uv run rainmaker backtest-pnl --days 730 --leads 0,1,2,3 --asks trades --max-edge 0.10
+```
+
+**Upper confidence cap sweep** (`max_edge` left unset):
+
+| max_p_win | Bets | W-L | Win% | Total P/L | ROI |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| none (baseline) | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+| 0.99 | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+| 0.97 | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+| 0.95 | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+| 0.90 | _pending_ | _pending_ | _pending_ | _pending_ | _pending_ |
+
+Commands to reproduce:
+
+```
+# max_p_win caps (same baseline as above)
+uv run rainmaker backtest-pnl --days 730 --leads 0,1,2,3 --asks trades --max-p-win 0.99
+uv run rainmaker backtest-pnl --days 730 --leads 0,1,2,3 --asks trades --max-p-win 0.97
+uv run rainmaker backtest-pnl --days 730 --leads 0,1,2,3 --asks trades --max-p-win 0.95
+uv run rainmaker backtest-pnl --days 730 --leads 0,1,2,3 --asks trades --max-p-win 0.90
+```
+
+### Caveats
+
+- **Numbers pending**: the CLOB history endpoint was not reachable from the
+  sandbox where this code was built. Fill in the table by running the commands
+  above where network access to `data-api.polymarket.com` is available. Do not
+  fabricate numbers.
+- **In-sample risk**: the 730-day backtest universe is the same archive used for
+  the #85 floor decision. It is the OOS check for the live tail signal (26 live
+  days) but is itself an archive-horizon, single-source, `min_sources=1`
+  superset. Real live performance will differ.
+- **Non-monotonicity**: prior sweeps showed the edge >0.50 tail ran +218% ROI
+  on very thin live stakes (26 markets). That is almost certainly noise from a
+  small sample. Compare the backtest rows against the live tail result to see
+  whether the backtest reproduces or contradicts it; thin-stake tail rows will
+  be noisy in the backtest too (few bets, wide confidence interval).
+- **Pricing mode**: use `--asks trades` for comparability with the #85 floor
+  table. If trades coverage is thin at the extreme cap values (very few bets
+  have fills), note it and compare with `--spread 0.05`.
+
+### Ship / no-ship recommendation
+
+Pending the sweep numbers. Once the table is filled in, evaluate:
+
+1. If capping at some `max_edge` value raises ROI without unacceptable total
+   P/L loss vs the baseline, adopt that cap as a live gate (edit `edge.py` in a
+   follow-on issue; do not edit it here - this is the backtest-only seam).
+2. If capping at some `max_p_win` value raises ROI, same path.
+3. If neither sweep shows a stable improvement over the baseline (i.e., ROI
+   fluctuates with cap value and no clear optimum), the recommendation is
+   no-ship: leave the gates uncapped and revisit once more live history accrues.
+
+Decision authority: operator, after reviewing the filled-in tables.

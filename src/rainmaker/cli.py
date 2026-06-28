@@ -400,6 +400,8 @@ def _backtest_pnl(
     spread: float,
     reports_dir: str,
     ask_source: str = "mid",
+    max_edge: float | None = None,
+    max_p_win: float | None = None,
 ) -> None:
     end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
     start = end - timedelta(days=days)
@@ -418,6 +420,8 @@ def _backtest_pnl(
             city=None if city == "all" else city,
             spread=spread,
             ask_source=ask_source,  # type: ignore[arg-type]
+            max_edge=max_edge,
+            max_p_win=max_p_win,
         )
     finally:
         client.close()
@@ -663,6 +667,18 @@ def main(argv: list[str] | None = None) -> None:
         help="ask price source: mid (default, uses token mid) or trades (uses real BUY fills)",
     )
     btp.add_argument(
+        "--max-edge",
+        type=float,
+        default=None,
+        help="upper edge cap: exclude recommended bets with edge above this value",
+    )
+    btp.add_argument(
+        "--max-p-win",
+        type=float,
+        default=None,
+        help="upper confidence cap: exclude recommended bets with p_win above this value",
+    )
+    btp.add_argument(
         "--reports-dir", default=REPORTS_DIR, help="directory for the P/L backtest report"
     )
 
@@ -712,7 +728,14 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "backtest-pnl":
         _backtest_pnl(
-            args.city, args.days, _parse_leads(args.leads), args.spread, args.reports_dir, args.asks
+            args.city,
+            args.days,
+            _parse_leads(args.leads),
+            args.spread,
+            args.reports_dir,
+            args.asks,
+            args.max_edge,
+            args.max_p_win,
         )
         return
     if args.command == "settle-divergence":
