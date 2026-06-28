@@ -187,10 +187,16 @@ discloses them when set.
 ### Sweep tables (numbers pending a data-access run)
 
 Each row is a full alternative policy replayed over the 730-day closed-market
-universe (190 TMAX markets, leads 0-3, `floor_no=0.75`). Read totals directly
-(unlike the lower-floor sweeps, the upper cap rows are not nested supersets -
-each row is a standalone policy over the same universe, so totals are directly
-comparable without a marginal-cohort decomposition).
+universe (190 TMAX markets, leads 0-3, floor 0.80 flat - no asymmetric NO
+floor). Read totals directly (unlike the lower-floor sweeps, the upper cap rows
+are not nested supersets - each row is a standalone policy over the same
+universe, so totals are directly comparable without a marginal-cohort
+decomposition).
+
+Note: `backtest-pnl` has no `--floor-no` flag, so the backtest runs at the flat
+0.80 floor on both sides. This is looser than the live NO gate
+(`CONFIDENCE_FLOOR_NO=0.75`), meaning the sweep is a superset on that axis too
+(same spirit as the `min_sources=1` superset caveat above).
 
 Preferred pricing mode: `--asks trades` (real CLOB fills; no spread added).
 Fall back to `--spread 0.05` only if trades coverage is too thin at the extremes
