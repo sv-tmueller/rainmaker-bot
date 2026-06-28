@@ -532,8 +532,13 @@ def _gate_market_us() -> Market:
     )
 
 
-def _single_source_c(target: Target) -> ForecastSet:
-    """One live source (NWS absent), forecast values as F, centered at 20C (68F)."""
+def _two_source_c(target: Target) -> ForecastSet:
+    """Two live sources (open-meteo + NWS both ok), forecast centered at 20C (68F).
+
+    Both coverage entries are ok=True, n_samples=5 so n_sources == 2 and the source
+    gate passes. Use in tests where all other gates must pass so the uncalibratable
+    guard is the only binding constraint.
+    """
     samples = [
         ForecastSample(
             source="open-meteo",
@@ -547,14 +552,26 @@ def _single_source_c(target: Target) -> ForecastSet:
             issued_at=None,
         )
         for offset in (-2.0, -1.0, 0.0, 1.0, 2.0)
+    ] + [
+        ForecastSample(
+            source="nws",
+            model="m",
+            member=None,
+            station=target.station.icao,
+            variable="TMAX",
+            target_date=target.local_date,
+            lead_time_days=1,
+            value_f=68.0 + offset,
+            issued_at=None,
+        )
+        for offset in (-2.0, -1.0, 0.0, 1.0, 2.0)
     ]
     return ForecastSet(
         target=target,
         samples=samples,
         coverage=[
             SourceCoverage(source="open-meteo", ok=True, n_samples=5),
-            # NWS absent: the real intl scenario (NWS is US-only)
-            SourceCoverage(source="nws", ok=False, n_samples=0, error="not available"),
+            SourceCoverage(source="nws", ok=True, n_samples=5),
         ],
     )
 
@@ -588,7 +605,7 @@ def _single_source_f(target: Target) -> ForecastSet:
 def test_intl_market_never_recommended() -> None:
     """An intl market (ghcnd_id=None) must never produce recommended=True, on any side.
 
-    Even when all other gates pass (confidence floor, min_sources relaxed to 1,
+    Even when all other gates pass (confidence floor, min_sources met,
     edge positive), the uncalibratable flag forces recommended off for both YES and
     NO outcomes. Advisory display is unaffected: outcomes list is non-empty and
     mu/sigma are set.
@@ -596,8 +613,8 @@ def test_intl_market_never_recommended() -> None:
     market = _gate_market_intl()
     assert market.target.station.ghcnd_id is None
 
-    fs = _single_source_c(market.target)
-    assert sum(1 for c in fs.coverage if c.ok and c.n_samples > 0) == 1
+    fs = _two_source_c(market.target)
+    assert sum(1 for c in fs.coverage if c.ok and c.n_samples > 0) == 2
 
     report = evaluate_market(
         market,

@@ -946,14 +946,15 @@ def test_compute_attribution_per_segment_values():
 def test_compute_attribution_consistency_with_compute_pnl():
     """Each dimension's summed n/wins/losses and recomputed ROI match compute_pnl.
 
-    Extends the shared fixture with two additional bets that exercise previously
+    Extends the shared fixture with three additional bets that exercise previously
     untested buckets:
 
     Bet D (catch-up): started_at after settlement_date -> lead -2 -> '<0 (catch-up)'
     Bet E (NULL-edge): edge=None -> _edge_bucket returns '<.05'
+    Bet F (low p_win): p_win=0.70 -> _p_win_bucket returns '<.75'
 
-    Two non-empty asserts confirm those buckets appear; the per-dimension
-    reconciliation loop then covers all five bets.
+    Three non-empty asserts confirm those buckets appear; the per-dimension
+    reconciliation loop then covers all six bets.
     """
     conn = connect(":memory:")
     _setup_attribution_fixture(conn)
@@ -1012,6 +1013,33 @@ def test_compute_attribution_consistency_with_compute_pnl():
         ("mE", 75.0, "t"),
     )
 
+    # Bet F: p_win < 0.75 -> _p_win_bucket returns '<.75'
+    # NYC, polymarket (NULL venue), TMAX, lead=2, edge=0.15, p_win=0.70, ask=0.40
+    # actual=71 in '70-71°F' -> WIN
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("rF", "2026-05-28T00:00:00", "ok"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue) VALUES (?, ?, ?, ?, ?)",
+        ("mF", "NYC", "TMAX", "2026-05-30", None),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("rF", "mF", "70-71°F", 0.40, 0.40, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("rF", "mF", "70-71°F", 0.70, 0.15, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("mF", 71.0, "t"),
+    )
+
     conn.commit()
 
     pnl = compute_pnl(conn)
@@ -1024,6 +1052,9 @@ def test_compute_attribution_consistency_with_compute_pnl():
 
     by_edge = {s["segment"]: s for s in result["edge"]}
     assert by_edge["<.05"]["n"] >= 1, "NULL-edge bucket must be non-empty"
+
+    by_p_win = {s["segment"]: s for s in result["p_win"]}
+    assert by_p_win["<.75"]["n"] >= 1, "<.75 p_win bucket must be non-empty"
 
     for dim in ("city", "venue", "variable", "lead", "edge", "p_win"):
         segs = result[dim]
