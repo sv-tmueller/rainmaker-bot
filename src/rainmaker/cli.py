@@ -64,6 +64,7 @@ from rainmaker.store.record import (
 from rainmaker.tracking import (
     compute_attribution,
     compute_calibration,
+    compute_clv,
     compute_pnl,
     write_snapshot,
 )
@@ -550,6 +551,41 @@ def _attribution(db_path: str) -> None:
             )
 
 
+def _clv(db_path: str) -> None:
+    if "://" not in db_path:
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    client = build_client(30.0)
+    try:
+        init_schema(conn)
+        result = compute_clv(conn, client)
+    finally:
+        client.close()
+        conn.close()
+    n_bets = result["n_bets"]
+    n_clv = result["n_clv"]
+    mean_clv = result["mean_clv"]
+    clv_str = "n/a" if mean_clv is None else f"{mean_clv:+.4f}"
+    print(f"CLV: mean {clv_str} ({n_clv}/{n_bets} bets with closing price)")
+    dim_labels = {
+        "city": "City",
+        "venue": "Venue",
+        "variable": "Variable",
+        "lead": "Lead (days)",
+        "edge": "Edge bucket",
+        "p_win": "p_win bucket",
+    }
+    for dim, label in dim_labels.items():
+        segs = result["by_segment"].get(dim, [])
+        if not segs:
+            continue
+        print(f"\n--- {label} ---")
+        print(f"{'Segment':<20} {'n':>5} {'mean CLV':>10}")
+        for s in segs:
+            clv_val = f"{s['mean_clv']:+.4f}"
+            print(f"{s['segment']:<20} {s['n']:>5} {clv_val:>10}")
+
+
 def _snapshot(db_path: str) -> None:
     on_date = _today().isoformat()
     if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
@@ -718,6 +754,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     attr.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
+    clv_cmd = sub.add_parser(
+        "clv",
+        help="closing-line value: how well advised prices compare to the market close",
+    )
+    clv_cmd.add_argument("--db", default=DB_PATH, help="SQLite database path")
+
     snapshot = sub.add_parser("snapshot", help="write a daily P&L/calibration snapshot row")
     snapshot.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
@@ -757,5 +799,7 @@ def main(argv: list[str] | None = None) -> None:
         _track(db)
     elif args.command == "attribution":
         _attribution(db)
+    elif args.command == "clv":
+        _clv(db)
     elif args.command == "snapshot":
         _snapshot(db)

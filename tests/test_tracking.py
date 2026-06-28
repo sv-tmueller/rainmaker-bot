@@ -1,5 +1,6 @@
 import json
 
+import httpx
 import pytest
 
 from rainmaker.store.db import connect, init_schema
@@ -964,3 +965,338 @@ def test_compute_attribution_consistency_with_compute_pnl():
         assert total_losses == pnl["losses"], f"{dim}: losses mismatch"
         assert total_pnl_sum == pytest.approx(pnl["total_pnl"]), f"{dim}: pnl mismatch"
         assert roi_recomputed == pytest.approx(pnl["roi"]), f"{dim}: roi mismatch"
+
+
+# ---------------------------------------------------------------------------
+# CLV tests (TDD: these must fail until compute_clv is added)
+# ---------------------------------------------------------------------------
+
+# Settlement date 2026-05-30 -> synthesized settlement_ts = 2026-05-30 12:00:00 UTC
+# = 1780142400 unix seconds.
+#
+# YES bet on market mC (city NYC, TMAX, settlement 2026-05-30):
+#   yes_token_id = "token-yes-70-71"
+#   ask = 0.40
+#   price series: point at t=1780138800 (1h before) p=0.80, point at t=1780146000 (1h after) p=0.95
+#   last_before(1780142400) = 0.80
+#   CLV_yes = 0.80 - 0.40 = 0.40
+#
+# NO bet on market mD (city Los Angeles, TMAX, settlement 2026-05-30):
+#   yes_token_id = "token-yes-72-73"
+#   no_ask = 0.70 (stored as prices.price for the NO side)
+#   price series: point at t=1780138800 p=0.15, point at t=1780146000 p=0.10
+#   last_before(1780142400) = 0.15
+#   CLV_no = (1 - 0.15) - 0.70 = 0.85 - 0.70 = 0.15
+
+_SETTLEMENT_TS = 1780142400  # 2026-05-30 12:00:00 UTC
+_TS_BEFORE = 1780138800  # 1h before settlement
+_TS_AFTER = 1780146000  # 1h after settlement
+_START_TS = _SETTLEMENT_TS - 7 * 24 * 3600  # 7 days before
+
+_TOKEN_YES = "token-yes-70-71"
+_TOKEN_NO_MARKET = "token-yes-72-73"  # YES token for the market that has a NO bet
+
+
+def _market_raw(
+    market_id: str,
+    city: str,
+    variable: str,
+    settlement_date: str,
+    yes_token_id: str,
+    bucket_label: str,
+    ask: float,
+    side: str = "YES",
+    no_ask: float | None = None,
+) -> str:
+    """Build a minimal Market model_dump JSON for the raw column."""
+    from rainmaker.config import STATIONS, Target
+    from rainmaker.domain import Bucket, Market
+
+    station = STATIONS[city]
+    from datetime import date
+
+    local_date = date.fromisoformat(settlement_date)
+    target = Target(station=station, variable=variable, local_date=local_date)
+    no_token = "no-" + yes_token_id
+    bucket = Bucket(
+        label=bucket_label,
+        kind="range",
+        lo=70,
+        hi=71,
+        threshold=None,
+        yes_token_id=yes_token_id,
+        best_ask=ask if side == "YES" else None,
+        best_bid=None if no_ask is None else 1 - no_ask,
+        yes_price=ask,
+        no_token_id=no_token,
+        no_ask=no_ask,
+    )
+    market = Market(
+        id=market_id,
+        slug=f"{city.lower()}-{variable.lower()}-{settlement_date}",
+        title=f"test {city} {variable}",
+        target=target,
+        buckets=[bucket],
+    )
+    import json
+
+    return json.dumps(market.model_dump(mode="json"))
+
+
+def _setup_clv_fixture(conn) -> None:
+    """Two settled Polymarket bets: a YES bet (mC) and a NO bet (mD).
+
+    mC: YES bet on 70-71 for NYC TMAX 2026-05-30, ask=0.40, yes_token=token-yes-70-71
+    mD: NO bet on 70-71 for Los Angeles TMAX 2026-05-30, no_ask=0.70, yes_token=token-yes-72-73
+    """
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("rC", "2026-05-29T00:00:00", "ok"),
+    )
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("rD", "2026-05-29T00:00:00", "ok"),
+    )
+    raw_c = _market_raw("mC", "NYC", "TMAX", "2026-05-30", _TOKEN_YES, "70-71°F", 0.40)
+    raw_d = _market_raw(
+        "mD", "Los Angeles", "TMAX", "2026-05-30", _TOKEN_NO_MARKET, "70-71°F", 0.40, "NO", 0.70
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue, raw) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("mC", "NYC", "TMAX", "2026-05-30", "polymarket", raw_c),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue, raw) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("mD", "Los Angeles", "TMAX", "2026-05-30", "polymarket", raw_d),
+    )
+    # mC: YES bet ask=0.40
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, side, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("rC", "mC", "70-71°F", "YES", 0.40, 0.40, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, side, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("rC", "mC", "70-71°F", "YES", 0.88, 0.20, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("mC", 71.0, "t"),
+    )
+    # mD: NO bet no_ask=0.70
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, side, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("rD", "mD", "70-71°F", "NO", 0.70, 0.30, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, side, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("rD", "mD", "70-71°F", "NO", 0.88, 0.18, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("mD", 75.0, "t"),  # 75 NOT in 70-71 -> NO wins
+    )
+    conn.commit()
+
+
+def _clob_series(yes_close: float, at_settlement: float = 0.95) -> dict:
+    """CLOB history fixture with one point before and one at/after settlement."""
+    return {
+        "history": [
+            {"t": _TS_BEFORE, "p": yes_close},  # last before: this is the closing price
+            {"t": _TS_AFTER, "p": at_settlement},  # after settlement: must be excluded
+        ]
+    }
+
+
+def _empty_series() -> dict:
+    return {"history": []}
+
+
+# ---------------------------------------------------------------------------
+# last_before unit tests (no HTTP, no DB)
+# ---------------------------------------------------------------------------
+
+
+def test_last_before_returns_price_of_latest_point_strictly_before_target():
+    from rainmaker.polymarket.prices import PricePoint, last_before
+
+    points = [
+        PricePoint(t=1000, p=0.10),
+        PricePoint(t=2000, p=0.20),
+        PricePoint(t=3000, p=0.30),
+    ]
+    # target=2500: points 1000 and 2000 qualify; max t is 2000, p=0.20
+    assert last_before(points, 2500) == pytest.approx(0.20)
+
+
+def test_last_before_excludes_point_at_exactly_target():
+    from rainmaker.polymarket.prices import PricePoint, last_before
+
+    points = [PricePoint(t=1000, p=0.10), PricePoint(t=2000, p=0.20)]
+    # target=2000: only t=1000 qualifies (strict <)
+    assert last_before(points, 2000) == pytest.approx(0.10)
+
+
+def test_last_before_excludes_all_points_at_or_after_target():
+    from rainmaker.polymarket.prices import PricePoint, last_before
+
+    points = [PricePoint(t=3000, p=0.30), PricePoint(t=4000, p=0.40)]
+    assert last_before(points, 2500) is None
+
+
+def test_last_before_empty_list_is_none():
+    from rainmaker.polymarket.prices import last_before
+
+    assert last_before([], 2000) is None
+
+
+# ---------------------------------------------------------------------------
+# compute_clv tests (require compute_clv to exist)
+# ---------------------------------------------------------------------------
+
+
+def test_clv_per_bet_yes_and_no_side(httpx_mock):
+    """YES CLV = yes_close - ask; NO CLV = (1 - yes_close) - no_ask."""
+    import re
+
+    from rainmaker.polymarket.prices import CLOB_PRICES_URL
+    from rainmaker.tracking import compute_clv
+
+    # YES bet market: token-yes-70-71, yes_close=0.80
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-70-71"),
+        json=_clob_series(yes_close=0.80),
+    )
+    # NO bet market: token-yes-72-73, yes_close=0.15
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-72-73"),
+        json=_clob_series(yes_close=0.15),
+    )
+
+    conn = connect(":memory:")
+    _setup_clv_fixture(conn)
+    with httpx.Client() as client:
+        result = compute_clv(conn, client)
+    conn.close()
+
+    assert result["n_bets"] == 2
+    assert result["n_clv"] == 2
+    # YES CLV = 0.80 - 0.40 = 0.40; NO CLV = (1 - 0.15) - 0.70 = 0.15
+    assert result["mean_clv"] == pytest.approx((0.40 + 0.15) / 2)
+
+
+def test_clv_population_tiebacks_to_pnl_polymarket_filter(httpx_mock):
+    """compute_clv n_bets must equal compute_pnl with venue='polymarket'."""
+    import re
+
+    from rainmaker.polymarket.prices import CLOB_PRICES_URL
+    from rainmaker.tracking import compute_clv, compute_pnl
+
+    # Mock both token fetches so compute_clv stays offline.
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-70-71"),
+        json=_clob_series(yes_close=0.80),
+    )
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-72-73"),
+        json=_clob_series(yes_close=0.15),
+    )
+
+    conn = connect(":memory:")
+    _setup_clv_fixture(conn)
+    pnl_poly = compute_pnl(conn, venue="polymarket")
+
+    with httpx.Client() as client:
+        result = compute_clv(conn, client)
+    conn.close()
+
+    assert result["n_bets"] == pnl_poly["n_bets"]
+
+
+def test_clv_empty_series_drops_from_n_clv_no_crash(httpx_mock):
+    """A bet whose CLOB series is empty drops from n_clv but n_bets is unchanged."""
+    import re
+
+    from rainmaker.polymarket.prices import CLOB_PRICES_URL
+    from rainmaker.tracking import compute_clv
+
+    # Both the initial (60-min) and fallback (720-min) fetches return empty
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-70-71"),
+        json=_empty_series(),
+    )
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-70-71"),
+        json=_empty_series(),
+    )
+    # NO bet market gets a valid series
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-72-73"),
+        json=_clob_series(yes_close=0.15),
+    )
+
+    conn = connect(":memory:")
+    _setup_clv_fixture(conn)
+    with httpx.Client() as client:
+        result = compute_clv(conn, client)
+    conn.close()
+
+    assert result["n_bets"] == 2  # unchanged
+    assert result["n_clv"] == 1  # only the NO bet succeeded
+    # mean_clv over the one successful bet: (1 - 0.15) - 0.70 = 0.15
+    assert result["mean_clv"] == pytest.approx(0.15)
+
+
+def test_clv_aggregate_and_per_segment(httpx_mock):
+    """mean_clv and by_segment values match hand-computed values.
+
+    Bets: YES (NYC, TMAX, lead=1, edge=0.20, CLV=0.40) and
+          NO (Los Angeles, TMAX, lead=1, edge=0.18, CLV=0.15).
+    mean_clv = (0.40 + 0.15) / 2 = 0.275
+    by city: NYC -> 0.40, Los Angeles -> 0.15
+    by variable: TMAX -> 0.275 (both)
+    by lead: "1" -> 0.275 (both lead=1, started 2026-05-29, settled 2026-05-30)
+    """
+    import re
+
+    from rainmaker.polymarket.prices import CLOB_PRICES_URL
+    from rainmaker.tracking import compute_clv
+
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-70-71"),
+        json=_clob_series(yes_close=0.80),
+    )
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-72-73"),
+        json=_clob_series(yes_close=0.15),
+    )
+
+    conn = connect(":memory:")
+    _setup_clv_fixture(conn)
+    with httpx.Client() as client:
+        result = compute_clv(conn, client)
+    conn.close()
+
+    assert result["mean_clv"] == pytest.approx(0.275)
+
+    by_city = {s["segment"]: s for s in result["by_segment"]["city"]}
+    assert by_city["NYC"]["mean_clv"] == pytest.approx(0.40)
+    assert by_city["NYC"]["n"] == 1
+    assert by_city["Los Angeles"]["mean_clv"] == pytest.approx(0.15)
+
+    by_var = {s["segment"]: s for s in result["by_segment"]["variable"]}
+    assert by_var["TMAX"]["mean_clv"] == pytest.approx(0.275)
+    assert by_var["TMAX"]["n"] == 2
+
+    by_lead = {s["segment"]: s for s in result["by_segment"]["lead"]}
+    assert by_lead["1"]["mean_clv"] == pytest.approx(0.275)
+    assert by_lead["1"]["n"] == 2

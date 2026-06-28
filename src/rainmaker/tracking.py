@@ -10,14 +10,16 @@ day (#63, #78). Tracking only covers rows with a bucket recorded.
 
 import json
 from collections import defaultdict
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
+import httpx
 from scipy.stats import norm
 
 from rainmaker.backtest import COVERAGE_LEVELS, crps_gaussian, reliability_bins
 from rainmaker.config import KALSHI_STATIONS, STATIONS
-from rainmaker.domain import BucketKind, parse_bucket_label, parse_precip_bracket_label
+from rainmaker.domain import BucketKind, Market, parse_bucket_label, parse_precip_bracket_label
+from rainmaker.polymarket.prices import fetch_price_history, last_before
 from rainmaker.probability.calibration import Accuracy, CalibrationPair, compute_accuracy
 from rainmaker.probability.outcomes import settles
 from rainmaker.probability.precip_outcomes import precip_settles
@@ -85,14 +87,14 @@ def _latest_run_per_market_day(rows: list[dict[str, Any]]) -> list[dict[str, Any
 
 def _settled_rows(conn: Conn) -> list[dict[str, Any]]:
     # Match the price to the prediction's side; legacy rows with a null side are YES.
-    # city and settlement_date are carried for compute_attribution; compute_pnl and
-    # compute_calibration ignore these extra keys.
+    # city, settlement_date, and raw are carried for compute_attribution and compute_clv;
+    # compute_pnl and compute_calibration ignore these extra keys.
     rows = conn.execute(
         "SELECT p.market_id AS market_id, p.run_id AS run_id, p.bucket AS bucket, "
         "p.side AS side, p.p_win AS p_win, p.edge AS edge, "
         "p.recommended AS recommended, m.variable AS variable, m.venue AS venue, "
         "m.outcome_spec AS outcome_spec, m.city AS city, "
-        "m.settlement_date AS settlement_date, r.started_at AS started_at, "
+        "m.settlement_date AS settlement_date, m.raw AS raw, r.started_at AS started_at, "
         "pr.price AS ask, o.actual_value AS actual_value "
         "FROM predictions p "
         "JOIN markets m ON m.id = p.market_id "
@@ -315,6 +317,137 @@ def compute_attribution(conn: Conn) -> dict[str, list[dict[str, Any]]]:
         "lead": _segment_stats([{**t, "_key": t["_lead"]} for t in tagged], "_key"),
         "edge": _segment_stats([{**t, "_key": t["_edge"]} for t in tagged], "_key"),
         "p_win": _segment_stats([{**t, "_key": t["_p_win"]} for t in tagged], "_key"),
+    }
+
+
+def _yes_token_for_bucket(raw: str | None, bucket_label: str) -> str | None:
+    """Recover the YES CLOB token id for a bucket from the markets.raw column.
+
+    raw holds market.model_dump(mode='json') written by record.py. We use
+    model_validate (not parse_market) because raw is already the parsed model
+    shape, not a Gamma API event JSON.
+
+    Returns None when raw is NULL, unparsable, or is a PrecipMonthlyMarket (which
+    does not validate as a Market -- different station type). Those bets fall out
+    of n_clv as a coverage gap; they never crash.
+    """
+    if not raw:
+        return None
+    try:
+        market = Market.model_validate(json.loads(raw))
+    except Exception:
+        # ValidationError (precip market, wrong shape), JSONDecodeError, TypeError
+        return None
+    for b in market.buckets:
+        if b.label == bucket_label:
+            return b.yes_token_id
+    return None
+
+
+def _clv_segment_stats(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    """Group by key, compute mean CLV per segment, return sorted by segment label."""
+    groups: dict[str, dict[str, Any]] = defaultdict(lambda: {"n": 0, "clv_sum": 0.0})
+    for r in rows:
+        seg = r[key]
+        g = groups[seg]
+        g["n"] += 1
+        g["clv_sum"] += r["_clv"]
+    return sorted(
+        [
+            {"segment": seg, "n": g["n"], "mean_clv": g["clv_sum"] / g["n"]}
+            for seg, g in groups.items()
+        ],
+        key=lambda s: s["segment"],
+    )
+
+
+def compute_clv(conn: Conn, client: httpx.Client) -> dict[str, Any]:
+    """Closing-line value for recommended Polymarket bets.
+
+    Population: same deduped bets as compute_pnl with venue='polymarket'.
+    Advised price: r['ask'] (stored YES ask for YES bets, NO ask for NO bets).
+    Closing price: last CLOB mid point strictly before the synthesized settlement
+    timestamp (settlement_date at 12:00:00 UTC).
+
+    Note: the settlement timestamp is synthesized as settlement_date at 12:00 UTC
+    because daily temp markets publish endDate ~12:00 UTC (enforced by the 6<=hour<=18
+    guard in polymarket/markets.py) but the persisted Market stores only the local_date.
+
+    CLV signs: YES bet -> yes_close - ask; NO bet -> (1 - yes_close) - ask.
+    Positive CLV means we bought below the closing line (edge captured).
+
+    Caveat: the advised price is an ask; the closing price is the CLOB mid (the
+    only price the prices-history endpoint returns). A symmetric half-spread haircut
+    applies equally to both sides, so the sign is not biased -- same caveat as
+    pnl_backtest.
+
+    Returns:
+        n_bets: total deduped Polymarket bets (must equal compute_pnl(conn, 'polymarket')['n_bets'])
+        n_clv: subset with a successful closing-price fetch
+        mean_clv: mean CLV over n_clv bets (None when n_clv == 0)
+        by_segment: per-dimension mean CLV over n_clv bets, keyed by dim name
+    """
+    bets = _best_per_market_run(_filter_venue(_settled_rows(conn), "polymarket"))
+    n_bets = len(bets)
+
+    clv_rows: list[dict[str, Any]] = []
+    for r in bets:
+        token = _yes_token_for_bucket(r.get("raw"), r["bucket"])
+        if token is None:
+            continue
+        settlement_date = r["settlement_date"]
+        # Synthesize settlement at 12:00 UTC: daily temp endDate is guaranteed ~12:00 UTC
+        # by the 6<=hour<=18 guard in polymarket/markets.py; only local_date is persisted.
+        y, mo, d = (int(x) for x in settlement_date.split("-"))
+        settlement_ts = int(datetime(y, mo, d, 12, 0, 0, tzinfo=UTC).timestamp())
+        start_ts = settlement_ts - 7 * 24 * 3600
+        try:
+            points = fetch_price_history(token, start_ts, settlement_ts, client)
+        except httpx.HTTPError:
+            continue
+        yes_close = last_before(points, settlement_ts)
+        if yes_close is None:
+            continue
+        side = r.get("side") or "YES"
+        ask = r["ask"]
+        clv = yes_close - ask if side == "YES" else (1.0 - yes_close) - ask
+        tagged = dict(r)
+        tagged["_clv"] = clv
+        tagged["_venue"] = r.get("venue") or "polymarket"
+        tagged["_lead"] = _lead_bucket(r["settlement_date"], r["started_at"])
+        tagged["_edge"] = _edge_bucket(r.get("edge"))
+        tagged["_p_win"] = _p_win_bucket(r["p_win"])
+        clv_rows.append(tagged)
+
+    n_clv = len(clv_rows)
+    mean_clv = sum(r["_clv"] for r in clv_rows) / n_clv if n_clv else None
+
+    by_segment: dict[str, list[dict[str, Any]]] = {}
+    if clv_rows:
+        by_segment["city"] = _clv_segment_stats(
+            [{**r, "_key": r["city"]} for r in clv_rows], "_key"
+        )
+        by_segment["venue"] = _clv_segment_stats(
+            [{**r, "_key": r["_venue"]} for r in clv_rows], "_key"
+        )
+        by_segment["variable"] = _clv_segment_stats(
+            [{**r, "_key": r["variable"]} for r in clv_rows], "_key"
+        )
+        by_segment["lead"] = _clv_segment_stats(
+            [{**r, "_key": r["_lead"]} for r in clv_rows], "_key"
+        )
+        by_segment["edge"] = _clv_segment_stats(
+            [{**r, "_key": r["_edge"]} for r in clv_rows], "_key"
+        )
+        by_segment["p_win"] = _clv_segment_stats(
+            [{**r, "_key": r["_p_win"]} for r in clv_rows], "_key"
+        )
+
+    return {
+        "n_bets": n_bets,
+        "n_clv": n_clv,
+        "mean_clv": mean_clv,
+        "by_segment": by_segment,
     }
 
 

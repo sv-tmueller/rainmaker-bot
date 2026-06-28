@@ -56,6 +56,19 @@ def _get(
     return [PricePoint(t=int(point["t"]), p=float(point["p"])) for point in history]
 
 
+def last_before(points: list[PricePoint], target_ts: int) -> float | None:
+    """Price of the latest point with t strictly before target_ts, or None.
+
+    Use this instead of snap_price when you must not land at or after the
+    target (e.g. a settlement timestamp): snap_price returns the nearest point
+    regardless of direction, so it can land after the deadline.
+    """
+    candidates = [pt for pt in points if pt.t < target_ts]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda pt: pt.t).p
+
+
 def snap_price(points: list[PricePoint], target_ts: int, *, tolerance_s: int) -> float | None:
     """The price of the point nearest target_ts, or None if none is within tolerance.
 
