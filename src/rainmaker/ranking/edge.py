@@ -69,10 +69,6 @@ def evaluate_market(
     no_floor = floor_no if floor_no is not None else floor
     unit = market.target.station.unit
     n_sources = sum(1 for c in forecast_set.coverage if c.ok and c.n_samples > 0)
-    # Intl markets (ghcnd_id is None) have no NCEI/ASOS settlement proxy, so NWS
-    # (US-only) never returns data. One live source is the maximum available.
-    # US markets always require min_sources because they have both NWS and open-meteo.
-    effective_min_sources = 1 if market.target.station.ghcnd_id is None else min_sources
     # Markets with no GHCN-D id cannot be calibrated (no actuals history to fit against).
     # Force recommended off while leaving the forecast and advisory display intact.
     uncalibratable = market.target.station.ghcnd_id is None
@@ -118,7 +114,7 @@ def evaluate_market(
             recommended = (
                 not uncalibratable
                 and p_win >= floor
-                and n_sources >= effective_min_sources
+                and n_sources >= min_sources
                 and edge >= min_edge
             )
             outcomes.append(
@@ -141,7 +137,7 @@ def evaluate_market(
             recommended_no = (
                 not uncalibratable
                 and p_no >= no_floor
-                and n_sources >= effective_min_sources
+                and n_sources >= min_sources
                 and edge_no >= min_edge
             )
             outcomes.append(
