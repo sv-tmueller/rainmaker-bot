@@ -798,27 +798,60 @@ def test_cap_substitutes_lower_edge_bet():
 
 
 # F5: max_p_win is side-agnostic
+#
+# Market has two buckets:
+#   "85-86°F" (range, far-off) -> NO bet: p_no ~ 1, edge ~ 0.20 (BEST uncapped)
+#   "68°F or higher" (above, near-mean) -> YES bet: p_yes ~ 0.95, edge ~ 0.13
+# Uncapped: "85-86°F" NO wins (higher edge). Capped at max_p_win=0.97:
+#   NO excluded (p_no > 0.97), YES survives (p_yes < 0.97) -> side flips to YES.
+# This proves the filter keys on RankedOutcome.p_win (which IS p_no for NO bets),
+# not on p_yes, i.e. it is side-agnostic.
 
 
 def test_cap_max_p_win_side_agnostic():
-    """A NO bet with p_no>0.97 is excluded by max_p_win=0.97.
+    """max_p_win=0.97 excludes a NO bet (p_no>0.97) while a YES bet (p_yes<0.97) survives.
 
-    Uses a single far-off bucket: p_no near 1. With max_p_win=0.97 it is excluded.
+    The resulting bet must switch side from NO to YES. That confirms the filter
+    operates on o.p_win regardless of which side it encodes.
     """
     _, x = _settlement_ts()
+    # "85-86°F": mid=0.20 -> no_ask=0.80, p_no~1, edge~0.20 (best uncapped; NO side)
+    # "68°F or higher": mid=0.82 -> best_ask=0.82, p_yes~0.95, edge~0.13 (YES side)
     market = _market(
-        [_bucket("85-86°F", "range", lo=85, hi=86, yes_token_id="yb", no_token_id="nb")]
+        [
+            _bucket("85-86°F", "range", lo=85, hi=86, yes_token_id="yn", no_token_id="nn"),
+            _bucket("68°F or higher", "above", threshold=68, yes_token_id="yy", no_token_id="ny"),
+        ]
     )
-    histories = {"yb": [PricePoint(t=x, p=0.10)]}  # no_ask=0.90, p_no~1
+    histories = {
+        "yn": [PricePoint(t=x, p=0.20)],  # 85-86°F: no_ask=0.80
+        "yy": [PricePoint(t=x, p=0.82)],  # 68°F or higher: yes_ask=0.82
+    }
 
-    bets_no_cap, _ = _replay_far(market, histories)
-    assert len(bets_no_cap) == 1, "pre-condition: a NO bet is recommended"
-    assert bets_no_cap[0].side == "NO"
-    assert bets_no_cap[0].p_win > 0.97  # p_no is near 1 at 70F center
+    # Pre-condition: uncapped, the NO bet is the best-edge bet.
+    bets_uncapped, _ = _replay_far(market, histories)
+    assert len(bets_uncapped) == 1, "pre-condition: exactly one bet uncapped"
+    assert bets_uncapped[0].side == "NO"
+    assert bets_uncapped[0].bucket_label == "85-86°F"
+    assert bets_uncapped[0].p_win > 0.97
 
-    # max_p_win=0.97 excludes it.
+    # Pre-condition: the YES bucket is independently recommended (survives alone).
+    market_yes_only = _market(
+        [_bucket("68°F or higher", "above", threshold=68, yes_token_id="yy", no_token_id="ny")]
+    )
+    bets_yes_only, _ = _replay_far(market_yes_only, {"yy": [PricePoint(t=x, p=0.82)]})
+    assert len(bets_yes_only) == 1, "pre-condition: YES bucket independently recommended"
+    assert bets_yes_only[0].side == "YES"
+    assert bets_yes_only[0].p_win < 0.97, (
+        f"pre-condition: YES p_win={bets_yes_only[0].p_win} must be < 0.97"
+    )
+
+    # With max_p_win=0.97 the NO bet is excluded; the YES bet substitutes.
     bets_capped, _ = _replay_far(market, histories, max_p_win=0.97)
-    assert len(bets_capped) == 0
+    assert len(bets_capped) == 1, "substitution: one bet survives (not zero)"
+    assert bets_capped[0].side == "YES"
+    assert bets_capped[0].bucket_label == "68°F or higher"
+    assert bets_capped[0].p_win < 0.97
 
 
 # F6: PnlBacktestResult carries caps and render discloses them; JSON round-trips
