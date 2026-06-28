@@ -309,12 +309,12 @@ def compute_attribution(conn: Conn) -> dict[str, list[dict[str, Any]]]:
         tagged.append(t)
 
     return {
-        "city": _segment_stats([{**t, "_key": t["city"]} for t in tagged], "_key"),
-        "venue": _segment_stats([{**t, "_key": t["_venue"]} for t in tagged], "_key"),
-        "variable": _segment_stats([{**t, "_key": t["variable"]} for t in tagged], "_key"),
-        "lead": _segment_stats([{**t, "_key": t["_lead"]} for t in tagged], "_key"),
-        "edge": _segment_stats([{**t, "_key": t["_edge"]} for t in tagged], "_key"),
-        "p_win": _segment_stats([{**t, "_key": t["_p_win"]} for t in tagged], "_key"),
+        "city": _segment_stats(tagged, "city"),
+        "venue": _segment_stats(tagged, "_venue"),
+        "variable": _segment_stats(tagged, "variable"),
+        "lead": _segment_stats(tagged, "_lead"),
+        "edge": _segment_stats(tagged, "_edge"),
+        "p_win": _segment_stats(tagged, "_p_win"),
     }
 
 

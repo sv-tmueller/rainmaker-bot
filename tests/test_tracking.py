@@ -943,12 +943,86 @@ def test_compute_attribution_per_segment_values():
 
 
 def test_compute_attribution_consistency_with_compute_pnl():
-    """Each dimension's summed n/wins/losses and recomputed ROI match compute_pnl."""
+    """Each dimension's summed n/wins/losses and recomputed ROI match compute_pnl.
+
+    Extends the shared fixture with two additional bets that exercise previously
+    untested buckets:
+
+    Bet D (catch-up): started_at after settlement_date -> lead -2 -> '<0 (catch-up)'
+    Bet E (NULL-edge): edge=None -> _edge_bucket returns '<.05'
+
+    Two non-empty asserts confirm those buckets appear; the per-dimension
+    reconciliation loop then covers all five bets.
+    """
     conn = connect(":memory:")
     _setup_attribution_fixture(conn)
+
+    # Bet D: catch-up run (started_at > settlement_date -> lead=-2 -> '<0 (catch-up)')
+    # NYC, polymarket (NULL venue), TMAX, edge=0.12, p_win=0.88, ask=0.40
+    # actual=71 in '70-71°F' -> WIN
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("rD", "2026-06-01T00:00:00", "ok"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue) VALUES (?, ?, ?, ?, ?)",
+        ("mD", "NYC", "TMAX", "2026-05-30", None),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("rD", "mD", "70-71°F", 0.40, 0.40, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("rD", "mD", "70-71°F", 0.88, 0.12, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("mD", 71.0, "t"),
+    )
+
+    # Bet E: NULL edge -> _edge_bucket(None) returns '<.05'
+    # LAX, polymarket (NULL venue), TMIN, lead=2, edge=None, p_win=0.82, ask=0.40
+    # actual=75 NOT in '70-71°F' -> LOSS
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("rE", "2026-05-28T00:00:00", "ok"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue) VALUES (?, ?, ?, ?, ?)",
+        ("mE", "LAX", "TMIN", "2026-05-30", None),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("rE", "mE", "70-71°F", 0.40, 0.40, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("rE", "mE", "70-71°F", 0.82, None, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("mE", 75.0, "t"),
+    )
+
+    conn.commit()
+
     pnl = compute_pnl(conn)
     result = compute_attribution(conn)
     conn.close()
+
+    # Confirm the new buckets are represented before the reconciliation loop
+    by_lead = {s["segment"]: s for s in result["lead"]}
+    assert by_lead["<0 (catch-up)"]["n"] >= 1, "catch-up bucket must be non-empty"
+
+    by_edge = {s["segment"]: s for s in result["edge"]}
+    assert by_edge["<.05"]["n"] >= 1, "NULL-edge bucket must be non-empty"
 
     for dim in ("city", "venue", "variable", "lead", "edge", "p_win"):
         segs = result[dim]
