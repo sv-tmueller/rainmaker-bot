@@ -126,11 +126,15 @@ def test_run_backfill_fits_calibration_and_accuracy_per_lead(httpx_mock):
     assert cal.var_a >= 0.0
     assert cal.var_b >= 0.0
     assert acc.n == 2
-    assert acc.mae_f >= abs(acc.bias_f)  # mean |e| always >= |mean e|
-    assert acc.mae_f > 0
+    # lead 1 mu: 50.0 (03-01), 38.0 (03-02); errors vs 44.6/35.6 -> +5.4, +2.4
+    assert acc.bias_f == pytest.approx(3.9)
+    assert acc.mae_f == pytest.approx(3.9)
     cal2, acc2 = results[2]
     assert cal2.lead_time == 2
     assert acc2.n == 2
+    # lead 2 mu: 49.0 (03-01), 37.0 (03-02); errors vs 44.6/35.6 -> +4.4, +1.4
+    assert acc2.bias_f == pytest.approx(2.9)
+    assert acc2.mae_f == pytest.approx(2.9)
 
 
 def test_run_backfill_omits_leads_with_no_overlapping_actuals(httpx_mock):
