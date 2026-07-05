@@ -95,6 +95,8 @@ Python 3.11+ managed with uv. Commands:
 - Prune: `uv run rainmaker prune` (drop all-but-latest intraday rows per
   (settled market, UTC day) from prices/predictions/forecasts; bounds storage)
 - Track: `uv run rainmaker track` (P&L + calibration summary over settled markets)
+- Tail check: `uv run rainmaker tail-check` (claimed-vs-realized tail calibration
+  and PIT tail ratios per variable/lead, read-only diagnostic; `--by-hour`)
 - Snapshot: `uv run rainmaker snapshot` (upsert the daily metrics row the dashboard reads)
 - Backfill: `uv run rainmaker backfill --city <X>` (fit a calibration cell and
   backtest accuracy from history; `--city all` covers every city)

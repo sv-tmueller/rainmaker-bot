@@ -645,6 +645,204 @@ def compute_live_calibration(conn: Conn) -> list[dict[str, Any]]:
     return out
 
 
+MIN_TAIL_N = 20  # minimum cell population before a claimed-vs-realized cell gets a verdict
+
+
+def _tail_bin(value: float) -> str:
+    """Map a claimed probability to a tail bin. Sub-.75 values share a body-context bin."""
+    if value < 0.75:
+        return "<0.75"
+    if value < 0.85:
+        return "[0.75,0.85)"
+    if value < 0.90:
+        return "[0.85,0.90)"
+    if value < 0.95:
+        return "[0.90,0.95)"
+    return "[0.95,1.0]"
+
+
+def _pit_tail_ratios(triples: list[tuple[float, float, float]]) -> dict[str, float | int]:
+    """Tail-occurrence ratios P(PIT > 1-q)/q and P(PIT < q)/q at q = 0.10 and 0.05.
+
+    Bucket-geometry-free: driven only by the stored (mu, sigma, actual), so it
+    isolates distribution-tail miscalibration from the bucket-width artifact the
+    claimed-vs-realized table can show (a narrow bucket inflates p_win regardless
+    of tail thickness).
+    """
+    n = len(triples)
+    pits = [float(norm.cdf(actual, loc=mu, scale=sigma)) for mu, sigma, actual in triples]
+
+    def ratio(q: float, upper: bool) -> float:
+        if upper:
+            count = sum(1 for p in pits if p > 1 - q)
+        else:
+            count = sum(1 for p in pits if p < q)
+        return (count / n) / q
+
+    return {
+        "n": n,
+        "upper_10": ratio(0.10, True),
+        "lower_10": ratio(0.10, False),
+        "upper_05": ratio(0.05, True),
+        "lower_05": ratio(0.05, False),
+    }
+
+
+def _latest_run_per_market_day_hour(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Like _latest_run_per_market_day, but keyed by (market, UTC day, hour).
+
+    Under --by-hour, compute_tail_calibration groups by the run's UTC hour; deduping
+    per (market, day) alone would collapse every hour to the day's single latest run
+    and erase the hour dimension, so the key gains started_at's hour.
+    """
+    latest: dict[tuple[str, str, str], tuple[str, str]] = {}
+    for r in rows:
+        started = r["started_at"]
+        key = (r["market_id"], started[:10], started[11:13])
+        marker = (started, r["run_id"])
+        if key not in latest or marker > latest[key]:
+            latest[key] = marker
+    keep = {(market_id, run_id) for (market_id, _, _), (_, run_id) in latest.items()}
+    return [r for r in rows if (r["market_id"], r["run_id"]) in keep]
+
+
+def compute_tail_calibration(conn: Conn, by_hour: bool = False) -> dict[str, list[dict[str, Any]]]:
+    """Claimed-vs-realized tail calibration plus PIT tail ratios, per (variable, lead).
+
+    Read-only diagnostic: no refit, no gate change, no persistence. Temperature
+    only (m.variable != 'PRCP'); same population and dedup as compute_live_calibration
+    (see its docstring) unless by_hour is set, which dedups per (market, UTC day,
+    hour) instead of per (market, UTC day) so the hour split survives the
+    intraday-rerun collapse, and adds hour to every group key.
+
+    Primary ("primary"): a YES bucket row is a YES-tail claim at its own p_win
+    when p_win >= 0.5, else a NO-tail claim at 1 - p_win (event: the bucket did
+    not settle) -- both tails are reported separately via the side column. Both
+    sides bin into <0.75 (body context), [0.75,0.85), [0.85,0.90), [0.90,0.95),
+    [0.95,1.0]. A cell gets an OVER/UNDER verdict only when n >= MIN_TAIL_N and
+    the claimed mean falls outside the Wilson 95% CI of the realized frequency;
+    thinner cells report thin=True and no verdict.
+
+    Secondary ("pit"): P(PIT > 1-q)/q and P(PIT < q)/q at q = 0.10 and 0.05 from
+    the stored (mu, sigma, actual) triples, one row per (variable, lead[, hour]).
+    """
+    dedup = _latest_run_per_market_day_hour if by_hour else _latest_run_per_market_day
+
+    dist_rows = conn.execute(
+        "SELECT DISTINCT p.run_id AS run_id, p.market_id AS market_id, "
+        "p.dist_params AS dist_params, m.variable AS variable, "
+        "m.settlement_date AS settlement_date, r.started_at AS started_at, "
+        "o.actual_value AS actual_value "
+        "FROM predictions p "
+        "JOIN outcomes o ON o.market_id = p.market_id "
+        "JOIN markets m ON m.id = p.market_id "
+        "JOIN runs r ON r.id = p.run_id "
+        "WHERE p.dist_params IS NOT NULL AND o.actual_value IS NOT NULL "
+        "AND m.variable != 'PRCP'"
+    ).fetchall()
+
+    pit_groups: dict[tuple[str, int, int | None], list[tuple[float, float, float]]] = defaultdict(
+        list
+    )
+    for r in dedup([dict(row) for row in dist_rows]):
+        try:
+            lead = (
+                date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
+            ).days
+        except ValueError:
+            continue  # unparsable date (e.g. test sentinel "t"): skip
+        if lead < 0:
+            continue
+        try:
+            params = json.loads(r["dist_params"])
+        except json.JSONDecodeError:
+            continue
+        mu, sigma = params.get("mu"), params.get("sigma")
+        if mu is None or sigma is None or sigma <= 0:
+            continue
+        hour = int(r["started_at"][11:13]) if by_hour else None
+        pit_groups[(r["variable"], lead, hour)].append((mu, sigma, r["actual_value"]))
+
+    yes_rows_raw = conn.execute(
+        "SELECT p.run_id AS run_id, p.market_id AS market_id, "
+        "p.p_win AS p_win, p.bucket AS bucket, "
+        "m.variable AS variable, m.settlement_date AS settlement_date, "
+        "m.outcome_spec AS outcome_spec, "
+        "r.started_at AS started_at, o.actual_value AS actual_value "
+        "FROM predictions p "
+        "JOIN outcomes o ON o.market_id = p.market_id "
+        "JOIN markets m ON m.id = p.market_id "
+        "JOIN runs r ON r.id = p.run_id "
+        "WHERE p.bucket IS NOT NULL AND o.actual_value IS NOT NULL "
+        "AND COALESCE(p.side, 'YES') = 'YES' "
+        "AND m.variable != 'PRCP'"
+    ).fetchall()
+
+    tail_groups: dict[tuple[str, int, int | None, str, str], list[tuple[float, bool]]] = (
+        defaultdict(list)
+    )
+    for r in dedup([dict(row) for row in yes_rows_raw]):
+        try:
+            lead = (
+                date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
+            ).days
+        except ValueError:
+            continue
+        if lead < 0:
+            continue
+        try:
+            won = _won(r["variable"], r["bucket"], r["actual_value"], r.get("outcome_spec"))
+        except (ValueError, KeyError):
+            continue
+        p_win = r["p_win"]
+        if p_win >= 0.5:
+            side, claim, event_won = "YES", p_win, won
+        else:
+            side, claim, event_won = "NO", 1 - p_win, not won
+        hour = int(r["started_at"][11:13]) if by_hour else None
+        tail_groups[(r["variable"], lead, hour, side, _tail_bin(claim))].append((claim, event_won))
+
+    primary: list[dict[str, Any]] = []
+    for (variable, lead, hour, side, bin_label), items in sorted(tail_groups.items()):
+        n = len(items)
+        wins = sum(1 for _, event_won in items if event_won)
+        claimed_mean = sum(c for c, _ in items) / n
+        realized_freq = wins / n
+        lo, hi = _wilson_interval(wins, n)
+        thin = n < MIN_TAIL_N
+        verdict = None
+        if not thin:
+            if claimed_mean > hi:
+                verdict = "OVER"
+            elif claimed_mean < lo:
+                verdict = "UNDER"
+        primary.append(
+            {
+                "variable": variable,
+                "lead_time": lead,
+                "hour": hour,
+                "side": side,
+                "bin": bin_label,
+                "n": n,
+                "wins": wins,
+                "claimed_mean": claimed_mean,
+                "realized_freq": realized_freq,
+                "wilson_lo": lo,
+                "wilson_hi": hi,
+                "thin": thin,
+                "verdict": verdict,
+            }
+        )
+
+    pit: list[dict[str, Any]] = []
+    for (variable, lead, hour), triples in sorted(pit_groups.items()):
+        pit.append(
+            {"variable": variable, "lead_time": lead, "hour": hour, **_pit_tail_ratios(triples)}
+        )
+
+    return {"primary": primary, "pit": pit}
+
+
 def write_snapshot(conn: Conn, on_date: str, created_at: str) -> dict[str, Any]:
     """Compute the current P&L/calibration and upsert a snapshot row for on_date."""
     pnl = compute_pnl(conn)
