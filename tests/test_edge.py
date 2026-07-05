@@ -455,7 +455,15 @@ def test_stale_source_ok_zero_samples_does_not_count_toward_min_sources():
     )
     # min_sources=2: under the bug both ok=True entries count (n_sources=2, recommended True).
     # After the fix only the entry with n_samples>0 counts (n_sources=1, recommended False).
-    report = evaluate_market(market, fs, floor=0.45, min_sources=2, min_sigma=1.5, min_edge=0.0)
+    report = evaluate_market(
+        market,
+        fs,
+        floor=0.45,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
+        calibration=_full_cal(),  # isolate the min-sources gate from the calibration gate
+    )
     assert report.n_sources == 1
     assert report.outcomes[0].recommended is False
 
@@ -753,6 +761,7 @@ def test_intl_market_never_recommended() -> None:
         min_sources=MIN_SOURCES,
         min_sigma=MIN_SIGMA_C,
         min_edge=MIN_EDGE,
+        calibration=_full_cal(),  # isolate the uncalibratable gate from the calibration gate
     )
     # Advisory display must still render (intl markets stay in the report).
     assert report.outcomes, "outcomes must be non-empty so advisory still renders"
@@ -781,6 +790,7 @@ def test_us_market_single_source_blocked() -> None:
         min_sources=MIN_SOURCES,
         min_sigma=MIN_SIGMA_F,
         min_edge=MIN_EDGE,
+        calibration=_full_cal(),  # isolate the min-sources gate from the calibration gate
     )
     assert report.n_sources == 1
     yes = next(o for o in report.outcomes if o.side == "YES")
