@@ -256,7 +256,8 @@ KALSHI_HIGH_SERIES: dict[str, str] = {
 # Daily low-temp (TMIN) series. Settle on the same per-city NWS Climatological
 # Report (Daily) as the high-temp series (one report carries both max and min),
 # so they reuse KALSHI_STATIONS. The low-temp rule text names only the city, not
-# the station, so the parser's station guard relaxes for TMIN (see markets.py).
+# the station, so the parser guards on city identity instead of the station
+# name for TMIN (see markets.py).
 KALSHI_LOW_SERIES: dict[str, str] = {
     "NYC": "KXLOWTNYC",
     "Chicago": "KXLOWTCHI",

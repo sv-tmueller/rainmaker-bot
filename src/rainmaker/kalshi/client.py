@@ -70,7 +70,7 @@ def _discover_temp(
         for event_ticker, event_markets in events.items():
             try:
                 markets.append(parse_kalshi_event(city, station, event_markets, variable=variable))
-            except ValueError as exc:
+            except (ValueError, KeyError) as exc:
                 print(f"skipping Kalshi event {event_ticker}: {exc}", file=sys.stderr)
     return markets
 
@@ -101,6 +101,6 @@ def discover_kalshi_precip_markets(client: httpx.Client) -> list[PrecipMonthlyMa
         for event_ticker, event_markets in events.items():
             try:
                 markets.append(parse_kalshi_precip_event(city, station, event_markets))
-            except ValueError as exc:
+            except (ValueError, KeyError) as exc:
                 print(f"skipping Kalshi precip event {event_ticker}: {exc}", file=sys.stderr)
     return markets
