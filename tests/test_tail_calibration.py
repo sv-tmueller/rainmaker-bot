@@ -173,6 +173,53 @@ def test_calibrated_book_no_verdict_and_pit_ratios_near_one():
     assert pit["lower_05"] == 1.0
 
 
+def test_underconfident_book_flags_under_and_pit_ratios_below_one():
+    """Claims ~0.80, realizes 20/20: n >= MIN_TAIL_N flags UNDER; PIT ratios < 1.
+
+    20 markets claim p_win=0.80 on a "below 75" bucket (mu=70, sigma=2) and all
+    settle (actual=70, below the threshold): realized frequency 1.0. The Wilson
+    lower bound for wins=20/n=20 is ~0.839, above the claimed 0.80, so the claim
+    understates the true win rate and must flag UNDER. actual=mu places every
+    PIT value at exactly 0.5 (well inside both tails), so all four tail ratios
+    come out to exactly 0, which is < 1.
+    """
+    conn = connect(":memory:")
+    init_schema(conn)
+    for j in range(MIN_TAIL_N):
+        _insert_row(
+            conn,
+            market_id=f"m8-{j}",
+            run_id=f"r8-{j}",
+            started_at="2026-05-31T12:00:00+00:00",
+            settlement_date="2026-06-01",
+            p_win=0.80,
+            mu=70.0,
+            sigma=2.0,
+            actual=70.0,
+            bucket_kind="below",
+            threshold=75,
+        )
+    conn.commit()
+    result = compute_tail_calibration(conn)
+    conn.close()
+
+    row = _primary_row(result, "TMAX", 1, "YES", "[0.75,0.85)")
+    assert row is not None
+    assert row["n"] == 20
+    assert row["claimed_mean"] == 0.80
+    assert row["realized_freq"] == 1.0
+    assert row["thin"] is False
+    assert row["verdict"] == "UNDER"
+
+    pit = _pit_row(result, "TMAX", 1)
+    assert pit is not None
+    assert pit["n"] == 20
+    assert pit["upper_10"] < 1
+    assert pit["lower_10"] < 1
+    assert pit["upper_05"] < 1
+    assert pit["lower_05"] < 1
+
+
 def test_thin_cell_never_flags():
     """n < MIN_TAIL_N prints (via 'thin') but never gets a verdict, however skewed."""
     conn = connect(":memory:")
