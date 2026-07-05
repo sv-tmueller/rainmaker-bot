@@ -197,6 +197,9 @@ Note: `backtest-pnl` has no `--floor-no` flag, so the backtest runs at the flat
 0.80 floor on both sides. This is looser than the live NO gate
 (`CONFIDENCE_FLOOR_NO=0.75`), meaning the sweep is a superset on that axis too
 (same spirit as the `min_sources=1` superset caveat above).
+[Correction 2026-07-05 (#226): the flag exists now, and the direction was
+inverted. 0.80 is the stricter NO threshold, so those sweeps were a subset on
+this axis, not a superset.]
 
 Preferred pricing mode: `--asks trades` (real CLOB fills; no spread added).
 Fall back to `--spread 0.05` only if trades coverage is too thin at the extremes
