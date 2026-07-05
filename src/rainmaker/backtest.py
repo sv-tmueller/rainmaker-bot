@@ -19,7 +19,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 from scipy.stats import norm
 
-from rainmaker.backfill import build_pairs, fetch_actuals, fetch_historical_forecasts
+from rainmaker.backfill import build_pairs, fetch_historical_forecasts, venue_actuals
 from rainmaker.config import MIN_CAL_SAMPLES, MIN_SIGMA_F, Station
 from rainmaker.domain import Bucket, BucketKind, Market
 from rainmaker.polymarket.markets import parse_market
@@ -211,7 +211,7 @@ def backtest_synthetic(
     Returns None if no day has both a forecast and an actual.
     """
     forecasts = fetch_historical_forecasts(station, start, end, client, variable)
-    actuals = fetch_actuals(station.ghcnd_id, start, end, client, variable)  # type: ignore[arg-type]
+    actuals = venue_actuals(station, start, end, client, variable)
     pairs = build_pairs(forecasts, actuals)
     if not pairs:
         return None
@@ -387,9 +387,11 @@ def backtest_real(
     days: list[DayScore] = []
     for group in by_station.values():
         station = group[0].target.station
+        if station.ghcnd_id is None:
+            continue  # intl stations have no NCEI proxy; cannot grade (mirrors #204)
         dates = [m.target.local_date for m in group]
         forecasts = fetch_historical_forecasts(station, min(dates), max(dates), client)
-        actuals = fetch_actuals(station.ghcnd_id, min(dates), max(dates), client, "TMAX")  # type: ignore[arg-type]
+        actuals = venue_actuals(station, min(dates), max(dates), client, "TMAX")
         for market in group:
             g = forecasts.get(market.target.local_date)
             actual = actuals.get(market.target.local_date)

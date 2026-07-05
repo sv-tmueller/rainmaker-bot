@@ -17,8 +17,8 @@ import pytest
 from rainmaker.backfill import (
     NCEI_URL,
     PREVIOUS_RUNS_URL,
-    _calibration_actuals,
     run_backfill,
+    venue_actuals,
 )
 from rainmaker.config import INTL_STATIONS, KALSHI_STATIONS, STATIONS
 from rainmaker.forecasts.asos import ICAO_TO_ASOS_STATION, MESONET_ASOS_URL
@@ -196,18 +196,18 @@ def test_run_backfill_multiple_leads_share_one_previous_runs_request(httpx_mock)
 # ---------------------------------------------------------------------------
 
 
-def test_calibration_actuals_refuses_intl_station(httpx_mock):
+def test_venue_actuals_refuses_intl_station(httpx_mock):
     """Intl stations (Celsius, ghcnd_id=None) share ICAO_TO_ASOS_STATION for
     settlement, but the US ASOS calibration path is Fahrenheit and UTC-bucketed.
     Routing an intl station through it would silently produce wrong-unit actuals,
-    so _calibration_actuals refuses it loudly. Unreachable today (the backfill
+    so venue_actuals refuses it loudly. Unreachable today (the backfill
     station set never includes INTL_STATIONS); this guards a future caller."""
     london = INTL_STATIONS["London"]
     assert london.unit == "C" and london.ghcnd_id is None
     assert london.icao in ICAO_TO_ASOS_STATION  # shares the settlement map
     with httpx.Client() as client:
         with pytest.raises(ValueError):
-            _calibration_actuals(london, date(2026, 3, 1), date(2026, 3, 5), client)
+            venue_actuals(london, date(2026, 3, 1), date(2026, 3, 5), client)
     # The guard fires before any network call: no ASOS request was made.
     asos_requests = [r for r in httpx_mock.get_requests() if MESONET_ASOS_URL in str(r.url)]
     assert len(asos_requests) == 0

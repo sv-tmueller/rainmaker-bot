@@ -382,3 +382,23 @@ The re-run itself is an operator step, not part of this change: it needs
 `DATABASE_URL` set to the production store and #233's backfill to have
 populated cells there first. Once run, correct the sweep tables above in a
 dated follow-up.
+
+## Update 2026-07-05: the historical sweeps also graded look-ahead prices and the wrong actual (#227)
+
+Two more sources of optimism affected every sweep table above, on top of the
+look-ahead calibration fit and the opted-out gate already noted. `backtest.py`
+and `pnl_backtest.py` graded every station against the bare NCEI actual, the
+same source settle.py and backfill.py stopped using for Polymarket cities once
+NCEI was measured to bucket-flip about 32% of markets against settlement
+(ASOS about 15%). And `replay_market` snapped each replayed lead's price to
+the nearest point in either direction within 12h, so a lead-N bet could be
+priced on information up to 12h after the simulated decision time.
+
+Decision: both are fixed here, not just disclosed. Actuals now route through
+`venue_actuals` (ASOS for Polymarket stations, NCEI for Kalshi-only KNYC/KMDW),
+the same routing backfill and settle already use. Price and fill snapping is
+now look-back-only (`last_before` with a bounded max age), so no replayed
+price timestamp lands after its simulated decision time; a lead whose only
+nearby price is in the future is honestly skipped rather than priced ahead of
+itself. No new sweep numbers are produced in this change: it is superseded by
+the same pending re-run #226 already flagged.

@@ -6,9 +6,10 @@ from typing import Any
 
 import httpx
 
-from rainmaker.backfill import HISTORICAL_FORECAST_URL, NCEI_URL
+from rainmaker.backfill import HISTORICAL_FORECAST_URL
 from rainmaker.backtest import backtest_real, backtest_synthetic, standard_buckets
 from rainmaker.config import MIN_CAL_SAMPLES, MIN_SIGMA_F, STATIONS
+from rainmaker.forecasts.asos import MESONET_ASOS_URL
 from rainmaker.polymarket.client import GAMMA_EVENTS_URL, fetch_closed_weather_events
 from rainmaker.probability.calibration import CalibrationPair, apply_calibration, fit_calibration
 from rainmaker.probability.distribution import Gaussian
@@ -17,8 +18,11 @@ FIXTURES = Path(__file__).parent / "fixtures"
 KLGA = STATIONS["NYC"]
 
 
-def _actuals_fixture() -> list[dict[str, Any]]:
-    return json.loads((FIXTURES / "ncei_actuals_klga.json").read_text())
+def _asos_fixture() -> str:
+    # Same daily TMAX (43/34/35/50/45F for 03-01..03-05) as ncei_actuals_klga.json,
+    # so venue_actuals routes KLGA (a Polymarket station) to ASOS and every
+    # downstream score/P/L assertion below holds unchanged.
+    return (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
 
 
 def _hist_fixture() -> dict[str, Any]:
@@ -33,7 +37,7 @@ def test_backtest_synthetic_scores_the_overlapping_window(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
     )
-    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=_asos_fixture())
     with httpx.Client() as client:
         pair = backtest_synthetic(KLGA, "TMAX", date(2026, 3, 1), date(2026, 3, 5), client)
 
@@ -57,7 +61,7 @@ def test_backtest_synthetic_tmin_fetches_min_field(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
     )
-    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=_asos_fixture())
     with httpx.Client() as client:
         backtest_synthetic(KLGA, "TMIN", date(2026, 3, 1), date(2026, 3, 5), client)
     archive = next(r for r in httpx_mock.get_requests() if HISTORICAL_FORECAST_URL in str(r.url))
@@ -68,7 +72,9 @@ def test_backtest_synthetic_returns_none_without_overlap(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
     )
-    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=[])  # no actuals
+    httpx_mock.add_response(
+        url=re.compile(re.escape(MESONET_ASOS_URL)), text="station,valid,tmpc\n"
+    )  # no actuals
     with httpx.Client() as client:
         result = backtest_synthetic(KLGA, "TMAX", date(2026, 3, 1), date(2026, 3, 5), client)
     assert result is None
@@ -86,7 +92,7 @@ def test_backtest_real_scores_closed_markets_and_filters(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
     )
-    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=_asos_fixture())
     with httpx.Client() as client:
         result = backtest_real(_closed_events(), client, on_or_after=date(2026, 3, 1))
     # The Feb NYC market is date-filtered; London is skipped (not in the registry);

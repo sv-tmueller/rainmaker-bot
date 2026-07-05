@@ -10,7 +10,6 @@ import pytest
 import rainmaker.pnl_backtest as pnl_backtest_mod
 from rainmaker.backfill import (
     HISTORICAL_FORECAST_URL,
-    NCEI_URL,
     fetch_historical_forecasts,
     fetch_historical_samples,
 )
@@ -24,6 +23,7 @@ from rainmaker.config import (
     build_target,
 )
 from rainmaker.domain import Bucket, Market
+from rainmaker.forecasts.asos import MESONET_ASOS_URL
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.pnl_backtest import (
     Bet,
@@ -217,19 +217,22 @@ def test_replay_market_collapses_per_lead_and_settles():
     settlement = datetime(2026, 3, 2, 12, tzinfo=UTC)
     x = int(settlement.timestamp())
     day = 86400
-    # Prices per lead steer which bucket is the best-edge bet at each lead.
+    hour = 3600
+    # Prices per lead steer which bucket is the best-edge bet at each lead. Each
+    # point sits 1h before its lead's target timestamp (strictly past, within
+    # SNAP_TOLERANCE_S), so look-back-only snapping still lands on it.
     histories = {
         "y1": [
-            PricePoint(t=x, p=0.20),
-            PricePoint(t=x - day, p=0.20),
-            PricePoint(t=x - 2 * day, p=0.04),
-            PricePoint(t=x - 3 * day, p=0.04),
+            PricePoint(t=x - hour, p=0.20),
+            PricePoint(t=x - day - hour, p=0.20),
+            PricePoint(t=x - 2 * day - hour, p=0.04),
+            PricePoint(t=x - 3 * day - hour, p=0.04),
         ],
         "y2": [
-            PricePoint(t=x, p=0.10),
-            PricePoint(t=x - day, p=0.04),
-            PricePoint(t=x - 2 * day, p=0.20),
-            PricePoint(t=x - 3 * day, p=0.20),
+            PricePoint(t=x - hour, p=0.10),
+            PricePoint(t=x - day - hour, p=0.04),
+            PricePoint(t=x - 2 * day - hour, p=0.20),
+            PricePoint(t=x - 3 * day - hour, p=0.20),
         ],
     }
     bets, _fills_used = replay_market(
@@ -270,7 +273,7 @@ def test_replay_market_missing_calibration_cell_suppresses_bets():
     """
     market = _market([_bucket("80°F or higher", "above", threshold=80, yes_token_id="y1")])
     settlement = datetime(2026, 3, 2, 12, tzinfo=UTC)
-    histories = {"y1": [PricePoint(t=int(settlement.timestamp()), p=0.10)]}
+    histories = {"y1": [PricePoint(t=int(settlement.timestamp()) - 3600, p=0.10)]}
     shifted = _full_cal(bias=-20.0)  # mu 70 -> 90: well clear of threshold=80
 
     def _replay(calibrations: dict[int, Calibration | None] | None) -> list[Bet]:
@@ -307,7 +310,8 @@ def test_replay_market_applies_per_lead_calibration_cell():
     settlement = datetime(2026, 3, 2, 12, tzinfo=UTC)
     x = int(settlement.timestamp())
     day = 86400
-    histories = {"y1": [PricePoint(t=x, p=0.10), PricePoint(t=x - day, p=0.10)]}
+    hour = 3600
+    histories = {"y1": [PricePoint(t=x - hour, p=0.10), PricePoint(t=x - day - hour, p=0.10)]}
     identity = _full_cal()  # mu stays 70: threshold 80 is far above -> YES not recommended
     shifted = _full_cal(bias=-20.0)  # mu shifts to 90: threshold 80 well below -> YES recommended
 
@@ -347,7 +351,7 @@ def test_replay_market_floor_no_places_bet_between_075_and_080():
 
     market = _market([_bucket("72°F or higher", "above", threshold=threshold, yes_token_id="y1")])
     settlement = datetime(2026, 3, 2, 12, tzinfo=UTC)
-    histories = {"y1": [PricePoint(t=int(settlement.timestamp()), p=0.5)]}
+    histories = {"y1": [PricePoint(t=int(settlement.timestamp()) - 3600, p=0.5)]}
     cal = _full_cal()
 
     def _replay(*, floor: float, floor_no: float | None) -> list[Bet]:
@@ -372,6 +376,97 @@ def test_replay_market_floor_no_places_bet_between_075_and_080():
     assert len(bets_split) == 1
     assert bets_split[0].side == "NO"
     assert bets_split[0].p_win == pytest.approx(target_p_no, abs=1e-3)
+
+
+# Phase I - look-back-only pricing, no look-ahead (#227)
+
+
+def test_replay_market_skips_lead_when_only_future_price_available():
+    """A price point strictly after the decision time must not be used: the
+    lead gets no bet rather than a look-ahead price."""
+    market = _market([_bucket("80°F or higher", "above", threshold=80, yes_token_id="y1")])
+    settlement = datetime(2026, 3, 2, 12, tzinfo=UTC)
+    x = int(settlement.timestamp())
+    # Only a point one hour after the lead-0 target (=x): no past price to snap to.
+    histories = {"y1": [PricePoint(t=x + 3600, p=0.10)]}
+    bets, _ = replay_market(
+        market,
+        _tight_forecast_set(),
+        actual=90.0,
+        histories=histories,
+        settlement_dt=settlement,
+        leads=(0,),
+        floor=0.80,
+        min_sources=1,
+        min_sigma=1.5,
+        min_edge=0.05,
+        calibrations={0: _full_cal(bias=-20.0)},
+    )
+    assert bets == []
+
+
+def test_replay_market_ignores_nearer_future_price_uses_past_price():
+    """A future point nearer to the target than a past point must still be
+    ignored: the ask is snapped from the past point, not the closer future one."""
+    market = _market([_bucket("80°F or higher", "above", threshold=80, yes_token_id="y1")])
+    settlement = datetime(2026, 3, 2, 12, tzinfo=UTC)
+    x = int(settlement.timestamp())
+    histories = {
+        "y1": [
+            PricePoint(t=x - 3600, p=0.10),  # 1h before: the only usable price
+            PricePoint(t=x + 60, p=0.90),  # 1min after: nearer, but future - must be ignored
+        ]
+    }
+    bets, _ = replay_market(
+        market,
+        _tight_forecast_set(),
+        actual=90.0,
+        histories=histories,
+        settlement_dt=settlement,
+        leads=(0,),
+        floor=0.80,
+        min_sources=1,
+        min_sigma=1.5,
+        min_edge=0.05,
+        calibrations={0: _full_cal(bias=-20.0)},
+    )
+    assert len(bets) == 1
+    assert bets[0].side == "YES"
+    assert bets[0].ask == pytest.approx(0.10)
+
+
+def test_replay_market_fills_ignore_future_fill_uses_past_fill():
+    """Fill snapping is look-back-only too: a nearer future fill must not be
+    used as the ask; the past fill is used instead."""
+    market = _market(
+        [_bucket("80°F or higher", "above", threshold=80, yes_token_id="y1", no_token_id="n1")]
+    )
+    settlement = datetime(2026, 3, 2, 12, tzinfo=UTC)
+    x = int(settlement.timestamp())
+    histories = {"y1": [PricePoint(t=x - 3600, p=0.50)]}
+    fill_histories = {
+        "y1": [
+            FillPoint(t=x - 3600, p=0.10),  # past: usable
+            FillPoint(t=x + 60, p=0.90),  # future: nearer, must be ignored
+        ]
+    }
+    bets, fills_used = replay_market(
+        market,
+        _tight_forecast_set(),
+        actual=90.0,
+        histories=histories,
+        settlement_dt=settlement,
+        leads=(0,),
+        floor=0.80,
+        min_sources=1,
+        min_sigma=1.5,
+        min_edge=0.05,
+        fill_histories=fill_histories,
+        calibrations={0: _full_cal(bias=-20.0)},
+    )
+    assert fills_used == 1
+    assert len(bets) == 1
+    assert bets[0].ask == pytest.approx(0.10)  # from the past fill, not the future one
 
 
 # Phase C2
@@ -419,8 +514,11 @@ def test_score_aggregates_pnl_per_lead_and_overall():
 # Phase C3
 
 
-def _actuals_fixture() -> list[dict[str, Any]]:
-    return json.loads((FIXTURES / "ncei_actuals_klga.json").read_text())
+def _asos_fixture() -> str:
+    # Same daily TMAX (43/34/35/50/45F for 03-01..03-05) as ncei_actuals_klga.json,
+    # so venue_actuals routes KLGA (a Polymarket station) to ASOS and every
+    # downstream bet/P/L assertion below holds unchanged.
+    return (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
 
 
 def _closed_events() -> list[dict[str, Any]]:
@@ -444,7 +542,7 @@ def test_backtest_pnl_replays_closed_markets_end_to_end(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
     )
-    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=_asos_fixture())
     httpx_mock.add_callback(
         _clob_callback, url=re.compile(re.escape(CLOB_PRICES_URL)), is_reusable=True
     )
@@ -644,7 +742,7 @@ def test_backtest_pnl_trades_mode_uses_fill_as_ask(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
     )
-    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=_asos_fixture())
     httpx_mock.add_callback(
         _clob_callback, url=re.compile(re.escape(CLOB_PRICES_URL)), is_reusable=True
     )
@@ -764,7 +862,7 @@ def test_backtest_pnl_mid_mode_no_fill_coverage(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
     )
-    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=_asos_fixture())
     httpx_mock.add_callback(
         _clob_callback, url=re.compile(re.escape(CLOB_PRICES_URL)), is_reusable=True
     )
@@ -834,8 +932,8 @@ def _far_histories_two_buckets() -> dict[str, list[PricePoint]]:
     """Price histories for 79-80F (higher edge) and 85-86F (lower edge) NO bets."""
     _, x = _settlement_ts()
     return {
-        "ya": [PricePoint(t=x, p=0.20)],  # 79-80F: no_ask=0.80, edge~0.20
-        "yb": [PricePoint(t=x, p=0.10)],  # 85-86F: no_ask=0.90, edge~0.10
+        "ya": [PricePoint(t=x - 3600, p=0.20)],  # 79-80F: no_ask=0.80, edge~0.20
+        "yb": [PricePoint(t=x - 3600, p=0.10)],  # 85-86F: no_ask=0.90, edge~0.10
     }
 
 
@@ -912,7 +1010,7 @@ def test_cap_excludes_only_bet_lead_drops():
     market = _market(
         [_bucket("79-80°F", "range", lo=79, hi=80, yes_token_id="yb", no_token_id="nb")]
     )
-    histories = {"yb": [PricePoint(t=x, p=0.20)]}  # no_ask=0.80, edge~0.20
+    histories = {"yb": [PricePoint(t=x - 3600, p=0.20)]}  # no_ask=0.80, edge~0.20
 
     bets_no_cap, _ = _replay_far(market, histories)
     assert len(bets_no_cap) == 1, "pre-condition: unbounded replay produces a bet"
@@ -950,7 +1048,7 @@ def test_cap_substitutes_lower_edge_bet():
         _market([_bucket("85-86°F", "range", lo=85, hi=86, yes_token_id="yb", no_token_id="nb")]),
         _tight_forecast_set(),
         72.0,
-        {"yb": [PricePoint(t=x2, p=0.10)]},
+        {"yb": [PricePoint(t=x2 - 3600, p=0.10)]},
         settlement2,
         leads=(0,),
         floor=0.80,
@@ -995,8 +1093,8 @@ def test_cap_max_p_win_side_agnostic():
         ]
     )
     histories = {
-        "yn": [PricePoint(t=x, p=0.20)],  # 85-86°F: no_ask=0.80
-        "yy": [PricePoint(t=x, p=0.82)],  # 68°F or higher: yes_ask=0.82
+        "yn": [PricePoint(t=x - 3600, p=0.20)],  # 85-86°F: no_ask=0.80
+        "yy": [PricePoint(t=x - 3600, p=0.82)],  # 68°F or higher: yes_ask=0.82
     }
 
     # Pre-condition: uncapped, the NO bet is the best-edge bet.
@@ -1010,7 +1108,7 @@ def test_cap_max_p_win_side_agnostic():
     market_yes_only = _market(
         [_bucket("68°F or higher", "above", threshold=68, yes_token_id="yy", no_token_id="ny")]
     )
-    bets_yes_only, _ = _replay_far(market_yes_only, {"yy": [PricePoint(t=x, p=0.82)]})
+    bets_yes_only, _ = _replay_far(market_yes_only, {"yy": [PricePoint(t=x - 3600, p=0.82)]})
     assert len(bets_yes_only) == 1, "pre-condition: YES bucket independently recommended"
     assert bets_yes_only[0].side == "YES"
     assert bets_yes_only[0].p_win < 0.97, (
@@ -1092,7 +1190,7 @@ def test_backtest_pnl_threads_caps_through(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
     )
-    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=_asos_fixture())
     httpx_mock.add_callback(
         _clob_callback, url=re.compile(re.escape(CLOB_PRICES_URL)), is_reusable=True
     )
@@ -1113,7 +1211,7 @@ def test_backtest_pnl_threads_caps_through(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
     )
-    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=_asos_fixture())
     with httpx.Client() as client:
         result2 = backtest_pnl(
             _closed_events(),
@@ -1130,14 +1228,14 @@ def test_backtest_pnl_threads_caps_through(httpx_mock):
 # Phase G - intl station skip (#218)
 
 
-def test_backtest_pnl_skips_intl_stations_before_fetch_actuals(
+def test_backtest_pnl_skips_intl_stations_before_venue_actuals(
     monkeypatch: pytest.MonkeyPatch, httpx_mock: Any
 ) -> None:
-    """backtest_pnl skips stations with ghcnd_id=None before calling fetch_actuals.
+    """backtest_pnl skips stations with ghcnd_id=None before calling venue_actuals.
 
-    An intl station (ghcnd_id=None) would cause fetch_actuals to build an
-    empty-station NCEI query and 400. The guard skips the whole group so
-    fetch_actuals is never called with None. US stations are unaffected.
+    An intl station (ghcnd_id=None) has no ASOS or NCEI proxy, so venue_actuals
+    would raise ValueError for it. The guard skips the whole group so
+    venue_actuals is never called for an intl station. US stations are unaffected.
     """
     london = INTL_STATIONS["London"]
     assert london.ghcnd_id is None, "pre-condition: London has no NCEI proxy"
@@ -1162,15 +1260,15 @@ def test_backtest_pnl_skips_intl_stations_before_fetch_actuals(
         ],
     )
 
-    # Record every ghcnd_id passed to fetch_actuals.
-    fetched_ids: list[str | None] = []
-    original_fetch_actuals = pnl_backtest_mod.fetch_actuals
+    # Record every station passed to venue_actuals.
+    fetched_stations: list[Any] = []
+    original_venue_actuals = pnl_backtest_mod.venue_actuals
 
-    def spy_fetch_actuals(ghcnd_id: Any, *args: Any, **kwargs: Any) -> Any:
-        fetched_ids.append(ghcnd_id)
-        return original_fetch_actuals(ghcnd_id, *args, **kwargs)
+    def spy_venue_actuals(station: Any, *args: Any, **kwargs: Any) -> Any:
+        fetched_stations.append(station)
+        return original_venue_actuals(station, *args, **kwargs)
 
-    monkeypatch.setattr(pnl_backtest_mod, "fetch_actuals", spy_fetch_actuals)
+    monkeypatch.setattr(pnl_backtest_mod, "venue_actuals", spy_venue_actuals)
 
     # Mock HTTP calls. Both responses are reusable so pre-fix (intl station not
     # yet skipped) extra requests don't cause teardown errors; post-fix only the
@@ -1181,8 +1279,8 @@ def test_backtest_pnl_skips_intl_stations_before_fetch_actuals(
         is_reusable=True,
     )
     httpx_mock.add_callback(
-        lambda req: httpx.Response(200, json=_actuals_fixture()),
-        url=re.compile(re.escape(NCEI_URL)),
+        lambda req: httpx.Response(200, text=_asos_fixture()),
+        url=re.compile(re.escape(MESONET_ASOS_URL)),
         is_reusable=True,
     )
     httpx_mock.add_callback(
@@ -1192,12 +1290,12 @@ def test_backtest_pnl_skips_intl_stations_before_fetch_actuals(
     with httpx.Client() as client:
         result = backtest_pnl([], client, on_or_after=date(2026, 3, 1), leads=(0, 1, 2, 3))
 
-    # The intl group must never have reached fetch_actuals with None.
-    assert None not in fetched_ids, (
-        f"fetch_actuals was called with None (intl station not skipped): {fetched_ids}"
+    # The intl group must never have reached venue_actuals.
+    assert london not in fetched_stations, (
+        f"venue_actuals was called for the intl station (not skipped): {fetched_stations}"
     )
-    # US station was processed: fetch_actuals was called once with a real id.
-    assert fetched_ids == [STATIONS["NYC"].ghcnd_id]
+    # US station was processed: venue_actuals was called once with the US station.
+    assert fetched_stations == [STATIONS["NYC"]]
     # US station contributed markets; intl contributed none.
     assert result is not None
     assert result.n_markets >= 1
