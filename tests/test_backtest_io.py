@@ -6,9 +6,10 @@ from typing import Any
 
 import httpx
 
+import rainmaker.backtest as backtest_mod
 from rainmaker.backfill import HISTORICAL_FORECAST_URL
 from rainmaker.backtest import backtest_real, backtest_synthetic, standard_buckets
-from rainmaker.config import MIN_CAL_SAMPLES, MIN_SIGMA_F, STATIONS
+from rainmaker.config import INTL_STATIONS, MIN_CAL_SAMPLES, MIN_SIGMA_F, STATIONS
 from rainmaker.forecasts.asos import MESONET_ASOS_URL
 from rainmaker.polymarket.client import GAMMA_EVENTS_URL, fetch_closed_weather_events
 from rainmaker.probability.calibration import CalibrationPair, apply_calibration, fit_calibration
@@ -99,6 +100,43 @@ def test_backtest_real_scores_closed_markets_and_filters(httpx_mock):
     # the two March NYC markets score.
     assert result is not None
     assert result.n == 2
+
+
+def test_backtest_real_skips_intl_group_without_aborting(monkeypatch, httpx_mock):
+    # The London event above names Heathrow in its rules, so parse_market rejects
+    # it before the group loop ever sees it; that leaves the ghcnd_id guard in
+    # backtest_real uncovered. Here the description names EGLC (London City, the
+    # station INTL_STATIONS actually maps), so parse_market accepts it and the
+    # intl group reaches the guard. Without the guard, venue_actuals raises
+    # ValueError for a station with no NCEI proxy and aborts the whole reality
+    # check; the guard must skip the group instead, leaving the NYC group to score.
+    london_event = _closed_events()[3].copy()
+    london_event["description"] = (
+        "Resolves to the highest temperature at London City Airport (EGLC) in degrees Fahrenheit."
+    )
+    events = [_closed_events()[0], london_event]  # one NYC market, one London market
+
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+    )
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=_asos_fixture())
+
+    fetched_stations = []
+    original_venue_actuals = backtest_mod.venue_actuals
+
+    def spy_venue_actuals(station, *args, **kwargs):
+        fetched_stations.append(station)
+        return original_venue_actuals(station, *args, **kwargs)
+
+    monkeypatch.setattr(backtest_mod, "venue_actuals", spy_venue_actuals)
+
+    with httpx.Client() as client:
+        result = backtest_real(events, client, on_or_after=date(2026, 3, 1))
+
+    assert INTL_STATIONS["London"] not in fetched_stations
+    assert fetched_stations == [KLGA]
+    assert result is not None
+    assert result.n == 1
 
 
 def test_backtest_real_returns_none_when_all_filtered(httpx_mock):
