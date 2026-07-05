@@ -403,9 +403,19 @@ def _backtest_pnl(
     ask_source: str = "mid",
     max_edge: float | None = None,
     max_p_win: float | None = None,
+    db_path: str = DB_PATH,
+    floor_no: float = CONFIDENCE_FLOOR_NO,
 ) -> None:
     end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
     start = end - timedelta(days=days)
+    # backtest-pnl bypasses the shared `db = _datastore(args.db)` dispatch (it
+    # returns before reaching it, alongside backtest and settle-divergence), so
+    # it resolves DATABASE_URL itself here, matching every other subcommand.
+    db = _datastore(db_path)
+    if "://" not in db:  # a Postgres DSN has no local parent dir to create
+        Path(db).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db)
+    init_schema(conn)
     client = build_client(60.0)
     try:
         try:
@@ -423,12 +433,20 @@ def _backtest_pnl(
             ask_source=ask_source,  # type: ignore[arg-type]
             max_edge=max_edge,
             max_p_win=max_p_win,
+            floor_no=floor_no,
+            calibration_lookup=lambda icao, lead: load_calibration(conn, icao, "TMAX", lead),
         )
     finally:
         client.close()
+        conn.close()
     if result is None:
         print("no P/L backtest data over the requested window", file=sys.stderr)
         raise SystemExit(1)
+    if result.calibration_cells_checked > 0 and result.calibration_cells_found == 0:
+        print(
+            "no calibration cells loaded; point --db at the store or run backfill first",
+            file=sys.stderr,
+        )
 
     md, payload = render_pnl_report(result)
     print(md)
@@ -719,6 +737,13 @@ def main(argv: list[str] | None = None) -> None:
     btp.add_argument(
         "--reports-dir", default=REPORTS_DIR, help="directory for the P/L backtest report"
     )
+    btp.add_argument("--db", default=DB_PATH, help="SQLite database path (calibration cells)")
+    btp.add_argument(
+        "--floor-no",
+        type=float,
+        default=CONFIDENCE_FLOOR_NO,
+        help="confidence floor for NO bets",
+    )
 
     sdiv = sub.add_parser(
         "settle-divergence",
@@ -780,6 +805,8 @@ def main(argv: list[str] | None = None) -> None:
             args.asks,
             args.max_edge,
             args.max_p_win,
+            args.db,
+            args.floor_no,
         )
         return
     if args.command == "settle-divergence":

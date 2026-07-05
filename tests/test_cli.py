@@ -486,12 +486,14 @@ def test_backtest_pnl_command_writes_report(monkeypatch, tmp_path, capsys):
             "0,1,2",
             "--reports-dir",
             str(tmp_path),
+            "--db",
+            str(tmp_path / "t.db"),
         ]
     )
 
     out = capsys.readouterr().out
     assert "Betting P/L backtest" in out
-    written = {p.name for p in tmp_path.iterdir()}
+    written = {p.name for p in tmp_path.iterdir() if p.suffix in {".md", ".json"}}
     assert {"pnl-backtest-2026-06-05.md", "pnl-backtest-2026-06-05.json"} <= written
     assert captured["leads"] == (0, 1, 2)  # the --leads list is parsed to a tuple of ints
     assert captured["city"] == "NYC"
@@ -532,6 +534,8 @@ def test_backtest_pnl_command_asks_trades_flag(monkeypatch, tmp_path, capsys):
             "trades",
             "--reports-dir",
             str(tmp_path),
+            "--db",
+            str(tmp_path / "t.db"),
         ]
     )
     assert captured["ask_source"] == "trades"
@@ -570,6 +574,8 @@ def test_backtest_pnl_command_asks_default_is_mid(monkeypatch, tmp_path, capsys)
             "NYC",
             "--reports-dir",
             str(tmp_path),
+            "--db",
+            str(tmp_path / "t.db"),
         ]
     )
     assert captured["ask_source"] == "mid"
@@ -580,8 +586,148 @@ def test_backtest_pnl_exits_when_no_data(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
     monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     with pytest.raises(SystemExit) as exc:
-        cli.main(["backtest-pnl", "--city", "NYC", "--reports-dir", str(tmp_path)])
+        cli.main(
+            [
+                "backtest-pnl",
+                "--city",
+                "NYC",
+                "--reports-dir",
+                str(tmp_path),
+                "--db",
+                str(tmp_path / "t.db"),
+            ]
+        )
     assert exc.value.code == 1
+
+
+def test_backtest_pnl_command_floor_no_defaults_and_overrides(monkeypatch, tmp_path):
+    """--floor-no defaults to CONFIDENCE_FLOOR_NO and threads an override through."""
+    from rainmaker.config import CONFIDENCE_FLOOR_NO
+    from rainmaker.pnl_backtest import LeadPnl, PnlBacktestResult
+
+    lp = LeadPnl(
+        lead=0, n_bets=0, wins=0, losses=0, total_pnl=0.0, roi=0.0, win_rate=0.0, mean_edge=0.0
+    )
+    result = PnlBacktestResult(
+        n_markets=1,
+        floor=0.90,
+        min_sources=1,
+        min_edge=0.05,
+        per_lead=[lp],
+        overall=lp.model_copy(update={"lead": -1}),
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_backtest_pnl(events, client, **kwargs):
+        captured.update(kwargs)
+        return result
+
+    monkeypatch.setattr(cli, "backtest_pnl", _fake_backtest_pnl)
+    monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+
+    db = str(tmp_path / "t.db")
+    cli.main(["backtest-pnl", "--city", "NYC", "--reports-dir", str(tmp_path), "--db", db])
+    assert captured["floor_no"] == CONFIDENCE_FLOOR_NO
+
+    cli.main(
+        [
+            "backtest-pnl",
+            "--city",
+            "NYC",
+            "--reports-dir",
+            str(tmp_path),
+            "--db",
+            db,
+            "--floor-no",
+            "0.70",
+        ]
+    )
+    assert captured["floor_no"] == pytest.approx(0.70)
+
+
+def test_backtest_pnl_command_calibration_lookup_reaches_the_store(monkeypatch, tmp_path):
+    """The calibration_lookup passed to backtest_pnl reads through --db to the
+    real calibration table (the same load_calibration used by the live run).
+    """
+    from rainmaker.pnl_backtest import LeadPnl, PnlBacktestResult
+    from rainmaker.store.db import init_schema
+    from rainmaker.store.record import save_calibration
+
+    db = tmp_path / "t.db"
+    conn = connect(str(db))
+    init_schema(conn)
+    cal = Calibration(
+        station="KLGA", variable="TMAX", lead_time=1, bias=-2.0, var_a=1.0, var_b=1.1, n_samples=42
+    )
+    save_calibration(conn, cal, updated_at="2026-01-01T00:00:00+00:00")
+    conn.close()
+
+    lp = LeadPnl(
+        lead=0, n_bets=0, wins=0, losses=0, total_pnl=0.0, roi=0.0, win_rate=0.0, mean_edge=0.0
+    )
+    result = PnlBacktestResult(
+        n_markets=1,
+        floor=0.90,
+        min_sources=1,
+        min_edge=0.05,
+        per_lead=[lp],
+        overall=lp.model_copy(update={"lead": -1}),
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_backtest_pnl(events, client, **kwargs):
+        # Call the lookup here, while _backtest_pnl's connection is still open,
+        # exactly as the real backtest_pnl would (it closes after this returns).
+        lookup = kwargs["calibration_lookup"]
+        captured["lead1"] = lookup("KLGA", 1)
+        captured["lead2"] = lookup("KLGA", 2)
+        return result
+
+    monkeypatch.setattr(cli, "backtest_pnl", _fake_backtest_pnl)
+    monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+
+    cli.main(["backtest-pnl", "--city", "NYC", "--reports-dir", str(tmp_path), "--db", str(db)])
+
+    assert captured["lead1"] == cal
+    assert captured["lead2"] is None  # no cell fit for that lead
+
+
+def test_backtest_pnl_command_db_resolution_prefers_database_url(monkeypatch, tmp_path):
+    """DATABASE_URL wins over --db, matching every other subcommand."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x/y")
+    captured_db: dict[str, str] = {}
+
+    class _FakeConn:
+        def close(self) -> None:
+            pass
+
+    def _fake_connect(db_path: str) -> _FakeConn:
+        captured_db["db"] = db_path
+        return _FakeConn()
+
+    monkeypatch.setattr(cli, "connect", _fake_connect)
+    monkeypatch.setattr(cli, "init_schema", lambda conn: None)
+    monkeypatch.setattr(cli, "backtest_pnl", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "backtest-pnl",
+                "--city",
+                "NYC",
+                "--reports-dir",
+                str(tmp_path),
+                "--db",
+                str(tmp_path / "t.db"),
+            ]
+        )
+
+    assert captured_db["db"] == "postgresql://x/y"
+    monkeypatch.delenv("DATABASE_URL", raising=False)
 
 
 def test_datastore_prefers_database_url(monkeypatch):

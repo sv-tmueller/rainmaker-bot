@@ -101,8 +101,9 @@ Python 3.11+ managed with uv. Commands:
 - Backtest: `uv run rainmaker backtest` (forecast calibration and win-rate over
   history; synthetic ladder plus a real closed-market reality check, no P/L)
 - Backtest P/L: `uv run rainmaker backtest-pnl` (hypothetical betting P/L over
-  closed markets, replayed at several leads against the historical CLOB price;
-  `--city`, `--days`, `--leads`, `--reports-dir`)
+  closed markets, replayed at several leads against the historical CLOB price,
+  gated by the same full-calibration policy as the live run; `--city`,
+  `--days`, `--leads`, `--reports-dir`, `--db`, `--floor-no`)
 - Test: `uv run pytest`
 - Lint: `uv run ruff check .`  Format: `uv run ruff format .`
 - Type check: `uv run mypy src`

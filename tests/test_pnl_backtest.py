@@ -14,7 +14,15 @@ from rainmaker.backfill import (
     fetch_historical_forecasts,
     fetch_historical_samples,
 )
-from rainmaker.config import INTL_STATIONS, MIN_SIGMA_F, OPENMETEO_MODELS, STATIONS, build_target
+from rainmaker.config import (
+    INTL_STATIONS,
+    MIN_CAL_BIAS_SAMPLES,
+    MIN_CAL_SAMPLES,
+    MIN_SIGMA_F,
+    OPENMETEO_MODELS,
+    STATIONS,
+    build_target,
+)
 from rainmaker.domain import Bucket, Market
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.pnl_backtest import (
@@ -32,10 +40,32 @@ from rainmaker.pnl_backtest import (
 from rainmaker.polymarket.markets import parse_market
 from rainmaker.polymarket.prices import CLOB_PRICES_URL, PricePoint
 from rainmaker.polymarket.trades import TRADES_URL, FillPoint
+from rainmaker.probability.calibration import Calibration
 from rainmaker.probability.distribution import fit_gaussian
 
 FIXTURES = Path(__file__).parent / "fixtures"
 KLGA = STATIONS["NYC"]
+
+
+def _full_cal(
+    *, bias: float = 0.0, var_a: float = 0.0, var_b: float = 1.0, n_samples: int = MIN_CAL_SAMPLES
+) -> Calibration:
+    """A calibration cell for replay tests.
+
+    Defaults (bias=0, var_a=0, var_b=1) are the identity transform: apply_calibration
+    then returns mu and sigma unchanged (mu - 0 = mu; sqrt(0 + 1*sigma^2) = sigma), so
+    passing this reaches the "full" tier (clearing the #225 gate) without moving any
+    numeric expectation in tests that only care about the gate, not the calibration math.
+    """
+    return Calibration(
+        station="KLGA",
+        variable="TMAX",
+        lead_time=1,
+        bias=bias,
+        var_a=var_a,
+        var_b=var_b,
+        n_samples=n_samples,
+    )
 
 
 def _hist_fixture() -> dict[str, Any]:
@@ -213,6 +243,7 @@ def test_replay_market_collapses_per_lead_and_settles():
         min_sources=1,
         min_sigma=1.5,
         min_edge=0.05,
+        calibrations={lead: _full_cal() for lead in (0, 1, 2, 3)},
     )
     assert isinstance(bets[0], Bet)
     assert [b.lead for b in bets] == [0, 1, 2, 3]  # one collapsed bet per lead
@@ -226,6 +257,121 @@ def test_replay_market_collapses_per_lead_and_settles():
     assert [b.won for b in bets[2:]] == [True, True]
     assert bets[0].ask == pytest.approx(0.80)  # no_ask = 1 - mid(0.20)
     assert bets[0].edge == pytest.approx(bets[0].p_win - 0.80)
+
+
+# Phase H - replay the production policy: calibration and the NO floor (#226)
+
+
+def test_replay_market_missing_calibration_cell_suppresses_bets():
+    """No calibrations mapping, an explicit None cell, or a bias-only cell all
+    suppress every bet for that lead (the #225 full-calibration gate); a
+    full-tier cell for the same setup produces a bet, confirming the setup
+    is otherwise valid.
+    """
+    market = _market([_bucket("80°F or higher", "above", threshold=80, yes_token_id="y1")])
+    settlement = datetime(2026, 3, 2, 12, tzinfo=UTC)
+    histories = {"y1": [PricePoint(t=int(settlement.timestamp()), p=0.10)]}
+    shifted = _full_cal(bias=-20.0)  # mu 70 -> 90: well clear of threshold=80
+
+    def _replay(calibrations: dict[int, Calibration | None] | None) -> list[Bet]:
+        bets, _ = replay_market(
+            market,
+            _tight_forecast_set(),
+            actual=90.0,
+            histories=histories,
+            settlement_dt=settlement,
+            leads=(0,),
+            floor=0.80,
+            min_sources=1,
+            min_sigma=1.5,
+            min_edge=0.05,
+            calibrations=calibrations,
+        )
+        return bets
+
+    assert _replay(None) == []  # no calibrations mapping at all
+    assert _replay({0: None}) == []  # lookup explicitly returned no cell
+    bias_only = _full_cal(bias=-20.0, n_samples=MIN_CAL_BIAS_SAMPLES)
+    assert _replay({0: bias_only}) == []  # below full tier
+
+    bets_with_cal = _replay({0: shifted})
+    assert len(bets_with_cal) == 1
+    assert bets_with_cal[0].side == "YES"
+
+
+def test_replay_market_applies_per_lead_calibration_cell():
+    """Each lead uses its own calibration cell; different cells at lead 0 and
+    lead 1 change which side is recommended at each lead.
+    """
+    market = _market([_bucket("80°F or higher", "above", threshold=80, yes_token_id="y1")])
+    settlement = datetime(2026, 3, 2, 12, tzinfo=UTC)
+    x = int(settlement.timestamp())
+    day = 86400
+    histories = {"y1": [PricePoint(t=x, p=0.10), PricePoint(t=x - day, p=0.10)]}
+    identity = _full_cal()  # mu stays 70: threshold 80 is far above -> YES not recommended
+    shifted = _full_cal(bias=-20.0)  # mu shifts to 90: threshold 80 well below -> YES recommended
+
+    bets, _ = replay_market(
+        market,
+        _tight_forecast_set(),
+        actual=90.0,
+        histories=histories,
+        settlement_dt=settlement,
+        leads=(0, 1),
+        floor=0.80,
+        min_sources=1,
+        min_sigma=1.5,
+        min_edge=0.05,
+        calibrations={0: identity, 1: shifted},
+    )
+    by_lead = {b.lead: b for b in bets}
+    assert set(by_lead) == {0, 1}
+    # lead 0 (identity, mu=70): YES far below floor, but NO (p_no~1) clears it.
+    assert by_lead[0].side == "NO"
+    # lead 1 (shifted, mu=90): YES clears the floor -> the cell changed the side.
+    assert by_lead[1].side == "YES"
+    assert by_lead[0].p_win != by_lead[1].p_win
+
+
+def test_replay_market_floor_no_places_bet_between_075_and_080():
+    """A NO bet with p_no in [0.75, 0.80) is placed at floor_no=0.75 and
+    suppressed at the flat floor 0.80 - the per-side NO floor, threaded
+    end-to-end alongside the calibration gate.
+    """
+    from scipy.stats import norm
+
+    mu, threshold = 70.0, 72
+    target_p_no = 0.78
+    z = float(norm.ppf(target_p_no))
+    sigma = (threshold - 0.5 - mu) / z  # exact sigma so bucket_probability gives p_no=0.78
+
+    market = _market([_bucket("72°F or higher", "above", threshold=threshold, yes_token_id="y1")])
+    settlement = datetime(2026, 3, 2, 12, tzinfo=UTC)
+    histories = {"y1": [PricePoint(t=int(settlement.timestamp()), p=0.5)]}
+    cal = _full_cal()
+
+    def _replay(*, floor: float, floor_no: float | None) -> list[Bet]:
+        bets, _ = replay_market(
+            market,
+            _tight_forecast_set(),
+            actual=72.0,
+            histories=histories,
+            settlement_dt=settlement,
+            leads=(0,),
+            floor=floor,
+            floor_no=floor_no,
+            min_sources=1,
+            min_sigma=sigma,
+            min_edge=0.05,
+            calibrations={0: cal},
+        )
+        return bets
+
+    assert _replay(floor=0.80, floor_no=None) == []  # p_no 0.78 < flat floor 0.80
+    bets_split = _replay(floor=0.80, floor_no=0.75)
+    assert len(bets_split) == 1
+    assert bets_split[0].side == "NO"
+    assert bets_split[0].p_win == pytest.approx(target_p_no, abs=1e-3)
 
 
 # Phase C2
@@ -304,7 +450,11 @@ def test_backtest_pnl_replays_closed_markets_end_to_end(httpx_mock):
     )
     with httpx.Client() as client:
         result = backtest_pnl(
-            _closed_events(), client, on_or_after=date(2026, 3, 1), leads=(0, 1, 2, 3)
+            _closed_events(),
+            client,
+            on_or_after=date(2026, 3, 1),
+            leads=(0, 1, 2, 3),
+            calibration_lookup=lambda icao, lead: _full_cal(),
         )
     assert result is not None
     # The Feb market is date-filtered and London is dropped; two March markets remain.
@@ -381,6 +531,23 @@ def test_render_pnl_report_table_and_disclosures():
     assert "min_sources" in lowered and "two-source" in lowered
     # JSON payload round-trips the model
     assert payload == _sample_result().model_dump(mode="json")
+
+
+def test_render_pnl_report_discloses_floor_no_calibration_coverage_and_look_ahead():
+    result = _sample_result().model_copy(
+        update={
+            "floor_no": 0.75,
+            "calibration_cells_checked": 8,
+            "calibration_cells_found": 5,
+        }
+    )
+    md, _payload = render_pnl_report(result)
+    lowered = md.lower()
+    assert "no floor" in lowered
+    assert "75%" in md  # floor_no disclosed
+    assert "5 of 8" in md  # calibration coverage
+    assert "look-ahead" in lowered
+    assert "current calibration table" in lowered
 
 
 # Phase E - trades-based asks
@@ -493,6 +660,7 @@ def test_backtest_pnl_trades_mode_uses_fill_as_ask(httpx_mock):
             on_or_after=date(2026, 3, 1),
             leads=(0, 1, 2, 3),
             ask_source="trades",
+            calibration_lookup=lambda icao, lead: _full_cal(),
         )
     assert result is not None
     assert result.ask_source == "trades"
@@ -688,6 +856,7 @@ def _replay_far(
     **kwargs: Any,
 ) -> tuple[list[Bet], int]:
     settlement, _ = _settlement_ts()
+    kwargs.setdefault("calibrations", {0: _full_cal()})
     return replay_market(
         market,
         _tight_forecast_set(),
@@ -788,6 +957,7 @@ def test_cap_substitutes_lower_edge_bet():
         min_sources=1,
         min_sigma=1.5,
         min_edge=0.05,
+        calibrations={0: _full_cal()},
     )
     assert len(bets_b_only) == 1, "pre-condition: 85-86F bucket is independently recommended"
 

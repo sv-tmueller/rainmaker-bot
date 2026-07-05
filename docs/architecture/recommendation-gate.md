@@ -340,3 +340,45 @@ to remove that opt-out once it replays against a real calibration cell.
 Until #224's backfill runs in production, this suppresses nearly all live
 recommendations: only cells with an existing full fit (currently lead-1 TMAX)
 survive. That is the intended fail-safe, not a regression.
+
+## Update 2026-07-05: backtest-pnl now replays the production gate (#226)
+
+The 2026-06-28 cap rejection above stated "the backtest uses calibrated
+forecasts." That premise was false: `pnl_backtest.py` opted out of the #225
+full-calibration gate (`require_calibration=False`) because it had no
+calibration cell to pass. Every sweep table in this document, including the
+2026-06-28 cap rejection numbers, was produced against raw, uncalibrated
+forecasts at a flat 0.80 floor, not the calibrated production policy.
+
+Decision: void the 2026-06-28 cap decision pending a re-run. Do not treat its
+ROI numbers as evidence for or against a cap until the sweep is repeated
+under the fixed replay.
+
+What changed: `backtest_pnl` now takes a `calibration_lookup(icao, lead)`
+callable, resolved once per station group and threaded into `replay_market`,
+which passes the resulting cell to `evaluate_market` and no longer opts out
+of the full-calibration gate. Three points carried over from the sub-plan:
+
+- **Calibration provenance**: cells are loaded from the current calibration
+  table (the same `load_calibration` the live run uses), not fit walk-forward
+  from data strictly before each replayed date. The fit can therefore include
+  some of the replayed dates, a mild look-ahead. Walk-forward was rejected:
+  the archive is shallow (early 2024 onward, thinned by `season_window`), so a
+  strict "before this date" fit would starve most of a 730-day replay window.
+  The look-ahead is disclosed in the report and accepted as second-order (a
+  3-parameter EMOS fit over dozens to hundreds of pairs has small per-point
+  leverage, and any shared in-sample optimism largely cancels across a
+  comparative sweep).
+- **Which cell per lead**: the lead-L cell at lead L, mirroring the live load.
+  Known mismatch, disclosed not fixed: the replay forecast is the archive
+  multi-model at roughly lead 1 for every lead, so a lead-3 cell corrects a
+  lead-1-horizon forecast. A per-lead replay forecast is follow-up material.
+- **Missing cells suppress bets**: a (station, lead) slot with no full-tier
+  cell on file recommends nothing, matching the live gate. The report now
+  discloses full-tier cell coverage (cells found vs slots checked) and warns
+  on stderr when zero cells load.
+
+The re-run itself is an operator step, not part of this change: it needs
+`DATABASE_URL` set to the production store and #233's backfill to have
+populated cells there first. Once run, correct the sweep tables above in a
+dated follow-up.
