@@ -218,6 +218,10 @@ def replay_market(
             min_sources=min_sources,
             min_sigma=min_sigma,
             min_edge=min_edge,
+            # The replay never passes a fitted Calibration (see the module docstring
+            # caveats above), so the #225 full-calibration gate would zero every bet
+            # here. Opt out until #226 replays against a real calibration cell.
+            require_calibration=False,
         )
         recommended = [o for o in report.outcomes if o.recommended]
         if not recommended:

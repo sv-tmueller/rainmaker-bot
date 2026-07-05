@@ -60,11 +60,18 @@ def evaluate_market(
     min_edge: float,
     floor_no: float | None = None,
     calibration: Calibration | None = None,
+    require_calibration: bool = True,
 ) -> MarketReport:
     """Edge-rank a temperature market.
 
     floor applies to YES bets. floor_no applies to NO bets; when None it
     falls back to floor (flat behaviour, preserving all existing call sites).
+
+    require_calibration (default True) additionally gates recommended on an
+    applied full EMOS calibration (calibrated == "full"): bias-only and
+    uncalibrated fits keep the widened raw sigma, which live evidence shows is
+    underdispersed in the high-confidence regime. Set False only for the
+    pnl_backtest replay (#226 tracks removing that opt-out).
     """
     no_floor = floor_no if floor_no is not None else floor
     unit = market.target.station.unit
@@ -113,6 +120,7 @@ def evaluate_market(
             edge = p_win - bucket.best_ask
             recommended = (
                 not uncalibratable
+                and (not require_calibration or calibrated == "full")
                 and p_win >= floor
                 and n_sources >= min_sources
                 and edge >= min_edge
@@ -136,6 +144,7 @@ def evaluate_market(
             edge_no = p_no - bucket.no_ask
             recommended_no = (
                 not uncalibratable
+                and (not require_calibration or calibrated == "full")
                 and p_no >= no_floor
                 and n_sources >= min_sources
                 and edge_no >= min_edge
