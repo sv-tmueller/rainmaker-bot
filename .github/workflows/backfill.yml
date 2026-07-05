@@ -19,4 +19,4 @@ jobs:
             postgres://*|postgresql://*) ;;
             *) echo "DATABASE_URL is not a Postgres DSN; refusing to run (would silently write to ephemeral SQLite)"; exit 1 ;;
           esac
-          uv run rainmaker backfill --city all
+          uv run rainmaker backfill --city all --variable all --leads 0,1,2,3

@@ -35,9 +35,10 @@ you mean to touch prod.
 - `uv run rainmaker snapshot`: upsert today's metrics row into
   `tracking_snapshot`. This is what the dashboard reads.
 - `uv run rainmaker backfill --city <X>`: fit a calibration cell and backtest
-  accuracy from history (NCEI actuals vs Open-Meteo historical forecasts). A
-  `mae=...F` field appears in the output line. Use `--city all` to cover every
-  city in one pass.
+  accuracy from history (NCEI/ASOS actuals vs Open-Meteo Previous Runs
+  forecasts) for every (variable, lead) cell the live run can bet: TMAX and
+  TMIN at leads 0-3 by default. A `mae=...F` field appears in the output line
+  per cell. Use `--city all` to cover every city in one pass.
 
 ## Daily report runbook
 
@@ -98,8 +99,9 @@ uv run rainmaker backfill --city "Los Angeles"
 ```
 
 The next run applies it and labels the forecast `(calibrated)`. Cells are
-per-(station, variable, lead time); the default fits lead 1. The output line
-includes a `mae=...F` field showing the backtest mean absolute error.
+per-(station, variable, lead time); the default fits every cell the live run
+can bet (TMAX and TMIN, leads 0-3). The output line includes a `mae=...F`
+field showing the backtest mean absolute error.
 
 To refresh the cloud database without handling the DSN locally, trigger the
 `backfill` workflow in the GitHub Actions tab (Run workflow). It runs

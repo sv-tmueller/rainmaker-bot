@@ -198,11 +198,11 @@ def test_backfill_fits_and_saves_calibration_and_accuracy(monkeypatch, tmp_path,
         station="KLGA", variable="TMAX", lead_time=1, bias=-2.0, var_a=1.0, var_b=1.1, n_samples=42
     )
     acc = Accuracy(n=42, mae_f=2.5, bias_f=-2.0)
-    monkeypatch.setattr(cli, "run_backfill", lambda *a, **k: (cal, acc))
+    monkeypatch.setattr(cli, "run_backfill", lambda *a, **k: {1: (cal, acc)})
     monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     db = tmp_path / "t.db"
 
-    cli.main(["backfill", "--db", str(db), "--leads", "1"])
+    cli.main(["backfill", "--variable", "TMAX", "--leads", "1", "--db", str(db)])
 
     out = capsys.readouterr().out
     assert "calibrated KLGA TMAX lead=1" in out
@@ -216,36 +216,38 @@ def test_backfill_fits_and_saves_calibration_and_accuracy(monkeypatch, tmp_path,
     assert row["n"] == 42
 
 
-def test_backfill_all_covers_every_city(monkeypatch, tmp_path):
+def _fake_run_backfill(station, variable, leads, start, end, client):
     from rainmaker.probability.calibration import Accuracy
 
-    def _fake(station, variable, lead, start, end, client):
-        cal = Calibration(
-            station=station.icao,
-            variable=variable,
-            lead_time=lead,
-            bias=0.0,
-            var_a=0.0,
-            var_b=1.0,
-            n_samples=42,
+    return {
+        lead: (
+            Calibration(
+                station=station.icao,
+                variable=variable,
+                lead_time=lead,
+                bias=0.0,
+                var_a=0.0,
+                var_b=1.0,
+                n_samples=42,
+            ),
+            Accuracy(n=42, mae_f=2.0, bias_f=0.0),
         )
-        return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
+        for lead in leads
+    }
 
-    def _fake_acc(station, variable, leads, start, end, client):
-        return {lead: Accuracy(n=42, mae_f=2.0, bias_f=0.0) for lead in leads}
 
-    monkeypatch.setattr(cli, "run_backfill", _fake)
-    monkeypatch.setattr(cli, "run_backfill_accuracy", _fake_acc)
+def test_backfill_all_covers_every_city(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "run_backfill", _fake_run_backfill)
     monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     db = tmp_path / "t.db"
 
-    cli.main(["backfill", "--city", "all", "--db", str(db)])
+    cli.main(["backfill", "--city", "all", "--variable", "TMAX", "--db", str(db)])
 
     conn = connect(str(db))
     n = conn.execute("SELECT count(*) AS n FROM forecast_accuracy").fetchone()["n"]
     conn.close()
-    # 3 leads (1, 2, 3) per distinct station across both venues (incl Kalshi KNYC/KMDW)
-    assert n == len(cli._distinct_stations()) * 3
+    # default leads 0-3 (4 leads) per distinct station across both venues (incl Kalshi KNYC/KMDW)
+    assert n == len(cli._distinct_stations()) * 4
 
 
 def test_backfill_exits_nonzero_when_all_cities_fail(monkeypatch, tmp_path, capsys):
@@ -253,77 +255,47 @@ def test_backfill_exits_nonzero_when_all_cities_fail(monkeypatch, tmp_path, caps
         raise httpx.ConnectError("down")
 
     monkeypatch.setattr(cli, "run_backfill", _boom)
-    monkeypatch.setattr(cli, "run_backfill_accuracy", _boom)
     monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
 
     with pytest.raises(SystemExit) as exc:
-        cli.main(["backfill", "--city", "all", "--db", str(tmp_path / "t.db")])
+        cli.main(
+            ["backfill", "--city", "all", "--variable", "TMAX", "--db", str(tmp_path / "t.db")]
+        )
     assert exc.value.code == 1
     assert "failed" in capsys.readouterr().err
 
 
 def test_backfill_partial_failure_exits_zero(monkeypatch, tmp_path, capsys):
     from rainmaker.config import STATIONS
-    from rainmaker.probability.calibration import Accuracy
 
     fail_city = sorted(STATIONS)[0]
 
-    def _mixed(station, variable, lead, start, end, client):
+    def _mixed(station, variable, leads, start, end, client):
         if station.icao == STATIONS[fail_city].icao:
             raise httpx.ConnectError("down")
-        cal = Calibration(
-            station=station.icao,
-            variable=variable,
-            lead_time=lead,
-            bias=0.0,
-            var_a=0.0,
-            var_b=1.0,
-            n_samples=42,
-        )
-        return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
-
-    def _mixed_acc(station, variable, leads, start, end, client):
-        if station.icao == STATIONS[fail_city].icao:
-            raise httpx.ConnectError("down")
-        return {lead: Accuracy(n=42, mae_f=2.0, bias_f=0.0) for lead in leads}
+        return _fake_run_backfill(station, variable, leads, start, end, client)
 
     monkeypatch.setattr(cli, "run_backfill", _mixed)
-    monkeypatch.setattr(cli, "run_backfill_accuracy", _mixed_acc)
     monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     db = tmp_path / "t.db"
 
-    cli.main(["backfill", "--city", "all", "--db", str(db)])  # must not raise SystemExit
+    cli.main(["backfill", "--city", "all", "--variable", "TMAX", "--db", str(db)])  # must not raise
 
     err = capsys.readouterr().err
     assert fail_city in err and "failed" in err
     conn = connect(str(db))
     n = conn.execute("SELECT count(*) AS n FROM forecast_accuracy").fetchone()["n"]
     conn.close()
-    # fail_city contributes 0 rows; each passing station contributes 3 (leads 1, 2, 3)
-    assert n == (len(cli._distinct_stations()) - 1) * 3
+    # fail_city contributes 0 rows; each passing station contributes 4 (default leads 0-3)
+    assert n == (len(cli._distinct_stations()) - 1) * 4
 
 
 def test_backfill_all_fits_kalshi_only_stations(monkeypatch, tmp_path):
-    from rainmaker.probability.calibration import Accuracy
-
-    def _fake(station, variable, lead, start, end, client):
-        cal = Calibration(
-            station=station.icao,
-            variable=variable,
-            lead_time=lead,
-            bias=0.0,
-            var_a=0.0,
-            var_b=1.0,
-            n_samples=42,
-        )
-        return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
-
-    monkeypatch.setattr(cli, "run_backfill", _fake)
-    monkeypatch.setattr(cli, "run_backfill_accuracy", lambda *a, **k: {})
+    monkeypatch.setattr(cli, "run_backfill", _fake_run_backfill)
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
     db = tmp_path / "t.db"
 
-    cli.main(["backfill", "--city", "all", "--leads", "1", "--db", str(db)])
+    cli.main(["backfill", "--city", "all", "--variable", "TMAX", "--leads", "1", "--db", str(db)])
 
     conn = connect(str(db))
     # the two Kalshi-only stations now get calibration cells
@@ -333,32 +305,56 @@ def test_backfill_all_fits_kalshi_only_stations(monkeypatch, tmp_path):
 
 
 def test_backfill_city_covers_both_venue_stations(monkeypatch, tmp_path):
-    from rainmaker.probability.calibration import Accuracy
-
-    def _fake(station, variable, lead, start, end, client):
-        cal = Calibration(
-            station=station.icao,
-            variable=variable,
-            lead_time=lead,
-            bias=0.0,
-            var_a=0.0,
-            var_b=1.0,
-            n_samples=42,
-        )
-        return cal, Accuracy(n=42, mae_f=2.0, bias_f=0.0)
-
-    monkeypatch.setattr(cli, "run_backfill", _fake)
-    monkeypatch.setattr(cli, "run_backfill_accuracy", lambda *a, **k: {})
+    monkeypatch.setattr(cli, "run_backfill", _fake_run_backfill)
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
     db = tmp_path / "t.db"
 
-    cli.main(["backfill", "--city", "NYC", "--leads", "1", "--db", str(db)])
+    cli.main(["backfill", "--city", "NYC", "--variable", "TMAX", "--leads", "1", "--db", str(db)])
 
     conn = connect(str(db))
     # 'NYC' now resolves to both venue stations: LaGuardia and Central Park
     assert load_calibration(conn, "KLGA", "TMAX", 1) is not None
     assert load_calibration(conn, "KNYC", "TMAX", 1) is not None
     conn.close()
+
+
+def test_backfill_city_grid_covers_every_variable_and_lead(monkeypatch, tmp_path):
+    """Acceptance criteria: after backfill, load_calibration is non-None for every
+    (station, TMAX/TMIN, lead 0-3) cell (defaults: --variable all, --leads 0,1,2,3)."""
+    monkeypatch.setattr(cli, "run_backfill", _fake_run_backfill)
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    db = tmp_path / "t.db"
+
+    cli.main(["backfill", "--city", "NYC", "--db", str(db)])
+
+    conn = connect(str(db))
+    for station_icao in ("KLGA", "KNYC"):
+        for var in ("TMAX", "TMIN"):
+            for lead in (0, 1, 2, 3):
+                assert load_calibration(conn, station_icao, var, lead) is not None, (
+                    station_icao,
+                    var,
+                    lead,
+                )
+    conn.close()
+
+
+def test_backfill_defaults_cover_full_grid(monkeypatch, tmp_path):
+    calls: list[tuple[str, tuple[int, ...]]] = []
+
+    def _record(station, variable, leads, start, end, client):
+        calls.append((variable, leads))
+        return {}
+
+    monkeypatch.setattr(cli, "run_backfill", _record)
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
+    db = tmp_path / "t.db"
+
+    with pytest.raises(SystemExit):  # no results saved for any call -> exits 1
+        cli.main(["backfill", "--city", "NYC", "--db", str(db)])
+
+    assert {v for v, _ in calls} == {"TMAX", "TMIN"}
+    assert all(leads == (0, 1, 2, 3) for _, leads in calls)
 
 
 def test_snapshot_command_writes_and_reports(monkeypatch, tmp_path, capsys):
