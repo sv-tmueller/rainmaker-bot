@@ -282,18 +282,20 @@ def fetch_historical_samples(
     return out
 
 
-def _calibration_actuals(
+def venue_actuals(
     station: Station,
     start: date,
     end: date,
     client: httpx.Client,
     variable: str = "TMAX",
 ) -> dict[date, float]:
-    """Daily extreme (degrees F) for the calibration window, routed by venue.
+    """Daily extreme (degrees F) for the window, routed by venue.
 
     Polymarket stations (ICAO in ICAO_TO_ASOS_STATION) -> ASOS (Iowa State Mesonet),
     batched over the full window (one request). Mirrors settle.py's ASOS path.
     Kalshi-only stations (KNYC, KMDW) -> NCEI GHCND daily-summaries (unchanged).
+    Shared by calibration backfill and backtest grading, so both fit and grade
+    against the same source that actually settles the market.
     """
     asos_code = ICAO_TO_ASOS_STATION.get(station.icao)
     # Guard the US ASOS path (Fahrenheit, UTC bucketing) to F-unit stations. Intl
@@ -334,7 +336,7 @@ def run_backfill(
     enough season-window history to fit).
     """
     by_lead = fetch_historical_lead_forecasts(station, leads, start, end, client, variable)
-    actuals = _calibration_actuals(station, start, end, client, variable)
+    actuals = venue_actuals(station, start, end, client, variable)
     out: dict[int, tuple[Calibration, Accuracy]] = {}
     for lead in leads:
         pairs = build_pairs(by_lead[lead], actuals)

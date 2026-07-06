@@ -10,7 +10,7 @@ from rainmaker.polymarket.prices import (
     CLOB_PRICES_URL,
     PricePoint,
     fetch_price_history,
-    snap_price,
+    last_before,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -51,24 +51,19 @@ def test_fetch_price_history_falls_back_to_coarser_fidelity(httpx_mock):
     assert requests[1].url.params["fidelity"] == "720"
 
 
-def test_snap_price_returns_nearest_within_tolerance():
-    points = [PricePoint(t=1000, p=0.1), PricePoint(t=2000, p=0.2), PricePoint(t=3000, p=0.3)]
-    assert snap_price(points, 2100, tolerance_s=200) == pytest.approx(0.2)
+def test_last_before_max_age_s_returns_point_within_bound():
+    points = [PricePoint(t=1000, p=0.1), PricePoint(t=1900, p=0.2)]
+    assert last_before(points, 2000, max_age_s=200) == pytest.approx(0.2)
 
 
-def test_snap_price_rejects_beyond_tolerance():
-    points = [PricePoint(t=1000, p=0.1), PricePoint(t=2000, p=0.2), PricePoint(t=3000, p=0.3)]
-    assert snap_price(points, 2600, tolerance_s=200) is None
+def test_last_before_max_age_s_rejects_point_older_than_bound():
+    points = [PricePoint(t=1000, p=0.1)]
+    assert last_before(points, 2000, max_age_s=200) is None
 
 
-def test_snap_price_tie_breaks_on_earlier_timestamp():
-    points = [PricePoint(t=1000, p=0.1), PricePoint(t=2000, p=0.2)]
-    # 1500 is equidistant from both; the earlier timestamp wins deterministically.
-    assert snap_price(points, 1500, tolerance_s=600) == pytest.approx(0.1)
-
-
-def test_snap_price_empty_is_none():
-    assert snap_price([], 1500, tolerance_s=600) is None
+def test_last_before_max_age_s_rejects_future_only_points():
+    points = [PricePoint(t=2500, p=0.3)]
+    assert last_before(points, 2000, max_age_s=1000) is None
 
 
 def test_fetch_price_history_raises_on_server_error(httpx_mock):

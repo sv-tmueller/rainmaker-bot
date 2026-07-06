@@ -56,27 +56,19 @@ def _get(
     return [PricePoint(t=int(point["t"]), p=float(point["p"])) for point in history]
 
 
-def last_before(points: list[PricePoint], target_ts: int) -> float | None:
+def last_before(
+    points: list[PricePoint], target_ts: int, max_age_s: int | None = None
+) -> float | None:
     """Price of the latest point with t strictly before target_ts, or None.
 
-    Use this instead of snap_price when you must not land at or after the
-    target (e.g. a settlement timestamp): snap_price returns the nearest point
-    regardless of direction, so it can land after the deadline.
+    Never returns a point at or after target_ts (e.g. a settlement timestamp),
+    so a caller never sees a future price. With `max_age_s` set, a candidate
+    older than that bound is also rejected, so the price is not just past but
+    recent; the default None keeps the point unbounded, however old.
     """
     candidates = [pt for pt in points if pt.t < target_ts]
+    if max_age_s is not None:
+        candidates = [pt for pt in candidates if target_ts - pt.t <= max_age_s]
     if not candidates:
         return None
     return max(candidates, key=lambda pt: pt.t).p
-
-
-def snap_price(points: list[PricePoint], target_ts: int, *, tolerance_s: int) -> float | None:
-    """The price of the point nearest target_ts, or None if none is within tolerance.
-
-    Ties break on the earlier timestamp for a deterministic pick.
-    """
-    if not points:
-        return None
-    nearest = min(points, key=lambda pt: (abs(pt.t - target_ts), pt.t))
-    if abs(nearest.t - target_ts) > tolerance_s:
-        return None
-    return nearest.p

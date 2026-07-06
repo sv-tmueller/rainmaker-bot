@@ -159,7 +159,7 @@ def _rain_fixture_with_missing_strike_type_event():
         "ticker": "KXRAINNYCM-26JUL-4",
         # 'strike_type' is intentionally absent, mirroring the temp-side test.
         "floor_strike": 4,
-        "subtitle": "greater than 4\"",
+        "subtitle": 'greater than 4"',
         "yes_bid_dollars": "0.1000",
         "yes_ask_dollars": "0.1200",
         "no_ask_dollars": "0.8800",

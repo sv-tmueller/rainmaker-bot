@@ -19,11 +19,20 @@ Caveats baked in by design:
 - The price used is the token mid, mildly optimistic versus the ask actually paid.
   With ask_source="trades", real BUY fills from data-api.polymarket.com replace
   the mid when available; a fill IS the ask paid, so no spread is added on top.
+- Both the mid and the fill are snapped look-back-only: the latest point
+  strictly before the lead's target timestamp, within SNAP_TOLERANCE_S. A
+  lead whose only nearby point is in the future gets no price at all, so its
+  bet is honestly dropped rather than priced off a price the bot could not
+  have seen yet. The snapped price is therefore on average slightly staler
+  than a nearest-point snap would give.
 - Calibration cells are loaded from the current calibration table (a lookup
   callable, keyed by station and lead), not fit walk-forward from data strictly
   before the replayed date. The fit can therefore include some of the dates
   being replayed: a mild look-ahead. See docs/architecture/recommendation-gate.md
   (2026-07-05 update) for why this is accepted rather than fixed.
+- The actual graded against is venue_actuals: ASOS for Polymarket stations,
+  NCEI GHCND for Kalshi-only stations, matching what actually settles the
+  market rather than always NCEI.
 """
 
 import json
@@ -35,12 +44,12 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict
 
-from rainmaker.backfill import fetch_actuals, fetch_historical_samples
+from rainmaker.backfill import fetch_historical_samples, venue_actuals
 from rainmaker.config import CONFIDENCE_FLOOR, MIN_CAL_SAMPLES, MIN_EDGE, MIN_SIGMA_F, Target
 from rainmaker.domain import Market, parse_bucket_label
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import parse_market
-from rainmaker.polymarket.prices import PricePoint, fetch_price_history, snap_price
+from rainmaker.polymarket.prices import PricePoint, fetch_price_history, last_before
 from rainmaker.polymarket.trades import FillPoint, fetch_fills
 from rainmaker.probability.calibration import Calibration
 from rainmaker.probability.distribution import fit_gaussian
@@ -158,9 +167,9 @@ def market_at_lead(
 
 
 def _snap_fills(fill_list: list[FillPoint], target_ts: int) -> float | None:
-    """Snap the nearest BUY fill to target_ts, returning the price or None."""
+    """Latest BUY fill strictly before target_ts within SNAP_TOLERANCE_S, or None."""
     points = [PricePoint(t=f.t, p=f.p) for f in fill_list]
-    return snap_price(points, target_ts, tolerance_s=SNAP_TOLERANCE_S)
+    return last_before(points, target_ts, max_age_s=SNAP_TOLERANCE_S)
 
 
 def _outcome_won(outcome: RankedOutcome, actual: float) -> bool:
@@ -215,8 +224,8 @@ def replay_market(
     for lead in leads:
         target_ts = settlement_ts - lead * SECONDS_PER_DAY
         mids = {
-            bucket.label: snap_price(
-                histories.get(bucket.yes_token_id, []), target_ts, tolerance_s=SNAP_TOLERANCE_S
+            bucket.label: last_before(
+                histories.get(bucket.yes_token_id, []), target_ts, max_age_s=SNAP_TOLERANCE_S
             )
             for bucket in market.buckets
         }
@@ -480,7 +489,7 @@ def backtest_pnl(
                     total_cells_found += 1
         dates = [m.target.local_date for m, _, _ in group]
         samples_by_date = fetch_historical_samples(station, min(dates), max(dates), client)
-        actuals = fetch_actuals(station.ghcnd_id, min(dates), max(dates), client, "TMAX")
+        actuals = venue_actuals(station, min(dates), max(dates), client, "TMAX")
         for market, settlement_dt, cond_ids in group:
             samples = samples_by_date.get(market.target.local_date)
             actual = actuals.get(market.target.local_date)
