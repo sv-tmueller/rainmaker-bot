@@ -11,15 +11,24 @@ Caveats baked in by design:
   gate (two independent sources) cannot be replayed, so recommended here is a
   superset of what the live bot would emit. min_sources defaults to 1.
 - The forecast is keyed to the settlement date and is identical across leads;
-  only the market price varies by lead.
+  only the market price varies by lead. A lead-L calibration cell therefore
+  corrects a forecast that is really at lead ~1 for every L: the correction is
+  applied at the right lead but to the wrong-horizon forecast. Disclosed, not
+  fixed here; a per-lead replay forecast is follow-up material (see #233's
+  fetch_historical_lead_forecasts).
 - The price used is the token mid, mildly optimistic versus the ask actually paid.
   With ask_source="trades", real BUY fills from data-api.polymarket.com replace
   the mid when available; a fill IS the ask paid, so no spread is added on top.
+- Calibration cells are loaded from the current calibration table (a lookup
+  callable, keyed by station and lead), not fit walk-forward from data strictly
+  before the replayed date. The fit can therefore include some of the dates
+  being replayed: a mild look-ahead. See docs/architecture/recommendation-gate.md
+  (2026-07-05 update) for why this is accepted rather than fixed.
 """
 
 import json
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date, datetime
 from typing import Any, Literal
 
@@ -27,12 +36,13 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from rainmaker.backfill import fetch_actuals, fetch_historical_samples
-from rainmaker.config import CONFIDENCE_FLOOR, MIN_EDGE, MIN_SIGMA_F, Target
+from rainmaker.config import CONFIDENCE_FLOOR, MIN_CAL_SAMPLES, MIN_EDGE, MIN_SIGMA_F, Target
 from rainmaker.domain import Market, parse_bucket_label
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import parse_market
 from rainmaker.polymarket.prices import PricePoint, fetch_price_history, snap_price
 from rainmaker.polymarket.trades import FillPoint, fetch_fills
+from rainmaker.probability.calibration import Calibration
 from rainmaker.probability.distribution import fit_gaussian
 from rainmaker.probability.outcomes import bucket_probability, settles
 from rainmaker.ranking.edge import RankedOutcome, evaluate_market
@@ -88,6 +98,12 @@ class PnlBacktestResult(BaseModel):
     fill_coverage: FillCoverage | None = None
     max_edge: float | None = None  # upper edge cap applied in replay; None = no cap
     max_p_win: float | None = None  # upper p_win cap applied in replay; None = no cap
+    # Calibration cell coverage: how many (station, lead) slots were checked via
+    # calibration_lookup, and how many resolved to a full-tier cell (n_samples >=
+    # MIN_CAL_SAMPLES). A slot below full tier (or unchecked, when no lookup is
+    # given) recommends nothing, per the production gate (#225).
+    calibration_cells_checked: int = 0
+    calibration_cells_found: int = 0
     per_lead: list[LeadPnl]
     overall: LeadPnl
 
@@ -170,6 +186,7 @@ def replay_market(
     floor_no: float | None = None,
     max_edge: float | None = None,
     max_p_win: float | None = None,
+    calibrations: dict[int, Calibration | None] | None = None,
 ) -> tuple[list[Bet], int]:
     """One best-edge bet per lead, settled against the actual.
 
@@ -179,6 +196,12 @@ def replay_market(
     describe the same temperature, so counting more than one would inflate the
     P/L; the collapse mirrors live tracking. A lead with no recommended bet or no
     snappable price contributes nothing.
+
+    `calibrations` maps lead -> the calibration cell for that lead (or None when
+    no cell was found), mirroring the live per-lead load. A lead missing from
+    the mapping, or mapped to a below-full-tier cell, gets no calibration passed
+    to evaluate_market, so its full-calibration gate (#225) suppresses every bet
+    for that lead: that is the production policy this replay follows, not a bug.
 
     When `fill_histories` is provided (trades mode), fills are snapped per bucket
     token and used as the ask in place of mid+spread. Coverage is tracked as the
@@ -218,10 +241,7 @@ def replay_market(
             min_sources=min_sources,
             min_sigma=min_sigma,
             min_edge=min_edge,
-            # The replay never passes a fitted Calibration (see the module docstring
-            # caveats above), so the #225 full-calibration gate would zero every bet
-            # here. Opt out until #226 replays against a real calibration cell.
-            require_calibration=False,
+            calibration=calibrations.get(lead) if calibrations else None,
         )
         recommended = [o for o in report.outcomes if o.recommended]
         if not recommended:
@@ -305,9 +325,26 @@ def render_pnl_report(result: PnlBacktestResult) -> tuple[str, dict[str, Any]]:
         "",
         f"min_sources is relaxed to {result.min_sources}: the archive is one "
         "source, so recommended here is a superset of the live two-source gate. "
-        f"Floor {_pct(result.floor)}, minimum edge {_pct(result.min_edge)}.",
+        f"Floor {_pct(result.floor)}, NO floor "
+        f"{_pct(result.floor_no if result.floor_no is not None else result.floor)}, "
+        f"minimum edge {_pct(result.min_edge)}.",
+        "",
+        "Calibration cells are loaded from the current calibration table (a "
+        "lookup keyed by station and lead), not fit walk-forward from data "
+        "strictly before the replayed date; the fit can include some of the "
+        "replayed dates, a mild look-ahead (see docs/architecture/"
+        "recommendation-gate.md, 2026-07-05 update). A (station, lead) slot "
+        "with no full-tier cell recommends nothing, matching the live "
+        "full-calibration gate.",
         "",
     ]
+    if result.calibration_cells_checked > 0:
+        lines.append(
+            f"Calibration coverage: {result.calibration_cells_found} of "
+            f"{result.calibration_cells_checked} (station, lead) slots had a "
+            "full-tier cell.",
+        )
+        lines.append("")
     if result.ask_source == "trades" and result.fill_coverage is not None:
         cov = result.fill_coverage
         lines.append(
@@ -389,6 +426,7 @@ def backtest_pnl(
     ask_source: Literal["mid", "trades"] = "mid",
     max_edge: float | None = None,
     max_p_win: float | None = None,
+    calibration_lookup: Callable[[str, int], Calibration | None] | None = None,
 ) -> PnlBacktestResult | None:
     """Replay closed markets at their historical CLOB price and score the P/L.
 
@@ -402,6 +440,14 @@ def backtest_pnl(
     When ask_source="trades", real BUY fills from data-api.polymarket.com are
     fetched for each candidate bucket and used as the ask in place of mid+spread
     where available. Fill coverage is reported in the result.
+
+    `calibration_lookup(icao, lead)` resolves the calibration cell for a
+    (station, lead) pair, mirroring the live load (`load_calibration`). It is
+    resolved once per station group (not per market) and threaded into every
+    market's replay for that station. A callable keeps store imports out of this
+    module and makes the lookup trivially fakeable in tests. When omitted, no
+    calibration is applied and the production full-calibration gate (#225)
+    suppresses every bet, exactly as it would live with no cell on file.
     """
     parsed = _parse_closed_markets(events, on_or_after, city)
     if not parsed:
@@ -416,10 +462,22 @@ def backtest_pnl(
     n_markets = 0
     total_n_leads = 0
     total_fills_used = 0
+    total_cells_checked = 0
+    total_cells_found = 0
     for group in by_station.values():
         station = group[0][0].target.station
         if station.ghcnd_id is None:
             continue  # intl stations have no NCEI proxy; cannot grade (mirrors #204)
+        # Resolved once per station group (not per market): the live load is
+        # per (station, lead), and every market in a group shares the station.
+        calibrations: dict[int, Calibration | None] = {}
+        if calibration_lookup is not None:
+            for lead in leads:
+                cal = calibration_lookup(station.icao, lead)
+                calibrations[lead] = cal
+                total_cells_checked += 1
+                if cal is not None and cal.n_samples >= MIN_CAL_SAMPLES:
+                    total_cells_found += 1
         dates = [m.target.local_date for m, _, _ in group]
         samples_by_date = fetch_historical_samples(station, min(dates), max(dates), client)
         actuals = fetch_actuals(station.ghcnd_id, min(dates), max(dates), client, "TMAX")
@@ -476,6 +534,7 @@ def backtest_pnl(
                 fill_histories=fill_histories,
                 max_edge=max_edge,
                 max_p_win=max_p_win,
+                calibrations=calibrations if calibration_lookup is not None else None,
             )
             bets.extend(market_bets)
             total_n_leads += len(leads)
@@ -498,6 +557,8 @@ def backtest_pnl(
         fill_coverage=fill_coverage,
         max_edge=max_edge,
         max_p_win=max_p_win,
+        calibration_cells_checked=total_cells_checked,
+        calibration_cells_found=total_cells_found,
         per_lead=per_lead,
         overall=overall,
     )
