@@ -25,6 +25,20 @@ def _ens(value_f: float, member: int) -> ForecastSample:
     return _sample(value_f, member=member)
 
 
+def _grp(value_f: float, source: str, model: str, member: int | None = None) -> ForecastSample:
+    return ForecastSample(
+        source=source,
+        model=model,
+        member=member,
+        station="KLGA",
+        variable="TMAX",
+        target_date=date(2026, 5, 31),
+        lead_time_days=1,
+        value_f=value_f,
+        issued_at=None,
+    )
+
+
 def test_fit_gaussian_mean_and_std():
     g = fit_gaussian([_sample(68), _sample(70), _sample(72)], min_sigma=0.5)
     assert g.mu == pytest.approx(70.0)
@@ -117,3 +131,59 @@ def test_fit_gaussian_without_ensemble_unchanged():
     g = fit_gaussian(samples, min_sigma=0.5)
     assert g.mu == pytest.approx(float(np.mean(values)))
     assert g.sigma == pytest.approx(float(np.std(values, ddof=1)))
+
+
+# ---------------------------------------------------------------------------
+# TDD: per-model-group weighting (#239, stop diluting NWS / pooling correlated
+# ensemble members as independent)
+# ---------------------------------------------------------------------------
+
+
+def test_fit_gaussian_mean_weights_by_group_not_sample():
+    # 1 NWS sample at 80 plus a 30-member ensemble centered at 70 (alternating
+    # +/-0.5 so the group has real spread) must average the two groups
+    # (mu = 75), not weight by sample count (mu ~ 70.3).
+    nws = _grp(80.0, "nws", "nws")
+    ens = [
+        _grp(70.0 + (0.5 if i % 2 == 0 else -0.5), "open-meteo", "gfs_ens", member=i + 1)
+        for i in range(30)
+    ]
+    g = fit_gaussian([nws] + ens, min_sigma=0.5)
+    naive_sample_weighted_mean = (80.0 + 30 * 70.0) / 31
+    assert g.mu == pytest.approx(75.0)
+    assert g.mu != pytest.approx(naive_sample_weighted_mean)
+
+
+def test_fit_gaussian_mean_is_average_of_three_group_means():
+    # Three groups: NWS (mean 71), an Open-Meteo deterministic model (mean 80),
+    # and an Open-Meteo ensemble (mean 63). mu is the mean of the three group
+    # means, not the mean of all 6 pooled samples.
+    nws = [_grp(70.0, "nws", "nws"), _grp(72.0, "nws", "nws")]
+    det = [_grp(80.0, "open-meteo", "gfs")]
+    ens = [
+        _grp(v, "open-meteo", "ecmwf_ens", member=i + 1) for i, v in enumerate([60.0, 63.0, 66.0])
+    ]
+    g = fit_gaussian(nws + det + ens, min_sigma=0.0)
+    assert g.mu == pytest.approx((71.0 + 80.0 + 63.0) / 3)
+
+
+def test_fit_gaussian_sigma_equal_weights_ensemble_groups():
+    # Two ensemble groups of unequal member count and spread. sigma^2 is the
+    # equal-weight mixture variance over the two groups (not the member-count-
+    # weighted pooled std of all 8 members).
+    ens1 = [
+        _grp(v, "open-meteo", "gfs_ens", member=i + 1) for i, v in enumerate([70.0, 71.0, 72.0])
+    ]
+    ens2 = [
+        _grp(v, "open-meteo", "ecmwf_ens", member=i + 1)
+        for i, v in enumerate([60.0, 65.0, 70.0, 75.0, 80.0])
+    ]
+    g = fit_gaussian(ens1 + ens2, min_sigma=0.0)
+    # m1=71, v1=1; m2=70, v2=62.5; m_bar=70.5
+    # sigma^2 = 0.5 * [(1 + 0.25) + (62.5 + 0.25)] = 32.0
+    expected_sigma = 32.0**0.5
+    all_member_values = [70.0, 71.0, 72.0, 60.0, 65.0, 70.0, 75.0, 80.0]
+    pooled_std = float(np.std(all_member_values, ddof=1))
+    assert expected_sigma != pytest.approx(pooled_std)
+    assert g.sigma == pytest.approx(expected_sigma)
+    assert g.sigma != pytest.approx(pooled_std)
