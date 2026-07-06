@@ -393,10 +393,31 @@ The re-run itself is an operator step, not part of this change: it needs
 populated cells there first. Once run, correct the sweep tables above in a
 dated follow-up.
 
+## Update 2026-07-05: the historical sweeps also graded look-ahead prices and the wrong actual (#227)
+
+Two more sources of optimism affected every sweep table above, on top of the
+look-ahead calibration fit and the opted-out gate already noted. `backtest.py`
+and `pnl_backtest.py` graded every station against the bare NCEI actual, the
+same source settle.py and backfill.py stopped using for Polymarket cities once
+NCEI was measured to bucket-flip about 32% of markets against settlement
+(ASOS about 15%). And `replay_market` snapped each replayed lead's price to
+the nearest point in either direction within 12h, so a lead-N bet could be
+priced on information up to 12h after the simulated decision time.
+
+Decision: both are fixed here, not just disclosed. Actuals now route through
+`venue_actuals` (ASOS for Polymarket stations, NCEI for Kalshi-only KNYC/KMDW),
+the same routing backfill and settle already use. Price and fill snapping is
+now look-back-only (`last_before` with a bounded max age), so no replayed
+price timestamp lands after its simulated decision time; a lead whose only
+nearby price is in the future is honestly skipped rather than priced ahead of
+itself. No new sweep numbers are produced in this change: it is superseded by
+the same pending re-run #226 already flagged.
+
 ## Update 2026-07-06: cap sweep re-run under the honest replay, no cap ships (#230)
 
-This is that follow-up. The 2026-06-27 sweep is re-run under the #226
-production-faithful replay, re-deciding the voided 2026-06-28 call.
+This is the dated follow-up promised by the 2026-07-05 #226 update. The
+2026-06-27 sweep is re-run under the #226 production-faithful replay,
+re-deciding the voided 2026-06-28 call.
 
 Method: `backtest-pnl --days 730 --leads 0,1,2,3 --asks trades`, production
 policy replay (full-calibration gate on, floor 0.80, NO floor 0.75, min edge
@@ -434,23 +455,3 @@ the max_edge 0.50 and max_p_win rows sit within run-to-run noise of the
 baseline while every binding cap cuts total P/L. The high-edge, high-confidence
 bets remain the profitable ones under the calibrated replay, confirming the
 direction of the voided 2026-06-28 decision on honest evidence.
-
-## Update 2026-07-05: the historical sweeps also graded look-ahead prices and the wrong actual (#227)
-
-Two more sources of optimism affected every sweep table above, on top of the
-look-ahead calibration fit and the opted-out gate already noted. `backtest.py`
-and `pnl_backtest.py` graded every station against the bare NCEI actual, the
-same source settle.py and backfill.py stopped using for Polymarket cities once
-NCEI was measured to bucket-flip about 32% of markets against settlement
-(ASOS about 15%). And `replay_market` snapped each replayed lead's price to
-the nearest point in either direction within 12h, so a lead-N bet could be
-priced on information up to 12h after the simulated decision time.
-
-Decision: both are fixed here, not just disclosed. Actuals now route through
-`venue_actuals` (ASOS for Polymarket stations, NCEI for Kalshi-only KNYC/KMDW),
-the same routing backfill and settle already use. Price and fill snapping is
-now look-back-only (`last_before` with a bounded max age), so no replayed
-price timestamp lands after its simulated decision time; a lead whose only
-nearby price is in the future is honestly skipped rather than priced ahead of
-itself. No new sweep numbers are produced in this change: it is superseded by
-the same pending re-run #226 already flagged.
