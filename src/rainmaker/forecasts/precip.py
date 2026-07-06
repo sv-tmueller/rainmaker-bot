@@ -250,9 +250,10 @@ def build_precip_forecast_set(
     """Assemble the monthly-total (mean, var) and coverage for one precip market.
 
     observed-to-date covers the elapsed in-month days, the pooled Open-Meteo and
-    NWS forecast covers the horizon days from today, and climatology fills the
-    remaining out-of-horizon tail. Only the live forecast sources gate coverage;
-    NCEI baselines degrade to neutral values rather than aborting the run."""
+    NWS forecast covers the horizon days clamped to the market month, and
+    climatology fills the remaining out-of-horizon tail. Only the live forecast
+    sources gate coverage; NCEI baselines degrade to neutral values rather than
+    aborting the run."""
     year, month = target.year, target.month
     days_in_month = calendar.monthrange(year, month)[1]
     month_start = date(year, month, 1)
@@ -297,7 +298,8 @@ def build_precip_forecast_set(
         nws_ok, nws_err = False, str(exc)
     coverage.append(SourceCoverage(source="nws", ok=nws_ok, n_samples=nws_n, error=nws_err))
 
-    forecast_dates = sorted(d for d in pooled if today <= d <= month_end)
+    horizon_start = max(today, month_start)
+    forecast_dates = sorted(d for d in pooled if horizon_start <= d <= month_end)
     forecast_daily = [pooled[d] for d in forecast_dates]
     n_forecast_days = len(forecast_dates)
     n_clim_days = max(days_in_month - n_observed_days - n_forecast_days, 0)
