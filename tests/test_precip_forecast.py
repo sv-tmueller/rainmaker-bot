@@ -406,3 +406,44 @@ def test_build_precip_forecast_set_var_widens_with_positive_rho(httpx_mock, monk
         )
 
     assert fs_rho_pos.var > fs_rho0.var
+
+
+# ---------------------------------------------------------------------------
+# Pre-month forecast horizon clamp (issue #240)
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_precip_json():
+    # A minimal Open-Meteo precip response spanning two pre-month days (heavy
+    # rain) and two in-month days (light rain). Reused for the multimodel call
+    # and each ensemble-model call.
+    return {
+        "daily_units": {"time": "iso8601", "precipitation_sum": "inch"},
+        "daily": {
+            "time": ["2026-05-30", "2026-05-31", "2026-06-01", "2026-06-02"],
+            "precipitation_sum": [2.0, 2.0, 0.1, 0.2],
+        },
+    }
+
+
+def test_build_precip_forecast_set_clamps_pre_month_forecast_days(httpx_mock):
+    # Evaluated before the market month starts: the forecast horizon spans two
+    # May days and two June days. Only the June days belong to the market
+    # month, so the pre-month days must not leak into the monthly total.
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=[])
+    httpx_mock.add_response(url=re.compile(re.escape(FORECAST_URL)), json=_synthetic_precip_json())
+    for _ in range(3):  # OPENMETEO_ENSEMBLE_MODELS has three entries
+        httpx_mock.add_response(
+            url=re.compile(re.escape(ENSEMBLE_URL)), json=_synthetic_precip_json()
+        )
+    httpx_mock.add_response(url="https://api.weather.gov/points/40.779,-73.9692", status_code=500)
+    with httpx.Client() as client:
+        fs = build_precip_forecast_set(
+            _nyc_target(),
+            today=date(2026, 5, 30),
+            client=client,
+            var_floor=0.01,
+            lookback_years=20,
+        )
+    assert fs.n_forecast_days == 2
+    assert fs.mean == pytest.approx(0.1 + 0.2)
