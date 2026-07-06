@@ -77,6 +77,30 @@ def _forecast_set(values, *, ok_sources=("nws", "open-meteo")) -> ForecastSet:
     )
 
 
+def _cal(
+    n_samples: int, *, bias: float = 0.0, var_a: float = 0.0, var_b: float = 1.0
+) -> Calibration:
+    return Calibration(
+        station="KLGA",
+        variable="TMAX",
+        lead_time=1,
+        bias=bias,
+        var_a=var_a,
+        var_b=var_b,
+        n_samples=n_samples,
+    )
+
+
+def _full_cal() -> Calibration:
+    """Identity full calibration (n=30, bias=0, var_a=0, var_b=1).
+
+    apply_calibration then returns mu and sigma unchanged (mu - 0 = mu;
+    sqrt(0 + 1*sigma^2) = sigma), so passing this isolates the recommended
+    gate without moving any numeric expectation in the tests that use it.
+    """
+    return _cal(30)
+
+
 def test_evaluate_market_ranks_by_edge_and_flags_recommended():
     # Forecast centered at 70.5 -> mode bucket 70-71 has high P(win).
     market = _market(
@@ -88,7 +112,9 @@ def test_evaluate_market_ranks_by_edge_and_flags_recommended():
     fs = _forecast_set([69, 70, 71, 72])  # mean 70.5
     # floor=0.45: p_win for the mode bucket at mu=70.5, sigma=1.5 is ~0.495, which
     # clears 0.45 but not 0.50 (2-degree bucket + sigma floor make it tight).
-    report = evaluate_market(market, fs, floor=0.45, min_sources=2, min_sigma=1.5, min_edge=0.0)
+    report = evaluate_market(
+        market, fs, floor=0.45, min_sources=2, min_sigma=1.5, min_edge=0.0, calibration=_full_cal()
+    )
     assert isinstance(report, MarketReport)
     assert report.n_sources == 2
     # sorted by edge desc
@@ -103,7 +129,9 @@ def test_evaluate_market_emits_recommended_no_bet():
     # settles, so selling it (NO) is the good bet while buying it (YES) is not.
     market = _market([_bucket("80-81°F", "range", lo=80, hi=81, best_ask=0.30, no_ask=0.70)])
     fs = _forecast_set([69, 70, 71])  # mean ~70, far from 80-81
-    report = evaluate_market(market, fs, floor=0.90, min_sources=2, min_sigma=1.5, min_edge=0.05)
+    report = evaluate_market(
+        market, fs, floor=0.90, min_sources=2, min_sigma=1.5, min_edge=0.05, calibration=_full_cal()
+    )
     sides = {o.side: o for o in report.outcomes}
     assert set(sides) == {"YES", "NO"}
     yes, no = sides["YES"], sides["NO"]
@@ -119,7 +147,9 @@ def test_no_bet_emitted_even_when_yes_ask_absent():
     # fillable NO bet; it must not be dropped with the excluded YES side.
     market = _market([_bucket("80-81°F", "range", lo=80, hi=81, best_ask=None, no_ask=0.70)])
     fs = _forecast_set([69, 70, 71])
-    report = evaluate_market(market, fs, floor=0.90, min_sources=2, min_sigma=1.5, min_edge=0.05)
+    report = evaluate_market(
+        market, fs, floor=0.90, min_sources=2, min_sigma=1.5, min_edge=0.05, calibration=_full_cal()
+    )
     assert report.excluded_no_ask == ["80-81°F"]  # YES has no ask
     assert [o.side for o in report.outcomes] == ["NO"]  # but the NO bet survives
     assert report.outcomes[0].recommended is True
@@ -135,7 +165,15 @@ def test_no_bet_skipped_without_no_ask():
 def test_recommended_requires_confidence_floor():
     market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.05)])
     fs = _forecast_set([60, 80])  # wide spread -> low P on any single 2-degree bucket
-    report = evaluate_market(market, fs, floor=0.90, min_sources=2, min_sigma=1.5, min_edge=0.0)
+    report = evaluate_market(
+        market,
+        fs,
+        floor=0.90,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
+        calibration=_full_cal(),  # isolate the confidence-floor gate from the calibration gate
+    )
     o = report.outcomes[0]
     assert o.edge > 0  # cheap ask, positive edge
     assert o.p_win < 0.90
@@ -151,7 +189,13 @@ def test_default_floor_relaxed_to_080_recommends_high_080s():
 
     def yes(floor: float):
         report = evaluate_market(
-            market, fs, floor=floor, min_sources=2, min_sigma=1.5, min_edge=0.05
+            market,
+            fs,
+            floor=floor,
+            min_sources=2,
+            min_sigma=1.5,
+            min_edge=0.05,
+            calibration=_full_cal(),
         )
         return next(o for o in report.outcomes if o.side == "YES")
 
@@ -165,7 +209,15 @@ def test_default_floor_relaxed_to_080_recommends_high_080s():
 def test_recommended_requires_min_sources():
     market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.05)])
     fs = _forecast_set([70, 70, 71, 71], ok_sources=("nws",))  # only 1 source
-    report = evaluate_market(market, fs, floor=0.50, min_sources=2, min_sigma=1.5, min_edge=0.0)
+    report = evaluate_market(
+        market,
+        fs,
+        floor=0.50,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
+        calibration=_full_cal(),  # isolate the source gate from the calibration gate
+    )
     assert report.n_sources == 1
     assert report.outcomes[0].recommended is False
 
@@ -253,11 +305,95 @@ def test_evaluate_market_bias_only_calibration():
     assert cald.sigma == pytest.approx(1.875)  # max(1.5*1.25, 1.5) = 1.875
 
 
+# ---------------------------------------------------------------------------
+# Recommendation gate requires an applied full calibration (#225)
+# ---------------------------------------------------------------------------
+
+
+def _cal_gate_market() -> Market:
+    """A market with a YES-clearing bucket and a NO-clearing bucket.
+
+    Forecast centered at 70F, sigma floored to 1.5F.
+    - "68F or higher": p_win ~0.91, best_ask=0.05 -> clears floor/sources/edge on YES.
+    - "80F or higher": no best_ask (YES excluded); no_ask=0.05, p_no ~1.0 ->
+      clears floor/sources/edge on NO.
+    Both sides would be recommended once calibrated="full"; the gate under test
+    is calibration, not floor/sources/edge (already cleared).
+    """
+    return _market(
+        [
+            _bucket("68°F or higher", "above", threshold=68, best_ask=0.05),
+            _bucket("80°F or higher", "above", threshold=80, no_ask=0.05),
+        ]
+    )
+
+
+def _cal_gate_forecast_set() -> ForecastSet:
+    return _forecast_set([69, 70, 71])  # mean 70, sigma floored to 1.5
+
+
+@pytest.mark.parametrize(
+    "calibration",
+    [
+        pytest.param(None, id="no-calibration"),
+        pytest.param(_cal(5), id="uncalibrated-low-n"),
+        pytest.param(_cal(15), id="bias-only"),
+    ],
+)
+def test_recommended_false_without_full_calibration(calibration):
+    market = _cal_gate_market()
+    fs = _cal_gate_forecast_set()
+    report = evaluate_market(
+        market,
+        fs,
+        floor=0.80,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.05,
+        calibration=calibration,
+    )
+    assert report.calibrated != "full"
+    yes = next(o for o in report.outcomes if o.side == "YES")
+    no = next(o for o in report.outcomes if o.side == "NO")
+    # Gate-binding: both sides clear floor, sources, and edge on their own merits.
+    assert yes.p_win >= 0.80 and yes.edge >= 0.05
+    assert no.p_win >= 0.80 and no.edge >= 0.05
+    assert yes.recommended is False
+    assert no.recommended is False
+
+
+def test_recommended_true_with_applied_full_calibration():
+    market = _cal_gate_market()
+    fs = _cal_gate_forecast_set()
+    report = evaluate_market(
+        market,
+        fs,
+        floor=0.80,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.05,
+        calibration=_full_cal(),
+    )
+    assert report.calibrated == "full"
+    yes = next(o for o in report.outcomes if o.side == "YES")
+    no = next(o for o in report.outcomes if o.side == "NO")
+    assert yes.recommended is True
+    assert no.recommended is True
+
+
 def test_recommended_requires_min_edge():
     # Near-certain bucket priced at 0.99: positive but tiny edge.
     market = _market([_bucket("69°F or below", "below", threshold=69, best_ask=0.99)])
     fs = _forecast_set([60, 60, 60, 60])  # far below threshold -> p_win ~1.0
-    report = evaluate_market(market, fs, floor=0.90, min_sources=2, min_sigma=1.5, min_edge=0.05)
+    report = evaluate_market(
+        market,
+        fs,
+        floor=0.90,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.05,
+        calibration=_full_cal(),  # isolate the edge gate from the calibration gate
+    )
     o = report.outcomes[0]
     assert o.p_win > 0.99
     assert 0 < o.edge < 0.05
@@ -268,7 +404,9 @@ def test_recommended_passes_min_edge():
     # Same near-certain bucket priced at 0.90: edge ~0.10 clears the threshold.
     market = _market([_bucket("69°F or below", "below", threshold=69, best_ask=0.90)])
     fs = _forecast_set([60, 60, 60, 60])
-    report = evaluate_market(market, fs, floor=0.90, min_sources=2, min_sigma=1.5, min_edge=0.05)
+    report = evaluate_market(
+        market, fs, floor=0.90, min_sources=2, min_sigma=1.5, min_edge=0.05, calibration=_full_cal()
+    )
     o = report.outcomes[0]
     assert o.edge >= 0.05
     assert o.recommended is True
@@ -325,7 +463,15 @@ def test_stale_source_ok_zero_samples_does_not_count_toward_min_sources():
     )
     # min_sources=2: under the bug both ok=True entries count (n_sources=2, recommended True).
     # After the fix only the entry with n_samples>0 counts (n_sources=1, recommended False).
-    report = evaluate_market(market, fs, floor=0.45, min_sources=2, min_sigma=1.5, min_edge=0.0)
+    report = evaluate_market(
+        market,
+        fs,
+        floor=0.45,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
+        calibration=_full_cal(),  # isolate the min-sources gate from the calibration gate
+    )
     assert report.n_sources == 1
     assert report.outcomes[0].recommended is False
 
@@ -623,6 +769,7 @@ def test_intl_market_never_recommended() -> None:
         min_sources=MIN_SOURCES,
         min_sigma=MIN_SIGMA_C,
         min_edge=MIN_EDGE,
+        calibration=_full_cal(),  # isolate the uncalibratable gate from the calibration gate
     )
     # Advisory display must still render (intl markets stay in the report).
     assert report.outcomes, "outcomes must be non-empty so advisory still renders"
@@ -651,6 +798,7 @@ def test_us_market_single_source_blocked() -> None:
         min_sources=MIN_SOURCES,
         min_sigma=MIN_SIGMA_F,
         min_edge=MIN_EDGE,
+        calibration=_full_cal(),  # isolate the min-sources gate from the calibration gate
     )
     assert report.n_sources == 1
     yes = next(o for o in report.outcomes if o.side == "YES")
@@ -744,6 +892,7 @@ def test_per_side_floor_no_recommended_yes_blocked():
         min_sources=2,
         min_sigma=1.5,
         min_edge=0.05,
+        calibration=_full_cal(),  # isolate the floor gate from the calibration gate
     )
     sides = {o.side: o for o in report.outcomes}
     yes, no = sides["YES"], sides["NO"]
@@ -766,6 +915,7 @@ def test_per_side_floor_no_recommended_yes_blocked():
         min_sources=2,
         min_sigma=1.5,
         min_edge=0.05,
+        calibration=_full_cal(),
     )
     no_flat = next(o for o in report_flat.outcomes if o.side == "NO")
     assert no_flat.recommended is False, (

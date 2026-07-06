@@ -305,3 +305,38 @@ recommended is a superset of the live two-source gate. Closed-market discovery
 is mildly non-deterministic (~166-185 markets/run), so the sign of the ROI gap
 holds but magnitudes are noisy. Run with `--asks trades`, leads 0,1 (leads 2-3 produce
 no bets).
+
+## Update 2026-07-05: the gate now requires an applied full calibration (#225)
+
+A live finding showed dispersion, not just bias, driving the gap between
+claimed and realized win rates: buckets claimed at 85-100% confidence realized
+only about 45-56%. `bias_only` calibration shifts the mean but keeps the
+widened raw sigma (`UNCALIBRATED_WIDEN = 1.25`), which is exactly the
+underdispersed object producing that gap. Only full EMOS calibration corrects
+sigma (`sqrt(var_a + var_b * ensemble_var)`).
+
+Decision: `evaluate_market`'s `recommended` gate now also requires
+`calibrated == "full"`, on top of the confidence floor, min-sources, and
+min-edge gates already in place, and the existing `not uncalibratable` (ghcnd)
+guard. The required tier is `full`, not `bias_only`: `bias_only` still carries
+the widened-raw sigma this change is meant to stop betting on. #224's backfill
+gives live cells the sample count (`n >= MIN_CAL_SAMPLES = 30`) to reach
+`full`; relaxing to `bias_only` later is a one-line change, backed by #229's
+diagnostic if the evidence supports it.
+
+Scope: the temperature path (`evaluate_market`) only. `evaluate_precip_market`
+hardcodes `calibrated="uncalibrated"` as an honest label; no precip
+calibration exists, and #224 cannot restore precip coverage. Gating precip
+recommendations off entirely would kill the monthly-precip book, a product
+decision out of scope here.
+
+Interim opt-out: `evaluate_market` gained `require_calibration: bool = True`.
+The live callers (`cli.py`) pass no explicit value and get the fail-safe by
+default. `pnl_backtest.py`'s replay never has a fitted calibration to pass
+(the archive backtest has no calibration cell), so it opts out explicitly
+with `require_calibration=False` and a comment naming #226, which is expected
+to remove that opt-out once it replays against a real calibration cell.
+
+Until #224's backfill runs in production, this suppresses nearly all live
+recommendations: only cells with an existing full fit (currently lead-1 TMAX)
+survive. That is the intended fail-safe, not a regression.
