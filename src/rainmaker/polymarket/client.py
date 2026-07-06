@@ -103,6 +103,7 @@ def discover_precip_markets(client: httpx.Client) -> list[PrecipMonthlyMarket]:
     The parallel of discover_markets for the precip path: a market that fails to
     parse (for example its description does not name the resolution station) is
     skipped with a warning so one bad market does not abort the whole run.
+    Polymarket being down still aborts upstream.
     """
     markets: list[PrecipMonthlyMarket] = []
     for ev in fetch_weather_events(client):

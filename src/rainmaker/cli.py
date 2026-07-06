@@ -197,7 +197,11 @@ def _run(reports_dir: str, db_path: str) -> None:
             )
             evaluated.append((market, forecast_set, report))
 
-        precip_markets = list(discover_precip_markets(client))
+        try:
+            precip_markets = list(discover_precip_markets(client))
+        except httpx.HTTPError as exc:
+            print(f"Polymarket unavailable, aborting: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
         # Kalshi rain is the secondary venue: its outage must never abort the run.
         try:
             precip_markets += discover_kalshi_precip_markets(client)
