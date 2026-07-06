@@ -1,7 +1,10 @@
 # tests/test_golden_e2e.py
 import json
+import math
 from datetime import date
 from pathlib import Path
+
+import pytest
 
 from rainmaker.config import (
     CONFIDENCE_FLOOR,
@@ -31,27 +34,40 @@ def _nyc_market():
 
 
 def _forecast_set(target):
-    # Controlled pool centered at 70.5F: mode is the 70-71 bucket.
-    samples = [
-        ForecastSample(
-            source="nws",
-            model="m",
-            member=None,
+    # Realistic mixed pool (#239): 1 NWS run + 3 Open-Meteo deterministic
+    # models + 1 Open-Meteo ensemble (5 members), so the golden test exercises
+    # per-(source, model) group weighting rather than a single-group pool.
+    # Group means: nws=71.0, gfs=69.0, ecmwf=70.0, icon=71.5, gfs_ens=70.0
+    # (mean of its 5 members 68-72), so mu = mean of the five group means =
+    # 70.3, still inside the 70-71 bucket. gfs_ens is the only ensemble group
+    # (K=1), so sigma collapses to that group's own member std: sqrt(2.5).
+    def sample(source: str, model: str, value_f: float, member: int | None = None):
+        return ForecastSample(
+            source=source,
+            model=model,
+            member=member,
             station="KLGA",
             variable="TMAX",
             target_date=target.local_date,
             lead_time_days=1,
-            value_f=v,
+            value_f=value_f,
             issued_at=None,
         )
-        for v in (68, 69, 70, 71, 72, 73)
+
+    samples = [
+        sample("nws", "nws", 71.0),
+        sample("open-meteo", "gfs", 69.0),
+        sample("open-meteo", "ecmwf", 70.0),
+        sample("open-meteo", "icon", 71.5),
+    ] + [
+        sample("open-meteo", "gfs_ens", v, member=i + 1) for i, v in enumerate((68, 69, 70, 71, 72))
     ]
     return ForecastSet(
         target=target,
         samples=samples,
         coverage=[
-            SourceCoverage(source="nws", ok=True, n_samples=6),
-            SourceCoverage(source="open-meteo", ok=True, n_samples=6),
+            SourceCoverage(source="nws", ok=True, n_samples=1),
+            SourceCoverage(source="open-meteo", ok=True, n_samples=8),
         ],
     )
 
@@ -70,6 +86,10 @@ def test_golden_pipeline_on_fixture_market():
 
     # All 11 buckets had an ask in the fixture, so none are excluded.
     assert report.excluded_no_ask == []
+    # mu is the mean of the 5 group means (per #239); sigma collapses to the
+    # single ensemble group's own member std (K=1).
+    assert report.mu == pytest.approx(70.3)
+    assert report.sigma == pytest.approx(math.sqrt(2.5))
     # One YES outcome per bucket, plus a NO outcome where the bucket has a NO ask.
     n_no = sum(1 for b in market.buckets if b.no_ask is not None)
     assert n_no > 0  # the feature is exercised
@@ -79,8 +99,12 @@ def test_golden_pipeline_on_fixture_market():
     assert len(no_outcomes) == n_no
     # P(win) over the full YES partition sums to ~1.
     assert abs(sum(o.p_win for o in yes_outcomes) - 1.0) < 1e-6
-    # The mode bucket 70-71 is priced ~0.999 in the fixture, so no positive-edge
-    # recommendation survives: an efficient market yields nothing, on either side.
+    # The mode bucket is still 70-71 (mu=70.3), priced ~0.999 in the fixture,
+    # so no positive-edge recommendation survives: an efficient market yields
+    # nothing, on either side.
+    mode = max(yes_outcomes, key=lambda o: o.p_win)
+    assert mode.bucket_label == "70-71°F"
+    assert mode.p_win == pytest.approx(0.4696169491613257)
     assert all(not o.recommended for o in report.outcomes)
     # Ranking is sorted by edge descending.
     edges = [o.edge for o in report.outcomes]
