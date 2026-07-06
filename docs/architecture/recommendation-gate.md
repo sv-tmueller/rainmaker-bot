@@ -186,6 +186,9 @@ discloses them when set.
 
 ### Sweep tables (numbers pending a data-access run)
 
+[These tables were never filled in and are superseded by the 2026-07-06
+re-run below.]
+
 Each row is a full alternative policy replayed over the 730-day closed-market
 universe (190 TMAX markets, leads 0-3, floor 0.80 flat - no asymmetric NO
 floor). Read totals directly (unlike the lower-floor sweeps, the upper cap rows
@@ -282,6 +285,10 @@ Pending the sweep numbers. Once the table is filled in, evaluate:
 Decision authority: operator, after reviewing the filled-in tables.
 
 ## Update 2026-06-28: edge/confidence cap rejected (#205/#218)
+
+[Void declared by the 2026-07-05 #226 update below; resolved by the
+2026-07-06 section at the end of this doc, which confirms the no-cap
+direction on honest evidence.]
 
 The cap sweep was run over the 730-day closed-market universe with `--asks trades`,
 leads 0,1 (leads 2-3 produce no bets; closed-market discovery is mildly
@@ -405,3 +412,46 @@ price timestamp lands after its simulated decision time; a lead whose only
 nearby price is in the future is honestly skipped rather than priced ahead of
 itself. No new sweep numbers are produced in this change: it is superseded by
 the same pending re-run #226 already flagged.
+
+## Update 2026-07-06: cap sweep re-run under the honest replay, no cap ships (#230)
+
+This is the dated follow-up promised by the 2026-07-05 #226 update. The
+2026-06-27 sweep is re-run under the #226 production-faithful replay,
+re-deciding the voided 2026-06-28 call.
+
+Method: `backtest-pnl --days 730 --leads 0,1,2,3 --asks trades`, production
+policy replay (full-calibration gate on, floor 0.80, NO floor 0.75, min edge
+0.05, min_sources relaxed to 1 as always). Calibration coverage 44 of 44
+(station, lead) slots. Trades fill coverage about 368 of 736 lead-market
+slots, remainder falls back to mid. Universe ~184-217 closed markets per run
+(discovery is mildly non-deterministic, so magnitudes are noisy, signs and
+ordering are the signal). Leads 2-3 produce no bets, all results are leads
+0-1. Each row is one standalone run.
+
+Upper edge cap (max_p_win unset):
+
+| max_edge | Bets | W-L | Win% | Total P/L | ROI |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| none (baseline) | 210 | 190-20 | 90% | +28.71u | +17.8% |
+| 0.50 | 210 | 191-19 | 91% | +29.81u | +18.5% |
+| 0.30 | 217 | 197-20 | 91% | +26.52u | +15.6% |
+| 0.20 | 202 | 185-17 | 92% | +21.21u | +12.9% |
+| 0.10 | 123 | 116-7 | 94% | +10.78u | +10.2% |
+
+Upper confidence cap (max_edge unset):
+
+| max_p_win | Bets | W-L | Win% | Total P/L | ROI |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| none (baseline) | 210 | 190-20 | 90% | +28.71u | +17.8% |
+| 0.99 | 203 | 183-20 | 90% | +28.12u | +18.2% |
+| 0.97 | 163 | 144-19 | 88% | +22.86u | +18.9% |
+| 0.95 | 132 | 111-21 | 84% | +15.55u | +16.3% |
+| 0.90 | 78 | 63-15 | 81% | +9.91u | +18.7% |
+
+Decision: no cap ships, both gates stay uncapped, per rule 3 of the
+2026-06-27 ship/no-ship recommendation. Tighter edge caps degrade ROI
+monotonically from the 0.50 row (18.5 -> 15.6 -> 12.9 -> 10.2 percent), and
+the max_edge 0.50 and max_p_win rows sit within run-to-run noise of the
+baseline while every binding cap cuts total P/L. The high-edge, high-confidence
+bets remain the profitable ones under the calibrated replay, confirming the
+direction of the voided 2026-06-28 decision on honest evidence.
