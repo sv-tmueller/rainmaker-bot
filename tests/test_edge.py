@@ -22,6 +22,7 @@ from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.forecasts.precip import PrecipForecastSet
 from rainmaker.polymarket.precip_markets import parse_precip_event
 from rainmaker.probability.calibration import Calibration
+from rainmaker.probability.precip_distribution import fit_gamma
 from rainmaker.ranking.edge import MarketReport, evaluate_market, evaluate_precip_market
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -527,6 +528,25 @@ def test_evaluate_precip_market_ranks_brackets():
     assert abs(sum(o.p_win for o in yes) - 1.0) < 1e-6  # partition sums to one
     edges = [o.edge for o in report.outcomes]
     assert edges == sorted(edges, reverse=True)  # ranked by edge desc
+
+
+def test_evaluate_precip_market_sigma_matches_floored_gamma():
+    # var (0.001) is below PRECIP_VAR_FLOOR (0.01), so the floor binds: the
+    # gamma actually integrated for p_win uses var_floor, not the raw var.
+    # The reported sigma must match that floored gamma, not the raw moment.
+    market = _precip_market()
+    fs = _precip_forecast_set(market.target, var=0.001)
+    report = evaluate_precip_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_edge=MIN_EDGE,
+        var_floor=PRECIP_VAR_FLOOR,
+    )
+    assert report.sigma == pytest.approx(math.sqrt(PRECIP_VAR_FLOOR))
+    gamma = fit_gamma(fs.mean, fs.var, floor=PRECIP_VAR_FLOOR)
+    assert report.sigma**2 == pytest.approx(gamma.k * gamma.scale**2)
 
 
 def test_evaluate_precip_market_emits_no_side_complement():
