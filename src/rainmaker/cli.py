@@ -66,6 +66,7 @@ from rainmaker.tracking import (
     compute_calibration,
     compute_clv,
     compute_pnl,
+    compute_tail_calibration,
     write_snapshot,
 )
 
@@ -582,6 +583,51 @@ def _clv(db_path: str) -> None:
             print(f"{s['segment']:<20} {s['n']:>5} {clv_val:>10}")
 
 
+def _tail_check(db_path: str, by_hour: bool = False) -> None:
+    if "://" not in db_path:
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        result = compute_tail_calibration(conn, by_hour=by_hour)
+    finally:
+        conn.close()
+
+    hour_hdr = f"{'Hr':>3} " if by_hour else ""
+    print("--- Claimed vs realized (tail calibration) ---")
+    print(
+        f"{'Variable':<9} {'Lead':>4} {hour_hdr}{'Side':<4} {'Bin':<12} {'n':>4} "
+        f"{'Claim':>6} {'Realiz':>6} {'CI_lo':>6} {'CI_hi':>6}  Verdict"
+    )
+    for row in result["primary"]:
+        hour_val = f"{row['hour']:>3} " if by_hour else ""
+        if row["thin"]:
+            verdict = "thin"
+        elif row["verdict"]:
+            verdict = f"** {row['verdict']} **"  # tail row visually marked
+        else:
+            verdict = "-"
+        print(
+            f"{row['variable']:<9} {row['lead_time']:>4} {hour_val}{row['side']:<4} "
+            f"{row['bin']:<12} {row['n']:>4} {row['claimed_mean']:>6.3f} "
+            f"{row['realized_freq']:>6.3f} {row['wilson_lo']:>6.3f} {row['wilson_hi']:>6.3f}  "
+            f"{verdict}"
+        )
+
+    print("\n--- PIT tail-occurrence ratios (P(PIT in tail)/q) ---")
+    print(
+        f"{'Variable':<9} {'Lead':>4} {hour_hdr}{'n':>4} "
+        f"{'Up.10':>6} {'Lo.10':>6} {'Up.05':>6} {'Lo.05':>6}"
+    )
+    for row in result["pit"]:
+        hour_val = f"{row['hour']:>3} " if by_hour else ""
+        print(
+            f"{row['variable']:<9} {row['lead_time']:>4} {hour_val}{row['n']:>4} "
+            f"{row['upper_10']:>6.2f} {row['lower_10']:>6.2f} "
+            f"{row['upper_05']:>6.2f} {row['lower_05']:>6.2f}"
+        )
+
+
 def _snapshot(db_path: str) -> None:
     on_date = _today().isoformat()
     if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
@@ -764,6 +810,17 @@ def main(argv: list[str] | None = None) -> None:
     snapshot = sub.add_parser("snapshot", help="write a daily P&L/calibration snapshot row")
     snapshot.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
+    tail_check = sub.add_parser(
+        "tail-check",
+        help="claimed-vs-realized tail calibration and PIT tail ratios per (variable, lead)",
+    )
+    tail_check.add_argument("--db", default=DB_PATH, help="SQLite database path")
+    tail_check.add_argument(
+        "--by-hour",
+        action="store_true",
+        help="also split each (variable, lead) cell by the run's UTC hour",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "backtest":
@@ -806,3 +863,5 @@ def main(argv: list[str] | None = None) -> None:
         _clv(db)
     elif args.command == "snapshot":
         _snapshot(db)
+    elif args.command == "tail-check":
+        _tail_check(db, args.by_hour)

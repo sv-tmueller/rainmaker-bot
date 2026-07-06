@@ -165,7 +165,15 @@ def test_no_bet_skipped_without_no_ask():
 def test_recommended_requires_confidence_floor():
     market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.05)])
     fs = _forecast_set([60, 80])  # wide spread -> low P on any single 2-degree bucket
-    report = evaluate_market(market, fs, floor=0.90, min_sources=2, min_sigma=1.5, min_edge=0.0)
+    report = evaluate_market(
+        market,
+        fs,
+        floor=0.90,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
+        calibration=_full_cal(),  # isolate the confidence-floor gate from the calibration gate
+    )
     o = report.outcomes[0]
     assert o.edge > 0  # cheap ask, positive edge
     assert o.p_win < 0.90
