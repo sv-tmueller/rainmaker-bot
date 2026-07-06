@@ -234,7 +234,7 @@ def evaluate_precip_market(
         variable=market.target.variable,
         settlement_date=market.target.settlement_date,
         mu=forecast_set.mean,
-        sigma=math.sqrt(forecast_set.var),
+        sigma=math.sqrt(max(forecast_set.var, var_floor)),
         n_sources=n_sources,
         calibrated="uncalibrated",
         coverage=forecast_set.coverage,
