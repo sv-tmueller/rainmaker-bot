@@ -172,6 +172,14 @@ def test_parse_low_temp_event_reuses_cli_station():
     assert "lowest temperature" in m.title
 
 
+def test_parse_low_temp_event_guards_city_mismatch():
+    markets = _low_event_markets()
+    for mk in markets:
+        mk["rules_primary"] = mk["rules_primary"].replace("New York City", "Chicago")
+    with pytest.raises(ValueError):
+        parse_kalshi_event("NYC", KALSHI_STATIONS["NYC"], markets, variable="TMIN")
+
+
 def test_parse_event_variable_mismatch_raises():
     # a high-temp ladder parsed as TMIN must be rejected by the quantity guard
     with pytest.raises(ValueError, match="not a TMIN"):

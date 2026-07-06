@@ -15,9 +15,14 @@ from rainmaker.config import Station, Target, Variable
 from rainmaker.domain import Bucket, BucketKind, Market
 
 # The phrase each daily-temperature rule uses for its quantity. High-temp rules
-# also name the exact station ("Central Park, New York"); low-temp rules name only
-# the city, so TMIN guards on the shared NWS resolution source instead.
+# name the exact station ("Central Park, New York"); low-temp rules name the city
+# instead, so TMIN guards on the city phrase below plus the shared NWS resolution
+# source.
 _VAR_PHRASE: dict[Variable, str] = {"TMAX": "highest temperature", "TMIN": "minimum temperature"}
+
+# The phrase each low-temp rule uses for city identity. Defaults to the series
+# map's city key; NYC's rules spell out "New York City" instead of "NYC".
+_TMIN_CITY_PHRASE: dict[str, str] = {"NYC": "New York City"}
 
 _MONTHS = {
     "JAN": 1,
@@ -109,11 +114,11 @@ def parse_kalshi_event(
 ) -> Market:
     """Build a Market from the strikes of one Kalshi daily-temperature event ladder.
 
-    Guards that the rule text matches the expected quantity, and for high temp that
-    it names the settlement station (catching the Central Park/Midway trap). Low-temp
-    rules name only the city, so TMIN relies on the confirmed series->station map and
-    guards on the shared NWS resolution source. Raises ValueError on any inconsistency
-    so one bad event is skipped upstream rather than silently mispriced.
+    Guards that the rule text matches the expected quantity, and names the correct
+    settlement identity: for high temp, the exact station (catching the Central
+    Park/Midway trap); for low temp, the city (the rules name only the city, not
+    the station). Raises ValueError on any inconsistency so one bad event is
+    skipped upstream rather than silently mispriced.
     """
     if not event_markets:
         raise ValueError(f"empty Kalshi event for {city}")
@@ -126,8 +131,12 @@ def parse_kalshi_event(
             raise ValueError(
                 f"resolution station {station.name!r} not named in event {event_ticker} rules"
             )
-    elif "Climatological Report" not in rules:
-        raise ValueError(f"event {event_ticker} rules name no NWS Climatological Report source")
+    else:
+        if "Climatological Report" not in rules:
+            raise ValueError(f"event {event_ticker} rules name no NWS Climatological Report source")
+        city_phrase = _TMIN_CITY_PHRASE.get(city, city)
+        if city_phrase not in rules:
+            raise ValueError(f"city {city_phrase!r} not named in event {event_ticker} rules")
     local_date = _settlement_date(event_ticker)
     target = Target(station=station, variable=variable, local_date=local_date)
     buckets = [parse_kalshi_bucket(m) for m in event_markets]

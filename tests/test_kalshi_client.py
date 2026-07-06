@@ -111,6 +111,81 @@ def test_fetch_open_markets_follows_cursor(httpx_mock):
     assert requests[1].url.params["cursor"] == "PAGE2"
 
 
+def _fixture_with_bad_strike_type_event():
+    """The NYC high-temp fixture plus a second event whose market lacks 'strike_type'."""
+    fixture = json.loads(json.dumps(FIXTURE))  # deep copy
+    bad_market = {
+        "event_ticker": "KXHIGHNY-26JUN09",
+        "ticker": "KXHIGHNY-26JUN09-T79",
+        # 'strike_type' is intentionally absent so parse_kalshi_bucket raises
+        # KeyError, which pre-fix escapes the except ValueError in _discover_temp
+        # and aborts the whole series.
+        "floor_strike": 79,
+        "subtitle": "above 79",
+        "yes_bid_dollars": "0.0900",
+        "yes_ask_dollars": "0.1200",
+        "no_ask_dollars": "0.8900",
+        "last_price_dollars": "0.1000",
+        "rules_primary": (
+            "If the highest temperature recorded in Central Park, New York for "
+            "June 09, 2026 as reported by the National Weather Service's "
+            "Climatological Report (Daily), is greater than 79, then Yes."
+        ),
+    }
+    fixture["markets"].append(bad_market)
+    return fixture
+
+
+def test_discover_temp_skips_event_with_missing_strike_type(httpx_mock, capsys):
+    # Pre-fix: KeyError from a missing 'strike_type' propagates past
+    # except ValueError in _discover_temp and aborts the whole series.
+    for city in KALSHI_HIGH_SERIES:
+        body = _fixture_with_bad_strike_type_event() if city == "NYC" else _EMPTY
+        httpx_mock.add_response(url=_URL, json=body)
+    for _city in KALSHI_LOW_SERIES:
+        httpx_mock.add_response(url=_URL, json=_EMPTY)
+    with httpx.Client() as client:
+        markets = discover_kalshi_markets(client)
+    assert any(m.id == "KXHIGHNY-26JUN08" for m in markets)
+    err = capsys.readouterr().err
+    assert "skip" in err.lower()
+
+
+def _rain_fixture_with_missing_strike_type_event():
+    """The NYC rain fixture plus a second event whose market lacks 'strike_type'."""
+    fixture = json.loads(json.dumps(RAIN_FIXTURE))  # deep copy
+    bad_market = {
+        "event_ticker": "KXRAINNYCM-26JUL",
+        "ticker": "KXRAINNYCM-26JUL-4",
+        # 'strike_type' is intentionally absent, mirroring the temp-side test.
+        "floor_strike": 4,
+        "subtitle": "greater than 4\"",
+        "yes_bid_dollars": "0.1000",
+        "yes_ask_dollars": "0.1200",
+        "no_ask_dollars": "0.8800",
+        "last_price_dollars": "0.1100",
+        "rules_primary": (
+            "If the total precipitation at Central Park, New York City in Jul 2026 "
+            "is strictly greater than 4 inches, then the market resolves to Yes."
+        ),
+    }
+    fixture["markets"].append(bad_market)
+    return fixture
+
+
+def test_discover_precip_skips_event_with_missing_strike_type(httpx_mock, capsys):
+    # Pre-fix: KeyError from a missing 'strike_type' propagates past
+    # except ValueError in discover_kalshi_precip_markets and aborts the series.
+    for city in KALSHI_RAIN_SERIES:
+        body = _rain_fixture_with_missing_strike_type_event() if city == "NYC" else _EMPTY
+        httpx_mock.add_response(url=_URL, json=body)
+    with httpx.Client() as client:
+        markets = discover_kalshi_precip_markets(client)
+    assert any(m.id == "KXRAINNYCM-26JUN" for m in markets)
+    err = capsys.readouterr().err
+    assert "skip" in err.lower()
+
+
 def test_discover_skips_market_missing_event_ticker(httpx_mock):
     # A market that lacks 'event_ticker' should not abort the grouping loop for
     # the whole series.  Pre-fix: m["event_ticker"] raises KeyError which
