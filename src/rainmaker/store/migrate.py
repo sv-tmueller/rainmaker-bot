@@ -4,6 +4,7 @@ The base schema in db.py is the initial shape; every change since is a migration
 here. Both backends accept `ALTER TABLE ... ADD COLUMN`.
 """
 
+import re
 import sqlite3
 from datetime import UTC, datetime
 
@@ -45,6 +46,33 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
         ],
     ),
 ]
+
+
+# Corrective ALTERs for the six columns that landed as float4 on Postgres before
+# the REAL -> DOUBLE PRECISION substitution existed (0008 var_a/var_b, 0009
+# crps/coverage_*). SQLite has no ALTER COLUMN ... TYPE, so these only run on
+# Postgres; see the 0010 dialect gate in apply_migrations below.
+_WIDEN_FLOAT4_COLUMNS: list[str] = [
+    "ALTER TABLE calibration ALTER COLUMN var_a TYPE double precision",
+    "ALTER TABLE calibration ALTER COLUMN var_b TYPE double precision",
+    "ALTER TABLE forecast_accuracy ALTER COLUMN crps TYPE double precision",
+    "ALTER TABLE forecast_accuracy ALTER COLUMN coverage_50 TYPE double precision",
+    "ALTER TABLE forecast_accuracy ALTER COLUMN coverage_80 TYPE double precision",
+    "ALTER TABLE forecast_accuracy ALTER COLUMN coverage_90 TYPE double precision",
+]
+
+
+def _for_backend(statement: str, backend: str) -> str:
+    """Render a migration statement for the target backend.
+
+    Mirrors the REAL -> DOUBLE PRECISION substitution in db.py's base schema:
+    SQLite REAL is 8-byte, Postgres REAL is 4-byte float4 and underflows on tiny
+    tail probabilities. Without this, every future `... REAL` migration statement
+    would silently create a float4 column on Postgres.
+    """
+    if backend == "postgres":
+        return re.sub(r"\bREAL\b", "DOUBLE PRECISION", statement)
+    return statement
 
 
 def _backfill_venue(conn: Conn) -> None:
@@ -99,7 +127,7 @@ def apply_migrations(conn: Conn) -> None:
             continue
         for statement in statements:
             try:
-                conn.execute(statement)
+                conn.execute(_for_backend(statement, conn.backend))
             except Exception as exc:
                 if _is_duplicate_column(exc):
                     # Column already exists from a previous crashed run.
@@ -121,5 +149,19 @@ def apply_migrations(conn: Conn) -> None:
         conn.execute(
             "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
             ("0007_backfill_venue", datetime.now(UTC).isoformat()),
+        )
+        conn.commit()
+
+    # 0010: widen the six columns that landed as float4 on Postgres before the
+    # REAL -> DOUBLE PRECISION substitution existed. SQLite has no
+    # ALTER COLUMN ... TYPE, so this is dialect-gated (Python, not SQL, like 0007):
+    # only Postgres runs the ALTERs; SQLite just records the migration once.
+    if "0010_widen_float4_columns" not in applied:
+        if conn.backend == "postgres":
+            for statement in _WIDEN_FLOAT4_COLUMNS:
+                conn.execute(statement)
+        conn.execute(
+            "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
+            ("0010_widen_float4_columns", datetime.now(UTC).isoformat()),
         )
         conn.commit()

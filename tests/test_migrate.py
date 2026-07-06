@@ -5,7 +5,9 @@ import pytest
 from rainmaker.store.db import _SQLITE_SCHEMA, connect, init_schema
 from rainmaker.store.migrate import (
     _MIGRATIONS,
+    _WIDEN_FLOAT4_COLUMNS,
     _backfill_venue,
+    _for_backend,
     _is_duplicate_column,
     apply_migrations,
 )
@@ -70,9 +72,51 @@ def test_apply_migrations_is_idempotent():
     apply_migrations(conn)  # second pass must not error
     n = conn.execute("SELECT count(*) AS n FROM schema_migrations").fetchone()["n"]
     conn.close()
-    # _MIGRATIONS holds DDL steps; 0007_backfill_venue is recorded as a separate
-    # Python step outside that list, so the total count is len(_MIGRATIONS) + 1.
-    assert n == len(_MIGRATIONS) + 1
+    # _MIGRATIONS holds DDL steps; 0007_backfill_venue and 0010_widen_float4_columns
+    # are recorded as separate Python steps outside that list, so the total count
+    # is len(_MIGRATIONS) + 2.
+    assert n == len(_MIGRATIONS) + 2
+
+
+def test_migration_statements_render_real_as_double_precision_for_postgres():
+    for _migration_id, statements in _MIGRATIONS:
+        for statement in statements:
+            rendered = _for_backend(statement, "postgres")
+            assert "REAL" not in rendered
+            if "REAL" in statement:
+                assert "DOUBLE PRECISION" in rendered
+
+
+def test_migration_statements_unchanged_for_sqlite():
+    for _migration_id, statements in _MIGRATIONS:
+        for statement in statements:
+            assert _for_backend(statement, "sqlite") == statement
+
+
+def test_widen_float4_columns_statements_are_exact():
+    # Corrective ALTERs for the six columns that landed as float4 on Postgres
+    # before the REAL -> DOUBLE PRECISION substitution existed (0008, 0009).
+    assert _WIDEN_FLOAT4_COLUMNS == [
+        "ALTER TABLE calibration ALTER COLUMN var_a TYPE double precision",
+        "ALTER TABLE calibration ALTER COLUMN var_b TYPE double precision",
+        "ALTER TABLE forecast_accuracy ALTER COLUMN crps TYPE double precision",
+        "ALTER TABLE forecast_accuracy ALTER COLUMN coverage_50 TYPE double precision",
+        "ALTER TABLE forecast_accuracy ALTER COLUMN coverage_80 TYPE double precision",
+        "ALTER TABLE forecast_accuracy ALTER COLUMN coverage_90 TYPE double precision",
+    ]
+
+
+def test_apply_migrations_records_0010_once_on_sqlite():
+    conn = connect(":memory:")
+    init_schema(conn)  # already applies migrations once
+    ids_before = {r["id"] for r in conn.execute("SELECT id FROM schema_migrations").fetchall()}
+    assert "0010_widen_float4_columns" in ids_before
+
+    apply_migrations(conn)  # second pass must be a no-op, not re-insert
+
+    ids_after = {r["id"] for r in conn.execute("SELECT id FROM schema_migrations").fetchall()}
+    conn.close()
+    assert ids_after == ids_before
 
 
 def test_is_duplicate_column_only_matches_the_two_exact_signals():
@@ -177,8 +221,12 @@ def test_apply_migrations_crash_safe_when_alter_already_applied():
 
     rows = {r["id"] for r in conn.execute("SELECT id FROM schema_migrations").fetchall()}
     conn.close()
-    # _MIGRATIONS holds DDL steps; 0007_backfill_venue is recorded outside that list.
-    assert rows == {mid for mid, _ in _MIGRATIONS} | {"0007_backfill_venue"}
+    # _MIGRATIONS holds DDL steps; 0007_backfill_venue and 0010_widen_float4_columns
+    # are recorded outside that list.
+    assert rows == {mid for mid, _ in _MIGRATIONS} | {
+        "0007_backfill_venue",
+        "0010_widen_float4_columns",
+    }
 
 
 def test_backfill_venue_sets_polymarket_for_numeric_id():
