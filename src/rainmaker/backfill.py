@@ -1,14 +1,26 @@
-"""Build forecast-vs-actual pairs from history and fit a calibration cell.
+"""Build forecast-vs-actual pairs from history and fit a calibration cell per lead.
 
 Actuals source is routed per venue (mirrors settle.py):
   Polymarket stations (ICAO in ICAO_TO_ASOS_STATION) -> ASOS (Iowa State Mesonet).
   Kalshi-only stations (KNYC Central Park, KMDW Midway) -> NCEI GHCND daily-summaries.
 
-Historical forecasts come from Open-Meteo's historical-forecast API; the ensemble
-archive does not retain members for past dates, so the predictive spread is taken
-from the multi-model disagreement (mean and std across the deterministic models).
-That is an approximation of the live pooled distribution; tighter calibration grows
-from the bot's own persisted runs over time.
+run_backfill fits every requested (station, variable, lead) cell from one source,
+the Previous Runs API (fetch_historical_lead_forecasts): one request per
+(station, variable) covers every lead the live run can bet, 0 through 3. As with
+the historical-forecast archive, the ensemble archive does not retain members for
+past dates, so the predictive spread is the multi-model disagreement (mean and
+std across the deterministic models) rather than a true ensemble spread. That is
+an approximation of the live pooled distribution; tighter calibration grows from
+the bot's own persisted runs over time.
+
+Lead-0 caveat: it is requested as `temperature_2m_previous_day0`, but Open-Meteo
+normalizes the response to the un-suffixed `temperature_2m_<model>` key, which is
+the most recent model run for each archived hour. That is slightly fresher than
+what the live morning run actually sees, so the lead-0 fit is mildly optimistic.
+
+fetch_historical_forecasts (the historical-forecast archive, lead ~1 only) stays
+in place for backtest.py, which depends on its calendar-date framing; it is a
+separate source from the Previous Runs path above.
 """
 
 import calendar
@@ -161,20 +173,28 @@ def fetch_historical_forecasts(
     return out
 
 
-def fetch_historical_point_forecasts(
+def fetch_historical_lead_forecasts(
     station: Station,
     leads: tuple[int, ...],
     start: date,
     end: date,
     client: httpx.Client,
     variable: str = "TMAX",
-) -> dict[int, dict[date, float]]:
-    """Per-lead, per-date multi-model-mean daily extreme from the Previous Runs API.
+) -> dict[int, dict[date, Gaussian]]:
+    """Per-lead, per-date Gaussian from the Previous Runs API's multi-model spread.
 
-    Each value is the daily max (TMAX) or min (TMIN) of the hourly temperature the
-    models forecast `lead` days before the valid day, averaged across the models
-    that reported it. `previous_dayN` is an hourly-only suffix, so the daily extreme
-    is reduced here. Raises on HTTP error.
+    One request covers every requested lead. Each Gaussian is built the same way
+    fetch_historical_forecasts builds one: the daily max (TMAX) or min (TMIN) of the
+    hourly temperature the models forecast `lead` days before the valid day, mu =
+    mean across models, sigma = stdev across models (at least two models required
+    per date; dates with fewer are dropped). `previous_dayN` is an hourly-only
+    suffix, so the daily extreme is reduced here.
+
+    Lead 0 is requested as `temperature_2m_previous_day0`, but Open-Meteo
+    normalizes the response key to the un-suffixed `temperature_2m_<model>`
+    (distinct from `previous_day1`). Caveat: the day-0 archive value is the most
+    recent model run per hour, slightly fresher than what the live morning run
+    sees, so the lead-0 fit is mildly optimistic. Raises on HTTP error.
     """
     fields = [f"temperature_2m_previous_day{lead}" for lead in leads]
     resp = client.get(
@@ -199,11 +219,12 @@ def fetch_historical_point_forecasts(
     hourly: dict[str, Any] = body["hourly"]
     times = hourly["time"]
     reduce = max if variable == "TMAX" else min
-    out: dict[int, dict[date, float]] = {}
+    out: dict[int, dict[date, Gaussian]] = {}
     for lead in leads:
+        suffix = "" if lead == 0 else f"_previous_day{lead}"
         per_model_daily: dict[date, list[float]] = {}
         for model in OPENMETEO_MODELS:
-            values = hourly.get(f"temperature_2m_previous_day{lead}_{model}")
+            values = hourly.get(f"temperature_2m{suffix}_{model}")
             if values is None:
                 continue  # key absent: this model did not report at this lead
             by_day: dict[date, list[float]] = {}
@@ -213,7 +234,14 @@ def fetch_historical_point_forecasts(
                 by_day.setdefault(date.fromisoformat(iso[:10]), []).append(value)
             for day, hours in by_day.items():
                 per_model_daily.setdefault(day, []).append(reduce(hours))
-        out[lead] = {day: statistics.fmean(extremes) for day, extremes in per_model_daily.items()}
+        gaussians: dict[date, Gaussian] = {}
+        for day, extremes in per_model_daily.items():
+            if len(extremes) < 2:
+                continue  # need at least two models to estimate a spread
+            gaussians[day] = Gaussian(
+                mu=statistics.fmean(extremes), sigma=max(statistics.stdev(extremes), 1e-6)
+            )
+        out[lead] = gaussians
     return out
 
 
@@ -294,39 +322,25 @@ def build_pairs(
 def run_backfill(
     station: Station,
     variable: str,
-    lead_time: int,
-    start: date,
-    end: date,
-    client: httpx.Client,
-) -> tuple[Calibration, Accuracy]:
-    """Fetch history, build pairs, fit one calibration cell, measure accuracy."""
-    forecasts = fetch_historical_forecasts(station, start, end, client, variable)
-    actuals = _calibration_actuals(station, start, end, client, variable)
-    pairs = build_pairs(forecasts, actuals)
-    return fit_calibration(station.icao, variable, lead_time, pairs), compute_accuracy(pairs)
-
-
-def run_backfill_accuracy(
-    station: Station,
-    variable: str,
     leads: tuple[int, ...],
     start: date,
     end: date,
     client: httpx.Client,
-) -> dict[int, Accuracy]:
-    """Per-lead forecast accuracy (mae/bias) from the Previous Runs API vs actuals.
+) -> dict[int, tuple[Calibration, Accuracy]]:
+    """Fetch history, build pairs, fit one calibration cell per lead, measure accuracy.
 
-    Actuals are sourced by venue (same routing as run_backfill): ASOS for Polymarket
-    stations, NCEI for Kalshi-only stations. Accuracy needs only the point forecast,
-    so each per-date mean is wrapped in a placeholder-sigma Gaussian to reuse
-    build_pairs/compute_accuracy. Leads with no overlapping actual are omitted.
+    One Previous Runs request covers every requested lead. Leads with no
+    overlapping actual are omitted rather than erroring (not every lead has
+    enough season-window history to fit).
     """
-    point = fetch_historical_point_forecasts(station, leads, start, end, client, variable)
+    by_lead = fetch_historical_lead_forecasts(station, leads, start, end, client, variable)
     actuals = _calibration_actuals(station, start, end, client, variable)
-    out: dict[int, Accuracy] = {}
+    out: dict[int, tuple[Calibration, Accuracy]] = {}
     for lead in leads:
-        gaussians = {day: Gaussian(mu=mu, sigma=1.0) for day, mu in point[lead].items()}
-        pairs = build_pairs(gaussians, actuals)
+        pairs = build_pairs(by_lead[lead], actuals)
         if pairs:
-            out[lead] = compute_accuracy(pairs)
+            out[lead] = (
+                fit_calibration(station.icao, variable, lead, pairs),
+                compute_accuracy(pairs),
+            )
     return out

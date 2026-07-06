@@ -14,10 +14,9 @@ from rainmaker.backfill import (
     build_pairs,
     fetch_actuals,
     fetch_historical_forecasts,
-    fetch_historical_point_forecasts,
+    fetch_historical_lead_forecasts,
     fetch_monthly_precip,
     run_backfill,
-    run_backfill_accuracy,
     season_window,
 )
 from rainmaker.cli import _backfill
@@ -36,6 +35,10 @@ def _actuals_fixture() -> list[dict[str, Any]]:
 
 def _hist_fixture() -> dict[str, Any]:
     return json.loads((FIXTURES / "openmeteo_hist_multimodel_klga.json").read_text())
+
+
+def _previous_runs_fixture() -> dict[str, Any]:
+    return json.loads((FIXTURES / "openmeteo_previous_runs_klga.json").read_text())
 
 
 def test_fetch_actuals_parses_daily_max(httpx_mock):
@@ -97,30 +100,58 @@ def test_build_pairs_joins_forecasts_and_actuals_on_date():
     ]
 
 
-def test_run_backfill_fits_calibration_and_accuracy_from_history(httpx_mock):
+def test_run_backfill_fits_calibration_and_accuracy_per_lead(httpx_mock):
     httpx_mock.add_response(
-        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+        url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
     )
     # KLGA is a Polymarket station (in ICAO_TO_ASOS_STATION): actuals come from ASOS.
-    asos_fixture = (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
-    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
+    # 2 days of forecast history (03-01, 03-02); daily TMAX max of the two readings:
+    # 03-01 -> 44.6F, 03-02 -> 35.6F.
+    asos_csv = (
+        "station,valid,tmpc\n"
+        "LGA,2026-03-01 06:00,5.0\n"
+        "LGA,2026-03-01 12:00,7.0\n"
+        "LGA,2026-03-02 06:00,-1.0\n"
+        "LGA,2026-03-02 12:00,2.0\n"
+    )
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_csv)
     with httpx.Client() as client:
-        cal, acc = run_backfill(KLGA, "TMAX", 1, date(2026, 3, 1), date(2026, 3, 5), client)
+        results = run_backfill(KLGA, "TMAX", (1, 2), date(2026, 3, 1), date(2026, 3, 2), client)
+    assert set(results) == {1, 2}
+    cal, acc = results[1]
     assert cal.station == "KLGA"
     assert cal.variable == "TMAX"
     assert cal.lead_time == 1
-    assert cal.n_samples == 5
-    # CRPS-optimal bias is ~-2.43 for this fixture (slightly different from the simple
-    # mean error of -2.38 because bias, var_a, var_b are jointly optimised).
-    assert cal.bias == pytest.approx(-2.43, abs=0.1)
+    assert cal.n_samples == 2
     assert cal.var_a >= 0.0
     assert cal.var_b >= 0.0
-    # accuracy is measured over the same pairs (bias_f is mean error, slightly different
-    # from the CRPS-optimal bias which is jointly fit with the variance parameters)
-    assert acc.n == 5
-    assert acc.bias_f == pytest.approx(-2.38, abs=1e-2)
-    assert acc.mae_f >= abs(acc.bias_f)  # mean |e| always >= |mean e|
-    assert acc.mae_f > 0
+    assert acc.n == 2
+    # lead 1 mu: 50.0 (03-01), 38.0 (03-02); errors vs 44.6/35.6 -> +5.4, +2.4
+    assert acc.bias_f == pytest.approx(3.9)
+    assert acc.mae_f == pytest.approx(3.9)
+    cal2, acc2 = results[2]
+    assert cal2.lead_time == 2
+    assert acc2.n == 2
+    # lead 2 mu: 49.0 (03-01), 37.0 (03-02); errors vs 44.6/35.6 -> +4.4, +1.4
+    assert acc2.bias_f == pytest.approx(2.9)
+    assert acc2.mae_f == pytest.approx(2.9)
+
+
+def test_run_backfill_omits_leads_with_no_overlapping_actuals(httpx_mock):
+    # Actuals only cover 03-01; the previous-runs fixture has forecasts for
+    # 03-01 and 03-02 at every lead, so requesting a window that ends before
+    # 03-02 leaves every lead with exactly one pair (not zero), which still fits.
+    # To exercise "no overlapping actuals", ask for a lead absent from the fixture
+    # (lead 9): fetch_historical_lead_forecasts returns an empty dict for it, so
+    # build_pairs has nothing to join and the lead is omitted rather than erroring.
+    httpx_mock.add_response(
+        url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
+    )
+    asos_fixture = (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
+    with httpx.Client() as client:
+        results = run_backfill(KLGA, "TMAX", (1, 9), date(2026, 3, 1), date(2026, 3, 2), client)
+    assert set(results) == {1}
 
 
 def test_fetch_actuals_reads_tmin_when_asked(httpx_mock):
@@ -165,6 +196,15 @@ def test_fetch_monthly_precip_none_when_unpublished(httpx_mock):
         assert fetch_monthly_precip("USW00094728", 2026, 6, client) is None
 
 
+_PREVIOUS_RUNS_MIN = {
+    "hourly": {
+        "time": ["2026-03-01T06:00", "2026-03-01T12:00", "2026-03-02T06:00", "2026-03-02T12:00"],
+        "temperature_2m_previous_day1_gfs_seamless": [40.0, 45.0, 32.0, 36.0],
+        "temperature_2m_previous_day1_ecmwf_ifs025": [38.0, 44.0, 30.0, 35.0],
+    }
+}
+
+
 def test_run_backfill_tmin_pairs_min_forecast_with_tmin_actual(httpx_mock):
     # KLGA (Polymarket) -> ASOS. Two readings per day; TMIN uses the minimum.
     asos_csv = (
@@ -174,65 +214,67 @@ def test_run_backfill_tmin_pairs_min_forecast_with_tmin_actual(httpx_mock):
         "LGA,2026-03-02 06:00,-0.556\n"
         "LGA,2026-03-02 12:00,1.0\n"  # min is -0.556C -> 30.999F ~ 31F
     )
-    httpx_mock.add_response(url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_HIST_MIN)
+    httpx_mock.add_response(url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_PREVIOUS_RUNS_MIN)
     httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_csv)
     with httpx.Client() as client:
-        cal, acc = run_backfill(KLGA, "TMIN", 1, date(2026, 3, 1), date(2026, 3, 2), client)
+        results = run_backfill(KLGA, "TMIN", (1,), date(2026, 3, 1), date(2026, 3, 2), client)
+    cal, acc = results[1]
     assert cal.variable == "TMIN"
     assert cal.n_samples == 2
     assert acc.n == 2
 
 
-def _previous_runs_fixture() -> dict[str, Any]:
-    return json.loads((FIXTURES / "openmeteo_previous_runs_klga.json").read_text())
-
-
-def test_fetch_historical_point_forecasts_reduces_hourly_to_daily_mean(httpx_mock):
+def test_fetch_historical_lead_forecasts_builds_gaussian_per_lead(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
     )
     with httpx.Client() as client:
-        point = fetch_historical_point_forecasts(
-            KLGA, (2, 3), date(2026, 3, 1), date(2026, 3, 2), client
+        by_lead = fetch_historical_lead_forecasts(
+            KLGA, (0, 1, 2, 3), date(2026, 3, 1), date(2026, 3, 2), client
         )
-    assert point[2] == {
-        date(2026, 3, 1): pytest.approx(49.0),
-        date(2026, 3, 2): pytest.approx(37.0),
-    }
-    assert point[3] == {
-        date(2026, 3, 1): pytest.approx(45.0),
-        date(2026, 3, 2): pytest.approx(33.5),
-    }
+    assert set(by_lead) == {0, 1, 2, 3}
+    # lead 0 (day-0 archive, unsuffixed keys): 55/53 -> 54.0, 43/41 -> 42.0
+    assert by_lead[0][date(2026, 3, 1)].mu == pytest.approx(54.0)
+    assert by_lead[0][date(2026, 3, 1)].sigma == pytest.approx(1.414, abs=1e-3)
+    assert by_lead[0][date(2026, 3, 2)].mu == pytest.approx(42.0)
+    # lead 1: 51/49 -> 50.0, 39/37 -> 38.0
+    assert by_lead[1][date(2026, 3, 1)].mu == pytest.approx(50.0)
+    assert by_lead[1][date(2026, 3, 2)].mu == pytest.approx(38.0)
+    # lead 2: 50/48 -> 49.0, 38/36 -> 37.0 (matches the values the old point-forecast
+    # path used to compute for this fixture)
+    assert by_lead[2][date(2026, 3, 1)].mu == pytest.approx(49.0)
+    assert by_lead[2][date(2026, 3, 2)].mu == pytest.approx(37.0)
+    # lead 3: 46/44 -> 45.0, 33.5/33.5 -> 33.5
+    assert by_lead[3][date(2026, 3, 1)].mu == pytest.approx(45.0)
+    assert by_lead[3][date(2026, 3, 2)].mu == pytest.approx(33.5)
     req = httpx_mock.get_requests()[0]
-    assert "hourly=temperature_2m_previous_day2" in str(req.url)
+    # one request carries every requested lead's field
+    assert "hourly=temperature_2m_previous_day0" in str(req.url)
+    assert "previous_day1" in str(req.url)
+    assert "previous_day2" in str(req.url)
     assert "previous_day3" in str(req.url)
     assert "models=" in str(req.url)
 
 
-def test_run_backfill_accuracy_scores_each_lead(httpx_mock):
-    # KLGA (Polymarket) -> ASOS. Use the 5-day ASOS fixture; only dates 03-01 and 03-02
-    # overlap with the Previous Runs fixture, so 2 pairs per lead are produced.
-    asos_fixture = (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
-    httpx_mock.add_response(
-        url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
-    )
-    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
+def test_fetch_historical_lead_forecasts_maps_lead_zero_to_unsuffixed_response_key(httpx_mock):
+    # Lead 0 is requested as temperature_2m_previous_day0, but Open-Meteo normalizes
+    # the response key to the un-suffixed temperature_2m_<model>.
+    data = {
+        "hourly": {
+            "time": ["2026-03-01T00:00", "2026-03-01T12:00"],
+            "temperature_2m_gfs_seamless": [40.0, 50.0],
+            "temperature_2m_ecmwf_ifs025": [42.0, 48.0],
+        }
+    }
+    httpx_mock.add_response(url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=data)
     with httpx.Client() as client:
-        accs = run_backfill_accuracy(
-            KLGA, "TMAX", (2, 3), date(2026, 3, 1), date(2026, 3, 2), client
+        by_lead = fetch_historical_lead_forecasts(
+            KLGA, (0,), date(2026, 3, 1), date(2026, 3, 1), client
         )
-    assert set(accs) == {2, 3}
-    # lead 2: mu 49.0 vs 43 (+6), 37.0 vs 34 (+3) -> bias 4.5, mae 4.5
-    assert accs[2].n == 2
-    assert accs[2].bias_f == pytest.approx(4.5, abs=0.01)
-    assert accs[2].mae_f == pytest.approx(4.5, abs=0.01)
-    # lead 3: mu 45.0 vs 43 (+2), 33.5 vs 34 (-0.5) -> bias 0.75, mae 1.25
-    assert accs[3].n == 2
-    assert accs[3].bias_f == pytest.approx(0.75, abs=0.01)
-    assert accs[3].mae_f == pytest.approx(1.25, abs=0.01)
+    assert by_lead[0][date(2026, 3, 1)].mu == pytest.approx(49.0)  # (50 + 48) / 2 daily max
 
 
-def test_fetch_historical_point_forecasts_uses_min_for_tmin(httpx_mock):
+def test_fetch_historical_lead_forecasts_uses_min_for_tmin(httpx_mock):
     data = {
         "hourly": {
             "time": ["2026-03-01T06:00", "2026-03-01T12:00"],
@@ -242,17 +284,40 @@ def test_fetch_historical_point_forecasts_uses_min_for_tmin(httpx_mock):
     }
     httpx_mock.add_response(url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=data)
     with httpx.Client() as client:
-        point = fetch_historical_point_forecasts(
+        by_lead = fetch_historical_lead_forecasts(
             KLGA, (2,), date(2026, 3, 1), date(2026, 3, 1), client, "TMIN"
         )
     # min reduction: gfs min 30, ecmwf min 32 -> mean 31.0
-    assert point[2] == {date(2026, 3, 1): pytest.approx(31.0)}
+    assert by_lead[2][date(2026, 3, 1)].mu == pytest.approx(31.0)
     assert "daily=" not in str(httpx_mock.get_requests()[0].url)
 
 
-def test_fetch_historical_forecasts_raises_value_error_on_open_meteo_error_body(httpx_mock):
+def test_fetch_historical_lead_forecasts_skips_dates_with_one_model(httpx_mock):
+    data = {
+        "hourly": {
+            "time": ["2026-03-01T00:00"],
+            "temperature_2m_previous_day2_gfs_seamless": [40.0],
+        }
+    }
+    httpx_mock.add_response(url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=data)
+    with httpx.Client() as client:
+        by_lead = fetch_historical_lead_forecasts(
+            KLGA, (2,), date(2026, 3, 1), date(2026, 3, 1), client
+        )
+    assert by_lead[2] == {}  # one model is not enough to estimate a spread
+
+
+def test_fetch_historical_lead_forecasts_raises_value_error_on_open_meteo_error_body(httpx_mock):
     # Open-Meteo returns 200 with {"error": true, "reason": "..."} for bad params.
-    # resp.json()["daily"] raises KeyError; the fix converts it to ValueError.
+    error_body = {"error": True, "reason": "Parameter out of range"}
+    httpx_mock.add_response(url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=error_body)
+    with httpx.Client() as client:
+        with pytest.raises(ValueError, match="hourly"):
+            fetch_historical_lead_forecasts(KLGA, (2,), date(2026, 3, 1), date(2026, 3, 1), client)
+
+
+def test_fetch_historical_forecasts_raises_value_error_on_open_meteo_error_body(httpx_mock):
+    # Same guard for the historical-forecast archive: 200 error body raises ValueError.
     error_body = {"error": True, "reason": "Parameter out of range"}
     httpx_mock.add_response(url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=error_body)
     with httpx.Client() as client:
@@ -260,34 +325,19 @@ def test_fetch_historical_forecasts_raises_value_error_on_open_meteo_error_body(
             fetch_historical_forecasts(KLGA, date(2026, 3, 1), date(2026, 3, 5), client)
 
 
-def test_fetch_historical_point_forecasts_raises_value_error_on_open_meteo_error_body(httpx_mock):
-    # Same guard for the Previous Runs API: 200 error body raises ValueError, not KeyError.
-    error_body = {"error": True, "reason": "Parameter out of range"}
-    httpx_mock.add_response(url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=error_body)
-    with httpx.Client() as client:
-        with pytest.raises(ValueError, match="hourly"):
-            fetch_historical_point_forecasts(KLGA, (2,), date(2026, 3, 1), date(2026, 3, 1), client)
-
-
 # 'NYC' resolves to two settlement stations (LaGuardia KLGA and Kalshi's Central
-# Park KNYC). KLGA is a Polymarket station -> ASOS (2 requests: lead-1 + accuracy).
-# KNYC is Kalshi-only -> NCEI (2 requests: lead-1 + accuracy).
+# Park KNYC). KLGA is a Polymarket station -> ASOS. KNYC is Kalshi-only -> NCEI.
+# Each station makes one Previous Runs request (covering every requested lead)
+# plus one actuals request.
 @pytest.mark.httpx_mock(can_send_already_matched_responses=True)
-def test_backfill_cli_saves_a_backtest_row_per_lead(httpx_mock, tmp_path, monkeypatch):
+def test_backfill_cli_saves_a_row_per_lead_and_station(httpx_mock, tmp_path, monkeypatch):
     import rainmaker.cli as cli
 
     httpx_mock.add_response(
-        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
-    )
-    httpx_mock.add_response(
         url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
     )
-    # KLGA (Polymarket/ASOS): 2 requests - run_backfill and run_backfill_accuracy
     asos_fixture = (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
     httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
-    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
-    # KNYC (Kalshi/NCEI): 2 requests - run_backfill and run_backfill_accuracy
-    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
     httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=_actuals_fixture())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 3, 6))
     db = str(tmp_path / "t.db")
@@ -298,7 +348,7 @@ def test_backfill_cli_saves_a_backtest_row_per_lead(httpx_mock, tmp_path, monkey
 
     conn = connect(db)
     rows = conn.execute(
-        "SELECT lead_time, kind, n FROM forecast_accuracy "
+        "SELECT lead_time, kind FROM forecast_accuracy "
         "WHERE station = 'KLGA' AND variable = 'TMAX' ORDER BY lead_time"
     ).fetchall()
     knyc = conn.execute(

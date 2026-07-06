@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 from pydantic import ValidationError
 
-from rainmaker.backfill import run_backfill, run_backfill_accuracy, season_window
+from rainmaker.backfill import run_backfill, season_window
 from rainmaker.backtest import BacktestPair, backtest_real, backtest_synthetic, render_report
 from rainmaker.config import (
     BACKFILL_DAYS,
@@ -266,6 +266,7 @@ def _backfill_stations(city: str) -> list[Station]:
 
 def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_path: str) -> None:
     stations = _backfill_stations(city)
+    variables = sorted(SUPPORTED_VARIABLES) if variable == "all" else [variable]
     today = _today()
     window = season_window(today, days)
     if window is None:
@@ -287,16 +288,18 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
     try:
         init_schema(conn)
         for station in stations:
-            now = _now_iso()
-            city_ok = False
-            if 1 in leads:  # lead 1 keeps the calibration + accuracy fit
+            for var in variables:
+                now = _now_iso()
                 try:
-                    cal, acc = run_backfill(station, variable, 1, start, end, client)
+                    results = run_backfill(station, var, leads, start, end, client)
                 except (httpx.HTTPError, ValueError) as exc:
                     if isinstance(exc, ValidationError):
                         raise  # schema bug, not a data gap; fail loud
                     print(f"{station.city}: backfill failed: {exc}", file=sys.stderr)
-                else:
+                    continue
+                if not results:
+                    continue
+                for _lead, (cal, acc) in sorted(results.items()):
                     save_calibration(conn, cal, updated_at=now)
                     save_accuracy(
                         conn,
@@ -313,33 +316,6 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
                         f"bias={cal.bias:+.2f}F var_a={cal.var_a:.3f} var_b={cal.var_b:.3f} "
                         f"mae={acc.mae_f:.2f}F n={cal.n_samples} -> {label}"
                     )
-                    city_ok = True
-            higher = tuple(lead for lead in leads if lead != 1)
-            if higher:  # higher leads are accuracy-only (no calibration fit)
-                try:
-                    accs = run_backfill_accuracy(station, variable, higher, start, end, client)
-                except (httpx.HTTPError, ValueError) as exc:
-                    if isinstance(exc, ValidationError):
-                        raise  # schema bug, not a data gap; fail loud
-                    print(f"{station.city}: accuracy backfill failed: {exc}", file=sys.stderr)
-                else:
-                    for lead, acc in sorted(accs.items()):
-                        save_accuracy(
-                            conn,
-                            station=station.icao,
-                            city=station.city,
-                            variable=variable,
-                            lead_time=lead,
-                            kind="backtest",
-                            accuracy=acc,
-                            updated_at=now,
-                        )
-                        print(
-                            f"accuracy {station.icao} {variable} lead={lead}: "
-                            f"mae={acc.mae_f:.2f}F bias={acc.bias_f:+.2f}F n={acc.n} -> {label}"
-                        )
-                        city_ok = True
-            if city_ok:
                 succeeded += 1
     finally:
         client.close()
@@ -678,16 +654,14 @@ def main(argv: list[str] | None = None) -> None:
     backfill.add_argument(
         "--city", default="NYC", help="city key from the station registry, or 'all'"
     )
-    backfill.add_argument("--variable", default="TMAX")
+    backfill.add_argument("--variable", default="all", help="TMAX, TMIN, or 'all' (both, sorted)")
     backfill.add_argument(
         "--days", type=int, default=BACKFILL_DAYS, help="history window length in days"
     )
     backfill.add_argument(
         "--leads",
-        default="1,2,3",
-        help=(
-            "comma-separated leads in days; lead 1 fits calibration, higher leads are accuracy-only"
-        ),
+        default="0,1,2,3",
+        help="comma-separated leads in days; each gets its own fitted calibration cell",
     )
     backfill.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
