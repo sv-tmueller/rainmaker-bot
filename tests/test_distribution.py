@@ -82,7 +82,7 @@ def test_fit_gaussian_uses_ensemble_sigma_when_members_present():
     ens_vals = [s.value_f for s in ens]
     expected_sigma = float(np.std(ens_vals, ddof=1))
     g = fit_gaussian(det + ens, min_sigma=0.0)
-    # mu uses all samples
+    # mu uses all samples: holds here because det and ens are one pooled group
     all_vals = [s.value_f for s in det + ens]
     assert g.mu == pytest.approx(float(np.mean(all_vals)))
     # sigma uses ensemble members only

@@ -201,11 +201,15 @@ def test_run_aborts_when_polymarket_precip_down(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "discover_precip_markets", _boom)
     monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
 
+    db = tmp_path / "t.db"
     with pytest.raises(SystemExit) as exc:
-        cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(tmp_path / "t.db")])
+        cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(db)])
     assert exc.value.code != 0
     assert "Polymarket unavailable, aborting" in capsys.readouterr().err
     assert not list(tmp_path.glob("*.md")) and not list(tmp_path.glob("*.json"))
+    conn = connect(str(db))
+    assert count_rows(conn, "runs") == 0
+    conn.close()
 
 
 def test_backfill_fits_and_saves_calibration_and_accuracy(monkeypatch, tmp_path, capsys):

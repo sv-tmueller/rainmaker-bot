@@ -23,6 +23,7 @@ from rainmaker.forecasts.precip import PrecipForecastSet
 from rainmaker.polymarket.precip_markets import parse_precip_event
 from rainmaker.probability.calibration import Calibration
 from rainmaker.probability.precip_distribution import fit_gamma
+from rainmaker.probability.precip_outcomes import bracket_probability
 from rainmaker.ranking.edge import MarketReport, evaluate_market, evaluate_precip_market
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -547,6 +548,9 @@ def test_evaluate_precip_market_sigma_matches_floored_gamma():
     assert report.sigma == pytest.approx(math.sqrt(PRECIP_VAR_FLOOR))
     gamma = fit_gamma(fs.mean, fs.var, floor=PRECIP_VAR_FLOOR)
     assert report.sigma**2 == pytest.approx(gamma.k * gamma.scale**2)
+    bracket = market.buckets[0]
+    yes = next(o for o in report.outcomes if o.bucket_label == bracket.label and o.side == "YES")
+    assert yes.p_win == pytest.approx(bracket_probability(gamma, bracket))
 
 
 def test_evaluate_precip_market_emits_no_side_complement():

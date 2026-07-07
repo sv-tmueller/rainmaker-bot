@@ -69,9 +69,12 @@ def _for_backend(statement: str, backend: str) -> str:
     SQLite REAL is 8-byte, Postgres REAL is 4-byte float4 and underflows on tiny
     tail probabilities. Without this, every future `... REAL` migration statement
     would silently create a float4 column on Postgres.
+
+    The substitution is textual (matches the word "real" case-insensitively in
+    the statement string), not a parsed SQL type.
     """
     if backend == "postgres":
-        return re.sub(r"\bREAL\b", "DOUBLE PRECISION", statement)
+        return re.sub(r"\bREAL\b", "DOUBLE PRECISION", statement, flags=re.IGNORECASE)
     return statement
 
 
