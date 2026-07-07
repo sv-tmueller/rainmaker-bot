@@ -41,6 +41,7 @@ from rainmaker.polymarket.client import (
     discover_markets,
     discover_precip_markets,
     fetch_closed_weather_events,
+    fetch_weather_events,
 )
 from rainmaker.ranking.edge import evaluate_market, evaluate_precip_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
@@ -137,10 +138,11 @@ def _run(reports_dir: str, db_path: str) -> None:
     client = build_client(30.0)
     try:
         try:
-            markets = discover_markets(client)
+            events = fetch_weather_events(client)
         except httpx.HTTPError as exc:
             print(f"Polymarket unavailable, aborting: {exc}", file=sys.stderr)
             raise SystemExit(1) from exc
+        markets = discover_markets(events)
 
         evaluated: list[EvaluatedMarket] = []
         for market in markets:
@@ -197,11 +199,7 @@ def _run(reports_dir: str, db_path: str) -> None:
             )
             evaluated.append((market, forecast_set, report))
 
-        try:
-            precip_markets = list(discover_precip_markets(client))
-        except httpx.HTTPError as exc:
-            print(f"Polymarket unavailable, aborting: {exc}", file=sys.stderr)
-            raise SystemExit(1) from exc
+        precip_markets = list(discover_precip_markets(events))
         # Kalshi rain is the secondary venue: its outage must never abort the run.
         try:
             precip_markets += discover_kalshi_precip_markets(client)

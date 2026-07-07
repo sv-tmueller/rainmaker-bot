@@ -71,15 +71,15 @@ def _is_known_temp_event(event: dict[str, Any]) -> bool:
     return city in _ALL_TEMP_STATIONS
 
 
-def discover_markets(client: httpx.Client) -> list[Market]:
-    """Fetch live weather events and parse temperature markets (US + intl Celsius).
+def discover_markets(events: list[dict[str, Any]]) -> list[Market]:
+    """Parse temperature markets (US + intl Celsius) from pre-fetched weather events.
 
     A market that fails to parse (for example its description does not name the
     resolution station) is skipped with a warning so one bad market does not
     abort the whole run. Polymarket being down still aborts upstream.
     """
     markets: list[Market] = []
-    for ev in fetch_weather_events(client):
+    for ev in events:
         if not _is_known_temp_event(ev):
             continue
         try:
@@ -97,8 +97,8 @@ def _is_us_precip_event(event: dict[str, Any]) -> bool:
     return city in PRECIP_STATIONS
 
 
-def discover_precip_markets(client: httpx.Client) -> list[PrecipMonthlyMarket]:
-    """Fetch live weather events and parse the US monthly precipitation markets.
+def discover_precip_markets(events: list[dict[str, Any]]) -> list[PrecipMonthlyMarket]:
+    """Parse the US monthly precipitation markets from pre-fetched weather events.
 
     The parallel of discover_markets for the precip path: a market that fails to
     parse (for example its description does not name the resolution station) is
@@ -106,7 +106,7 @@ def discover_precip_markets(client: httpx.Client) -> list[PrecipMonthlyMarket]:
     Polymarket being down still aborts upstream.
     """
     markets: list[PrecipMonthlyMarket] = []
-    for ev in fetch_weather_events(client):
+    for ev in events:
         if not _is_us_precip_event(ev):
             continue
         try:
