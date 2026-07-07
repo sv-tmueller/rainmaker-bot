@@ -172,6 +172,71 @@ def test_build_precip_forecast_set_climatology_only_when_both_sources_fail(httpx
     assert fs.var > 0
 
 
+def test_build_precip_forecast_set_ncei_failure_degrades_like_empty_history(httpx_mock):
+    # NCEI down: the observed-to-date fetch fails first and short-circuits the
+    # climatology call. The run must degrade the same way an empty NCEI history
+    # does, not abort, with a failure entry in coverage.
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), status_code=500)
+    httpx_mock.add_response(url=re.compile(re.escape(FORECAST_URL)), json=_multimodel())
+    for _ in range(3):  # OPENMETEO_ENSEMBLE_MODELS has three entries
+        httpx_mock.add_response(url=re.compile(re.escape(ENSEMBLE_URL)), json=_ensemble())
+    httpx_mock.add_response(
+        url="https://api.weather.gov/points/40.779,-73.9692",
+        json={"properties": {"forecastGridData": "https://api.weather.gov/gridpoints/OKX/34,45"}},
+    )
+    httpx_mock.add_response(
+        url="https://api.weather.gov/gridpoints/OKX/34,45",
+        json=json.loads((FIXTURES / "nws_qpf_nyc.json").read_text()),
+    )
+    with httpx.Client() as client:
+        fs_failure = build_precip_forecast_set(
+            _nyc_target(),
+            today=date(2026, 6, 6),
+            client=client,
+            var_floor=0.01,
+            lookback_years=20,
+        )
+
+    ncei_coverage = [c for c in fs_failure.coverage if c.source == "ncei"]
+    assert len(ncei_coverage) == 1
+    assert not ncei_coverage[0].ok
+    assert ncei_coverage[0].error is not None
+    other = {c.source: c for c in fs_failure.coverage if c.source != "ncei"}
+    assert other["open-meteo"].ok
+    assert other["nws"].ok
+    assert fs_failure.n_observed_days > 0
+    assert fs_failure.n_clim_days > 0
+    assert fs_failure.mean > 0
+    assert fs_failure.var > 0
+
+    httpx_mock.reset()
+    # Empty-history baseline: both NCEI calls (observed, then climatology) return [].
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=[])
+    httpx_mock.add_response(url=re.compile(re.escape(NCEI_URL)), json=[])
+    httpx_mock.add_response(url=re.compile(re.escape(FORECAST_URL)), json=_multimodel())
+    for _ in range(3):
+        httpx_mock.add_response(url=re.compile(re.escape(ENSEMBLE_URL)), json=_ensemble())
+    httpx_mock.add_response(
+        url="https://api.weather.gov/points/40.779,-73.9692",
+        json={"properties": {"forecastGridData": "https://api.weather.gov/gridpoints/OKX/34,45"}},
+    )
+    httpx_mock.add_response(
+        url="https://api.weather.gov/gridpoints/OKX/34,45",
+        json=json.loads((FIXTURES / "nws_qpf_nyc.json").read_text()),
+    )
+    with httpx.Client() as client:
+        fs_baseline = build_precip_forecast_set(
+            _nyc_target(),
+            today=date(2026, 6, 6),
+            client=client,
+            var_floor=0.01,
+            lookback_years=20,
+        )
+
+    assert fs_failure.mean == pytest.approx(fs_baseline.mean)
+    assert fs_failure.var == pytest.approx(fs_baseline.var)
+
+
 def test_build_precip_forecast_set_pools_all_sources(httpx_mock):
     _mock_build(httpx_mock)
     with httpx.Client() as client:
