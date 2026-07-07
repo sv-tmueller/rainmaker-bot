@@ -261,17 +261,25 @@ def build_precip_forecast_set(
 
     last_observed = min(today - timedelta(days=1), month_end)
     n_observed_days = (last_observed - month_start).days + 1 if last_observed >= month_start else 0
-    observed_total = 0.0
-    if n_observed_days:
-        actuals = fetch_actuals(target.station.ghcnd_id, month_start, last_observed, client, "PRCP")
-        observed_total = sum(v for d, v in actuals.items() if month_start <= d <= last_observed)
+    coverage: list[SourceCoverage] = []
 
-    clim_mean, clim_var, clim_rho = fetch_precip_climatology(
-        target.station.ghcnd_id, month, year, client, lookback_years=lookback_years
-    )
+    observed_total = 0.0
+    try:
+        if n_observed_days:
+            actuals = fetch_actuals(
+                target.station.ghcnd_id, month_start, last_observed, client, "PRCP"
+            )
+            observed_total = sum(v for d, v in actuals.items() if month_start <= d <= last_observed)
+
+        clim_mean, clim_var, clim_rho = fetch_precip_climatology(
+            target.station.ghcnd_id, month, year, client, lookback_years=lookback_years
+        )
+    except (httpx.HTTPError, ValueError, KeyError) as exc:
+        observed_total = 0.0
+        clim_mean, clim_var, clim_rho = 0.0, 0.0, 0.0
+        coverage.append(SourceCoverage(source="ncei", ok=False, n_samples=0, error=str(exc)))
 
     pooled: dict[date, list[float]] = defaultdict(list)
-    coverage: list[SourceCoverage] = []
 
     om_ok, om_n, om_err = True, 0, None
     try:
