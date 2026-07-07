@@ -77,6 +77,90 @@ export type SettledBet = {
   pnl: number;
 };
 
+// One priced, graded, recommended prediction row: the candidate population
+// collapseSettled collapses to one bet per (market, UTC day).
+export type SettledCandidateRow = {
+  marketId: string;
+  runId: string;
+  startedAt: string;
+  bucket: string;
+  side: "YES" | "NO";
+  pWin: number;
+  edge: number | null;
+  won: boolean;
+  ask: number;
+  title: string;
+  date: string;
+  settledAt: string;
+};
+
+type SettledCollapsedRow = {
+  settledAt: string;
+  date: string;
+  title: string;
+  side: "YES" | "NO";
+  pWin: number;
+  won: boolean;
+  pnl: number;
+};
+
+// Mirrors tracking.py's two stacked collapses (_latest_run_per_market_day,
+// _best_per_market_run) so the dashboard's win rate agrees with `rainmaker
+// track`. Step 1 collapses the intraday reruns (#77) that price a market
+// several times a day to the day's latest run; step 2 collapses the buckets
+// of one market/run (correlated: they describe the same temperature) to the
+// single best-edge bet. Order matters: a market's highest-edge row overall
+// can belong to a run that is not that day's latest, and must be dropped
+// before the edge tie-break runs.
+export function collapseSettled(rows: SettledCandidateRow[]): SettledCollapsedRow[] {
+  // Step 1: keep only the latest run's rows per (market, UTC day). Marker
+  // (startedAt, runId) breaks an exact-timestamp tie deterministically,
+  // matching tracking.py's _latest_run_per_market_day.
+  const latest = new Map<string, { marketId: string; runId: string; startedAt: string }>();
+  for (const r of rows) {
+    const key = `${r.marketId}|${r.startedAt.slice(0, 10)}`;
+    const cur = latest.get(key);
+    if (!cur || r.startedAt > cur.startedAt || (r.startedAt === cur.startedAt && r.runId > cur.runId)) {
+      latest.set(key, { marketId: r.marketId, runId: r.runId, startedAt: r.startedAt });
+    }
+  }
+  const keep = new Set([...latest.values()].map((v) => `${v.marketId}|${v.runId}`));
+  const latestRows = rows.filter((r) => keep.has(`${r.marketId}|${r.runId}`));
+
+  // Step 2: keep the highest-edge row per (market, run). Tie-break on
+  // (edge, pWin, bucket, side) to match tracking.py's _edge_key exactly.
+  const best = new Map<string, SettledCandidateRow>();
+  for (const r of latestRows) {
+    const key = `${r.marketId}|${r.runId}`;
+    const cur = best.get(key);
+    if (!cur || edgeKeyGreater(r, cur)) {
+      best.set(key, r);
+    }
+  }
+
+  return [...best.values()].map((r) => ({
+    settledAt: r.settledAt,
+    date: r.date,
+    title: r.title,
+    side: r.side,
+    pWin: r.pWin,
+    won: r.won,
+    pnl: r.won ? 1 - r.ask : -r.ask,
+  }));
+}
+
+// (edge ?? -Infinity, pWin, bucket, side) compared left to right, matching
+// tracking.py's _edge_key. Numeric compare for edge/pWin, lexicographic for
+// bucket/side ("YES" > "NO", so YES wins an exact tie).
+function edgeKeyGreater(a: SettledCandidateRow, b: SettledCandidateRow): boolean {
+  const aEdge = a.edge ?? -Infinity;
+  const bEdge = b.edge ?? -Infinity;
+  if (aEdge !== bEdge) return aEdge > bEdge;
+  if (a.pWin !== b.pWin) return a.pWin > b.pWin;
+  if (a.bucket !== b.bucket) return a.bucket > b.bucket;
+  return a.side > b.side;
+}
+
 export async function getDashboardData() {
   const db = serverClient();
 
@@ -111,7 +195,7 @@ export async function getDashboardData() {
     settledIds.length > 0
       ? db
           .from("predictions")
-          .select("market_id, run_id, bucket, side, p_win, won")
+          .select("market_id, run_id, bucket, side, p_win, edge, won")
           .eq("recommended", 1)
           .not("bucket", "is", null)
           .not("won", "is", null)
@@ -126,7 +210,7 @@ export async function getDashboardData() {
   const latestPredIds = (latestPreds.data ?? []).map((p) => p.market_id);
   const neededIds = [...new Set([...latestPredIds, ...settledIds])];
   const settledRunIds = [...new Set((settledPreds.data ?? []).map((p) => p.run_id))];
-  const [marketsQ, settledPrices] = await Promise.all([
+  const [marketsQ, settledPrices, settledRunsQ] = await Promise.all([
     neededIds.length > 0
       ? db
           .from("markets")
@@ -140,7 +224,13 @@ export async function getDashboardData() {
           .in("market_id", settledIds)
           .in("run_id", settledRunIds)
       : Promise.resolve({ data: null }),
+    settledRunIds.length > 0
+      ? db.from("runs").select("id, started_at").in("id", settledRunIds)
+      : Promise.resolve({ data: null }),
   ]);
+  const startedAtOf = new Map(
+    (settledRunsQ.data ?? []).map((r) => [r.id, r.started_at as string]),
+  );
 
   const titleOf = new Map((marketsQ.data ?? []).map((m) => [m.id, m.title as string]));
   const cityOf = new Map((marketsQ.data ?? []).map((m) => [m.id, (m.city as string | null) ?? ""]));
@@ -285,8 +375,9 @@ export async function getDashboardData() {
   };
 
   // Assemble settled bets.
-  // Mirrors tracking.compute_pnl: each recommended prediction with a price on a
-  // settled market is one one-unit bet; re-recommendations are separate bets.
+  // Mirrors tracking.py's population and its two stacked collapses
+  // (_latest_run_per_market_day, _best_per_market_run) via collapseSettled, so
+  // the win rate shown here agrees with `rainmaker track`.
   let settled: SettledBet[] = [];
   const outcomes = outcomesQ.data ?? [];
   if (outcomes.length > 0) {
@@ -297,27 +388,32 @@ export async function getDashboardData() {
       ]),
     );
     const outcomeOf = new Map(outcomes.map((o) => [o.market_id, o]));
-    settled = (settledPreds.data ?? [])
-      .flatMap((p) => {
-        const o = outcomeOf.get(p.market_id);
-        const side = sideOf(p.side);
-        const ask = priceOf.get(`${p.run_id}|${p.market_id}|${p.bucket}|${side}`);
-        // won is pre-graded by settle.py using the canonical Python grading; skip
-        // rows where it is NULL (not yet graded, or non-recommended).
-        if (!o || ask === undefined || p.won === null) return [];
-        const won = p.won === 1;
-        return [
-          {
-            settledAt: o.settled_at as string,
-            date: (settleDateOf.get(p.market_id) ?? (o.settled_at as string)).slice(0, 10),
-            title: titleOf.get(p.market_id) ?? (p.market_id as string),
-            side,
-            pWin: p.p_win as number,
-            won,
-            pnl: won ? 1 - ask : -ask,
-          },
-        ];
-      })
+    const candidates: SettledCandidateRow[] = (settledPreds.data ?? []).flatMap((p) => {
+      const o = outcomeOf.get(p.market_id);
+      const side = sideOf(p.side);
+      const ask = priceOf.get(`${p.run_id}|${p.market_id}|${p.bucket}|${side}`);
+      const startedAt = startedAtOf.get(p.run_id);
+      // won is pre-graded by settle.py using the canonical Python grading; skip
+      // rows where it is NULL (not yet graded, or non-recommended).
+      if (!o || ask === undefined || p.won === null || startedAt === undefined) return [];
+      return [
+        {
+          marketId: p.market_id as string,
+          runId: p.run_id as string,
+          startedAt,
+          bucket: p.bucket as string,
+          side,
+          pWin: p.p_win as number,
+          edge: (p.edge as number | null) ?? null,
+          won: p.won === 1,
+          ask,
+          title: titleOf.get(p.market_id) ?? (p.market_id as string),
+          date: (settleDateOf.get(p.market_id) ?? (o.settled_at as string)).slice(0, 10),
+          settledAt: o.settled_at as string,
+        },
+      ];
+    });
+    settled = collapseSettled(candidates)
       // Stable sort: newest settled first; within one date, alphabetical by title.
       .sort((a, b) => {
         if (a.settledAt !== b.settledAt) return a.settledAt < b.settledAt ? 1 : -1;
