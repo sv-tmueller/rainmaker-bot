@@ -1,20 +1,35 @@
 import type { CalibrationData, CalibrationRow, ReliabilityBin } from "../lib/data";
 import { pct } from "../lib/format";
 
-function coverageBar(frac: number, label: string) {
+// Each cell is colored against its own nominal target: both under- and
+// over-coverage are miscalibration, so the deviation band is symmetric.
+export function coverageClass(frac: number, nominal: number) {
+  const dev = Math.abs(frac - nominal);
+  return dev <= 0.05 ? "text-pos" : dev <= 0.1 ? "" : "text-warm";
+}
+
+function coverageBar(frac: number, nominal: number) {
   return (
-    <span title={`${label}: ${pct(frac)}`}>
-      <span className={frac >= 0.85 ? "text-pos" : frac >= 0.7 ? "" : "text-warm"}>
-        {pct(frac)}
-      </span>
+    <span title={`${pct(nominal)}: ${pct(frac)}`}>
+      <span className={coverageClass(frac, nominal)}>{pct(frac)}</span>
     </span>
   );
 }
 
+// Always keep the top predicted bin visible (it's the one most likely to
+// hide a miscalibrated tail); fill the rest by count.
+export function selectReliabilityBins(bins: ReliabilityBin[]) {
+  const topBin = bins.reduce((a, b) => (b.lo > a.lo ? b : a));
+  const rest = [...bins]
+    .filter((b) => b.lo !== topBin.lo)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 2);
+  return [topBin, ...rest];
+}
+
 function ReliabilityMini({ bins }: { bins: ReliabilityBin[] }) {
   if (bins.length === 0) return <span className="text-faint">–</span>;
-  // Compact inline display: each bin as "predicted%:observed%" for the largest bins
-  const top = [...bins].sort((a, b) => b.count - a.count).slice(0, 3);
+  const top = selectReliabilityBins(bins);
   return (
     <span className="text-faint text-[10px]">
       {top
@@ -35,8 +50,8 @@ function CalibrationCellDisplay({ row }: { row: CalibrationRow }) {
       </div>
       <div className="font-mono text-xs">
         <span className="text-faint">cov </span>
-        {coverageBar(cell.coverage50, "50%")} {coverageBar(cell.coverage80, "80%")}{" "}
-        {coverageBar(cell.coverage90, "90%")}
+        {coverageBar(cell.coverage50, 0.5)} {coverageBar(cell.coverage80, 0.8)}{" "}
+        {coverageBar(cell.coverage90, 0.9)}
       </div>
       <div className="mt-0.5">
         <ReliabilityMini bins={cell.reliabilityBins} />
@@ -104,8 +119,8 @@ export function CalibrationPanel({ calibration }: { calibration: CalibrationData
       <p className="mt-3 text-[11px] leading-relaxed text-faint">
         Pooled across all cities. CRPS = Continuous Ranked Probability Score (lower is better). cov
         = central-interval coverage at 50/80/90%: fraction of actuals landing inside the central
-        predictive band. Reliability shows observed frequency per predicted-probability bin (top 3
-        by count). Columns = lead time in days.
+        predictive band. Reliability shows observed frequency per predicted-probability bin (top
+        predicted bin plus the two largest by count). Columns = lead time in days.
       </p>
     </section>
   );
