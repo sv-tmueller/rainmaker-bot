@@ -62,6 +62,7 @@ def _forecast_set(variable: str = "TMAX") -> ForecastSet:
 
 
 def test_run_builds_report_and_writes_files(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "fetch_weather_events", lambda client: [])
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMAX")])
     monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
     monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set())
@@ -109,6 +110,7 @@ def test_run_includes_kalshi_high_temp_market(monkeypatch, tmp_path, capsys):
             )
         ],
     )
+    monkeypatch.setattr(cli, "fetch_weather_events", lambda client: [])
     monkeypatch.setattr(cli, "discover_markets", lambda client: [])
     monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
     monkeypatch.setattr(cli, "discover_kalshi_markets", lambda client: [market])
@@ -127,6 +129,7 @@ def test_run_includes_kalshi_high_temp_market(monkeypatch, tmp_path, capsys):
 
 
 def test_run_processes_tmin_market(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "fetch_weather_events", lambda client: [])
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMIN")])
     monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
     monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set("TMIN"))
@@ -147,6 +150,7 @@ def test_run_processes_tmin_market(monkeypatch, tmp_path, capsys):
 
 def test_run_skips_when_variable_unsupported(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "SUPPORTED_VARIABLES", {"TMAX"})
+    monkeypatch.setattr(cli, "fetch_weather_events", lambda client: [])
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMIN")])
     monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
     monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
@@ -161,6 +165,7 @@ def test_run_skips_when_variable_unsupported(monkeypatch, tmp_path, capsys):
 def test_run_skips_settled_market(monkeypatch, tmp_path, capsys):
     # _market's day is 2026-05-31; today is the next day, so the market is past
     # (lead -1) - already settled, not bettable, must not be recommended/recorded.
+    monkeypatch.setattr(cli, "fetch_weather_events", lambda client: [])
     monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMAX")])
     monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
     monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set())
@@ -177,13 +182,31 @@ def test_run_skips_settled_market(monkeypatch, tmp_path, capsys):
     conn.close()
 
 
+def test_run_fetches_weather_events_once(monkeypatch, tmp_path):
+    calls = {"n": 0}
+
+    def _fetch(client):
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr(cli, "fetch_weather_events", _fetch)
+    monkeypatch.setattr(cli, "discover_kalshi_markets", lambda client: [])
+    monkeypatch.setattr(cli, "discover_kalshi_precip_markets", lambda client: [])
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 5, 31))
+
+    cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(tmp_path / "t.db")])
+
+    assert calls["n"] == 1
+
+
 def test_run_aborts_when_polymarket_down(monkeypatch, tmp_path):
     def _boom(client):
         raise httpx.HTTPStatusError(
             "down", request=httpx.Request("GET", "x"), response=httpx.Response(500)
         )
 
-    monkeypatch.setattr(cli, "discover_markets", _boom)
+    monkeypatch.setattr(cli, "fetch_weather_events", _boom)
     monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
 
     with pytest.raises(SystemExit) as exc:
@@ -197,8 +220,7 @@ def test_run_aborts_when_polymarket_precip_down(monkeypatch, tmp_path, capsys):
             "down", request=httpx.Request("GET", "x"), response=httpx.Response(500)
         )
 
-    monkeypatch.setattr(cli, "discover_markets", lambda client: [])
-    monkeypatch.setattr(cli, "discover_precip_markets", _boom)
+    monkeypatch.setattr(cli, "fetch_weather_events", _boom)
     monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
 
     db = tmp_path / "t.db"
@@ -839,6 +861,7 @@ def test_run_routes_kalshi_precip_market(monkeypatch, tmp_path, capsys):
         n_forecast_days=7,
         n_clim_days=18,
     )
+    monkeypatch.setattr(cli, "fetch_weather_events", lambda client: [])
     monkeypatch.setattr(cli, "discover_markets", lambda client: [])
     monkeypatch.setattr(cli, "discover_kalshi_markets", lambda client: [])
     monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
@@ -859,6 +882,7 @@ def test_run_routes_kalshi_precip_market(monkeypatch, tmp_path, capsys):
 
 def test_run_routes_precip_market(monkeypatch, tmp_path, capsys):
     market, fs = _precip_market_and_set()
+    monkeypatch.setattr(cli, "fetch_weather_events", lambda client: [])
     monkeypatch.setattr(cli, "discover_markets", lambda client: [])
     monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [market])
     monkeypatch.setattr(cli, "_precip_forecast_for", lambda target, today, client: fs)

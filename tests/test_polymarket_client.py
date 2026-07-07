@@ -25,7 +25,7 @@ def test_discover_markets_includes_us_and_intl_temp_markets(httpx_mock):
     # discover_markets must parse both.
     httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=_events_body())
     with httpx.Client() as client:
-        markets = discover_markets(client)
+        markets = discover_markets(fetch_weather_events(client))
     assert len(markets) == 2
     icaos = sorted(m.target.station.icao for m in markets)
     assert icaos == ["EGLC", "KLGA"]
@@ -62,7 +62,7 @@ def test_discover_skips_unparseable_and_drops_wrong_station_event(httpx_mock, ca
     # London is registered as EGLC, so the ICAO guard fails and the event is skipped.
     httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=_multicity_body())
     with httpx.Client() as client:
-        markets = discover_markets(client)
+        markets = discover_markets(fetch_weather_events(client))
     # Los Angeles (multi-word) and Dallas (trap KDAL) are kept; NYC is skipped
     # because its description omits KLGA; London is skipped because EGLL != EGLC.
     assert sorted(m.target.station.icao for m in markets) == ["KDAL", "KLAX"]
@@ -83,7 +83,7 @@ def _precip_events_body() -> list[dict[str, Any]]:
 def test_discover_precip_markets_filters_and_skips_unparseable(httpx_mock, capsys):
     httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=_precip_events_body())
     with httpx.Client() as client:
-        markets = discover_precip_markets(client)
+        markets = discover_precip_markets(fetch_weather_events(client))
     # NYC and Seattle parse; the broken precip event is skipped; the temperature
     # event is filtered out (not a precip title).
     assert sorted(m.id for m in markets) == ["531291", "531299"]
@@ -107,7 +107,7 @@ def test_discover_markets_skips_event_missing_required_key(httpx_mock, capsys):
     }
     httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[keyless, nyc_event])
     with httpx.Client() as client:
-        markets = discover_markets(client)
+        markets = discover_markets(fetch_weather_events(client))
     assert len(markets) == 1
     assert markets[0].id == "533147"
     err = capsys.readouterr().err
@@ -129,7 +129,7 @@ def test_discover_precip_markets_skips_event_missing_required_key(httpx_mock, ca
     }
     httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[keyless, nyc])
     with httpx.Client() as client:
-        markets = discover_precip_markets(client)
+        markets = discover_precip_markets(fetch_weather_events(client))
     assert len(markets) == 1
     assert markets[0].id == "531291"
     err = capsys.readouterr().err
@@ -145,7 +145,7 @@ def test_discover_markets_parses_real_london_fixture(httpx_mock):
     event = _london_fixture_event()
     httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[event])
     with httpx.Client() as client:
-        markets = discover_markets(client)
+        markets = discover_markets(fetch_weather_events(client))
     assert len(markets) == 1
     m = markets[0]
     assert m.target.station.icao == "EGLC"
@@ -169,7 +169,7 @@ def test_discover_markets_parses_real_paris_fixture(httpx_mock):
     event = json.loads((FIXTURES / "polymarket_intl_paris.json").read_text())
     httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[event])
     with httpx.Client() as client:
-        markets = discover_markets(client)
+        markets = discover_markets(fetch_weather_events(client))
     assert len(markets) == 1
     m = markets[0]
     assert m.target.station.icao == "LFPB"
@@ -183,7 +183,7 @@ def test_discover_markets_parses_real_helsinki_fixture(httpx_mock):
     event = json.loads((FIXTURES / "polymarket_intl_helsinki.json").read_text())
     httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[event])
     with httpx.Client() as client:
-        markets = discover_markets(client)
+        markets = discover_markets(fetch_weather_events(client))
     assert len(markets) == 1
     m = markets[0]
     assert m.target.station.icao == "EFHK"
@@ -197,7 +197,7 @@ def test_discover_markets_parses_real_sao_paulo_fixture(httpx_mock):
     event = json.loads((FIXTURES / "polymarket_intl_sao_paulo.json").read_text())
     httpx_mock.add_response(url=re.compile(re.escape(GAMMA_EVENTS_URL)), json=[event])
     with httpx.Client() as client:
-        markets = discover_markets(client)
+        markets = discover_markets(fetch_weather_events(client))
     assert len(markets) == 1
     m = markets[0]
     assert m.target.station.icao == "SBGR"
