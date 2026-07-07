@@ -45,8 +45,10 @@ def test_postgres_float_columns_are_double_precision():
         init_schema(conn)
         rows = conn.execute(
             "SELECT table_name, column_name, data_type FROM information_schema.columns"
-            " WHERE (table_name = ? AND column_name IN (?, ?))"
-            " OR (table_name = ? AND column_name IN (?, ?, ?, ?))",
+            " WHERE table_schema = 'public' AND ("
+            "(table_name = ? AND column_name IN (?, ?))"
+            " OR (table_name = ? AND column_name IN (?, ?, ?, ?))"
+            ")",
             (
                 "calibration",
                 "var_a",

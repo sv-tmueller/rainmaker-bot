@@ -447,3 +447,4 @@ def test_build_precip_forecast_set_clamps_pre_month_forecast_days(httpx_mock):
         )
     assert fs.n_forecast_days == 2
     assert fs.mean == pytest.approx(0.1 + 0.2)
+    assert fs.n_clim_days == 28

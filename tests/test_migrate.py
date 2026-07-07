@@ -1,3 +1,4 @@
+import re
 import sqlite3
 
 import pytest
@@ -83,6 +84,7 @@ def test_migration_statements_render_real_as_double_precision_for_postgres():
         for statement in statements:
             rendered = _for_backend(statement, "postgres")
             assert "REAL" not in rendered
+            assert not re.search(r"\breal\b", rendered, re.IGNORECASE)
             if "REAL" in statement:
                 assert "DOUBLE PRECISION" in rendered
 
