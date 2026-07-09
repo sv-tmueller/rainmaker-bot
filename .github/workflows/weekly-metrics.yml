@@ -1,0 +1,75 @@
+name: weekly-metrics
+on:
+  schedule:
+    # Monday 04:30 UTC: minute 30 avoids the 3-hourly `0 */3 * * *` scheduled
+    # run, Monday avoids the Sunday 02:00 db-backup run.
+    - cron: "30 4 * * 1"
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  issues: write
+jobs:
+  metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync
+      - name: Fit calibration (ephemeral, local SQLite only)
+        run: |
+          if [ -n "${DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL set on an ephemeral step; refusing (would override --db and write prod)"
+            exit 1
+          fi
+          uv run rainmaker backfill --city all --variable all --leads 0,1,2,3 --db ./metrics.db
+      - name: Replay P/L over history (ephemeral, local SQLite only)
+        run: |
+          if [ -n "${DATABASE_URL:-}" ]; then
+            echo "DATABASE_URL set on an ephemeral step; refusing (would override --db and write prod)"
+            exit 1
+          fi
+          uv run rainmaker backtest-pnl --days 730 --leads 0,1,2,3 --asks trades --db ./metrics.db --reports-dir reports/
+      - name: Report P&L and calibration over settled markets
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          case "$DATABASE_URL" in
+            postgres://*|postgresql://*) ;;
+            *) echo "DATABASE_URL is not a Postgres DSN; refusing to run (would silently write to ephemeral SQLite)"; exit 1 ;;
+          esac
+          uv run rainmaker track
+      - name: Tail calibration check
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          case "$DATABASE_URL" in
+            postgres://*|postgresql://*) ;;
+            *) echo "DATABASE_URL is not a Postgres DSN; refusing to run (would silently write to ephemeral SQLite)"; exit 1 ;;
+          esac
+          uv run rainmaker tail-check
+      - name: Upload report artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: weekly-metrics-${{ github.run_id }}
+          path: reports/
+          if-no-files-found: ignore
+          retention-days: 90
+  notify:
+    runs-on: ubuntu-latest
+    needs: [metrics]
+    if: failure()
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Alert on failure
+        run: |
+          bash scripts/notify_failure.sh \
+            "weekly-metrics" \
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
