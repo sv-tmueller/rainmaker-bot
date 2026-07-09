@@ -455,3 +455,36 @@ the max_edge 0.50 and max_p_win rows sit within run-to-run noise of the
 baseline while every binding cap cuts total P/L. The high-edge, high-confidence
 bets remain the profitable ones under the calibrated replay, confirming the
 direction of the voided 2026-06-28 decision on honest evidence.
+
+## Update 2026-07-09: same-ruler replay after per-model source weighting, within noise (#263)
+
+Method: a re-run of the 2026-07-06 baseline replay on post-#248 code (the
+per-model source weighting from #239/#248, merged 2026-07-06 22:16). Same
+command as the 2026-07-06 baseline. Produced on main at 404694b, with
+calibration cells freshly fitted by `backfill --city all` into a local SQLite.
+
+```
+uv run rainmaker backtest-pnl --days 730 --leads 0,1,2,3 --asks trades
+```
+
+| | 2026-07-06 baseline | 2026-07-09 (post-#248) |
+| --- | ---: | ---: |
+| Closed markets in universe | ~184-217 | 219 |
+| Bets | 210 | 242 |
+| W-L | 190-20 | 215-27 |
+| Win rate | 90% | 89% |
+| Total P/L | +28.71u | +31.27u |
+| ROI | +17.8% | +17.0% |
+| Calibration coverage | 44/44 | 44/44 |
+| Trades fill coverage | 368/736 | 438/876 |
+
+Per-lead detail for the 2026-07-09 run: lead 0 produced 97 bets at 84-13,
++12.21u, +17.0% ROI, mean edge 18%. Lead 1 produced 145 bets at 131-14,
++19.07u, +17.0% ROI, mean edge 15%. Leads 2-3 produced no bets; the archive
+forecast is roughly lead 1 for every lead, same as the baseline runs.
+
+The per-model source weighting left replay economics within run-to-run noise.
+Discovery is non-deterministic, so the universe moved from 184-219 markets
+across runs and the window end shifted by 3 days. No regression, no material
+gain. Total P/L is higher on a slightly larger universe, but per-bet
+economics stay flat.
