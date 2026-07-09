@@ -1,0 +1,44 @@
+[
+  {
+    "marketId": "market-w",
+    "runId": "run-w1",
+    "startedAt": "2026-06-01T00:00:00Z",
+    "bucket": "70-72",
+    "side": "YES",
+    "pWin": 0.6,
+    "edge": 0.1,
+    "won": false,
+    "ask": 0.375,
+    "title": "Market W",
+    "date": "2026-06-01",
+    "settledAt": "2026-06-02T12:00:00Z"
+  },
+  {
+    "marketId": "market-w",
+    "runId": "run-w2",
+    "startedAt": "2026-06-01T06:00:00Z",
+    "bucket": "70-72",
+    "side": "YES",
+    "pWin": 0.75,
+    "edge": 0.2,
+    "won": true,
+    "ask": 0.25,
+    "title": "Market W",
+    "date": "2026-06-01",
+    "settledAt": "2026-06-02T12:00:00Z"
+  },
+  {
+    "marketId": "market-l",
+    "runId": "run-l1",
+    "startedAt": "2026-06-05T00:00:00Z",
+    "bucket": "60-62",
+    "side": "NO",
+    "pWin": 0.55,
+    "edge": 0.05,
+    "won": false,
+    "ask": 0.5,
+    "title": "Market L",
+    "date": "2026-06-05",
+    "settledAt": "2026-06-06T12:00:00Z"
+  }
+]
