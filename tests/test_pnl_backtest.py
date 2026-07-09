@@ -1320,9 +1320,7 @@ def test_fetch_fills_tolerant_retries_408_then_succeeds(httpx_mock):
     httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), status_code=408)
     httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), json=_trades_fixture_raw())
     with httpx.Client() as client:
-        fills = pnl_backtest_mod._fetch_fills_tolerant(
-            "0xcond_d", "d0", client, sleep=_noop_sleep
-        )
+        fills = pnl_backtest_mod._fetch_fills_tolerant("0xcond_d", "d0", client, sleep=_noop_sleep)
     assert len(fills) == 2
     assert len(httpx_mock.get_requests()) == 2
 
@@ -1332,9 +1330,7 @@ def test_fetch_fills_tolerant_two_408s_degrades_to_empty(httpx_mock):
     httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), status_code=408)
     httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), status_code=408)
     with httpx.Client() as client:
-        fills = pnl_backtest_mod._fetch_fills_tolerant(
-            "0xcond_d", "d0", client, sleep=_noop_sleep
-        )
+        fills = pnl_backtest_mod._fetch_fills_tolerant("0xcond_d", "d0", client, sleep=_noop_sleep)
     assert fills == []
     assert len(httpx_mock.get_requests()) == 2
 
@@ -1357,9 +1353,7 @@ def test_fetch_fills_tolerant_read_timeout_degrades_to_empty(httpx_mock):
         is_reusable=True,
     )
     with httpx.Client() as client:
-        fills = pnl_backtest_mod._fetch_fills_tolerant(
-            "0xcond_d", "d0", client, sleep=_noop_sleep
-        )
+        fills = pnl_backtest_mod._fetch_fills_tolerant("0xcond_d", "d0", client, sleep=_noop_sleep)
     assert fills == []
     assert len(httpx_mock.get_requests()) == 2
 

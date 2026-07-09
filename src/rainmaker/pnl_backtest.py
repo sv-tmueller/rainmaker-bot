@@ -36,6 +36,7 @@ Caveats baked in by design:
 """
 
 import json
+import time
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from datetime import date, datetime
@@ -60,6 +61,13 @@ from rainmaker.ranking.edge import RankedOutcome, evaluate_market
 # timestamp; an hourly series puts every midday target well inside it.
 SNAP_TOLERANCE_S = 12 * 3600
 SECONDS_PER_DAY = 86400
+
+# _fetch_fills_tolerant retry shape (#271): the data-api trades endpoint has
+# been observed to 408 transiently. Two attempts with a 1s backoff catches a
+# blip without meaningfully slowing a full replay (worst case, every fetch in
+# an otherwise-healthy replay pays one extra second).
+_FILL_FETCH_ATTEMPTS = 2
+_FILL_FETCH_BACKOFF_S = 1.0
 
 
 class Bet(BaseModel):
@@ -170,6 +178,41 @@ def _snap_fills(fill_list: list[FillPoint], target_ts: int) -> float | None:
     """Latest BUY fill strictly before target_ts within SNAP_TOLERANCE_S, or None."""
     points = [PricePoint(t=f.t, p=f.p) for f in fill_list]
     return last_before(points, target_ts, max_age_s=SNAP_TOLERANCE_S)
+
+
+def _fetch_fills_tolerant(
+    condition_id: str,
+    token_id: str,
+    client: httpx.Client,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[FillPoint]:
+    """fetch_fills, tolerant of transient trades-endpoint failures.
+
+    Retries `httpx.TransportError` and `httpx.HTTPStatusError` with status
+    408, 429, or >= 500 up to `_FILL_FETCH_ATTEMPTS` times, `sleep`ing
+    `_FILL_FETCH_BACKOFF_S` between attempts. A persistent failure returns
+    `[]` rather than raising: replay_market's empty-history path already
+    prices that token's side from mid instead, and fill_coverage honestly
+    reports the miss, so this degrades gracefully instead of aborting the
+    whole backtest.
+
+    Everything else (other 4xx: a contract regression, a wrong conditionId,
+    or an IP block; JSON decode errors; pydantic validation errors) is not
+    transient and is re-raised immediately so it still surfaces.
+    """
+    for attempt in range(_FILL_FETCH_ATTEMPTS):
+        try:
+            return fetch_fills(condition_id, token_id, client)
+        except httpx.TransportError:
+            pass
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status not in (408, 429) and status < 500:
+                raise
+        if attempt < _FILL_FETCH_ATTEMPTS - 1:
+            sleep(_FILL_FETCH_BACKOFF_S)
+    return []
 
 
 def _outcome_won(outcome: RankedOutcome, actual: float) -> bool:
@@ -519,10 +562,12 @@ def backtest_pnl(
                 for yes_token_id in candidate_token_ids:
                     cond_id = cond_ids.get(yes_token_id)
                     if cond_id:
-                        fill_histories[yes_token_id] = fetch_fills(cond_id, yes_token_id, client)
+                        fill_histories[yes_token_id] = _fetch_fills_tolerant(
+                            cond_id, yes_token_id, client
+                        )
                         for bucket in market.buckets:
                             if bucket.yes_token_id == yes_token_id:
-                                fill_histories[bucket.no_token_id] = fetch_fills(
+                                fill_histories[bucket.no_token_id] = _fetch_fills_tolerant(
                                     cond_id, bucket.no_token_id, client
                                 )
                                 break
