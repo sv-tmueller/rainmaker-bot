@@ -1299,3 +1299,168 @@ def test_backtest_pnl_skips_intl_stations_before_venue_actuals(
     # US station contributed markets; intl contributed none.
     assert result is not None
     assert result.n_markets >= 1
+
+
+# Phase H - tolerant fill fetch (#271): retry transient trades-endpoint
+# failures, then degrade to no fills rather than aborting the whole replay.
+
+
+def _noop_sleep(seconds: float) -> None:
+    pass
+
+
+def test_fill_fetch_tolerant_constants() -> None:
+    """Shape agreed in the sub-plan: 2 attempts total, 1.0s backoff."""
+    assert pnl_backtest_mod._FILL_FETCH_ATTEMPTS == 2
+    assert pnl_backtest_mod._FILL_FETCH_BACKOFF_S == pytest.approx(1.0)
+
+
+def test_fetch_fills_tolerant_retries_408_then_succeeds(httpx_mock):
+    """A single 408 is retried and the next attempt's fills are returned."""
+    httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), status_code=408)
+    httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), json=_trades_fixture_raw())
+    with httpx.Client() as client:
+        fills = pnl_backtest_mod._fetch_fills_tolerant(
+            "0xcond_d", "d0", client, sleep=_noop_sleep
+        )
+    assert len(fills) == 2
+    assert len(httpx_mock.get_requests()) == 2
+
+
+def test_fetch_fills_tolerant_two_408s_degrades_to_empty(httpx_mock):
+    """Persistent 408s exhaust the retry budget and degrade to no fills."""
+    httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), status_code=408)
+    httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), status_code=408)
+    with httpx.Client() as client:
+        fills = pnl_backtest_mod._fetch_fills_tolerant(
+            "0xcond_d", "d0", client, sleep=_noop_sleep
+        )
+    assert fills == []
+    assert len(httpx_mock.get_requests()) == 2
+
+
+def test_fetch_fills_tolerant_404_raises(httpx_mock):
+    """A non-retryable 4xx (contract regression, bad conditionId, IP block) surfaces."""
+    httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), status_code=404)
+    with httpx.Client() as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            pnl_backtest_mod._fetch_fills_tolerant("0xcond_d", "d0", client, sleep=_noop_sleep)
+    # No retry spent on a non-retryable status: exactly one request made.
+    assert len(httpx_mock.get_requests()) == 1
+
+
+def test_fetch_fills_tolerant_read_timeout_degrades_to_empty(httpx_mock):
+    """A transport-level failure (httpx.TransportError) also retries then degrades."""
+    httpx_mock.add_exception(
+        httpx.ReadTimeout("timed out"),
+        url=re.compile(re.escape(TRADES_URL)),
+        is_reusable=True,
+    )
+    with httpx.Client() as client:
+        fills = pnl_backtest_mod._fetch_fills_tolerant(
+            "0xcond_d", "d0", client, sleep=_noop_sleep
+        )
+    assert fills == []
+    assert len(httpx_mock.get_requests()) == 2
+
+
+def _closed_events_one_market_persistently_408() -> list[dict[str, Any]]:
+    """Both March markets carry conditionIds, but only March 2's is fetchable.
+
+    March 3's "38F or higher" sub-market is keyed to a distinct conditionId
+    ("0xcond_e") that the trades mock always 408s, so its fills degrade to []
+    while March 2 ("0xcond_d") keeps its real fixture fills.
+    """
+    events = _closed_events_with_condids()
+    for ev in events:
+        if ev.get("slug", "") == "highest-temperature-in-nyc-on-march-3-2026":
+            for m in ev.get("markets", []):
+                tokens = json.loads(m["clobTokenIds"])
+                if tokens[0] == "d0":
+                    m["conditionId"] = "0xcond_e"
+    return events
+
+
+def _trades_partial_degrade_callback(request: httpx.Request) -> httpx.Response:
+    if request.url.params.get("market") == "0xcond_e":
+        return httpx.Response(408)
+    return httpx.Response(200, json=_trades_fixture_raw())
+
+
+def test_backtest_pnl_trades_mode_one_market_degrades_other_keeps_fills(
+    monkeypatch: pytest.MonkeyPatch, httpx_mock: Any
+) -> None:
+    """One market's fill fetches persistently 408; the other's succeed.
+
+    The degraded market (March 3, conditionId 0xcond_e) falls all the way
+    back to mid pricing (fill_coverage.fills_used contributes 0 for it); the
+    healthy market (March 2, conditionId 0xcond_d) keeps its real fills
+    exactly as in test_backtest_pnl_trades_mode_uses_fill_as_ask. The replay
+    completes rather than aborting.
+    """
+    monkeypatch.setattr(pnl_backtest_mod, "_FILL_FETCH_BACKOFF_S", 0.0)
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+    )
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=_asos_fixture())
+    httpx_mock.add_callback(
+        _clob_callback, url=re.compile(re.escape(CLOB_PRICES_URL)), is_reusable=True
+    )
+    httpx_mock.add_callback(
+        _trades_partial_degrade_callback,
+        url=re.compile(re.escape(TRADES_URL)),
+        is_reusable=True,
+    )
+    with httpx.Client() as client:
+        result = backtest_pnl(
+            _closed_events_one_market_persistently_408(),
+            client,
+            on_or_after=date(2026, 3, 1),
+            leads=(0, 1, 2, 3),
+            ask_source="trades",
+            calibration_lookup=lambda icao, lead: _full_cal(),
+        )
+    assert result is not None
+    assert result.fill_coverage is not None
+    # Two markets, four leads each; the fetch outcome does not change this count.
+    assert result.fill_coverage.n_leads == 8
+    # Only March 2 (0xcond_d) contributes fill coverage; March 3 degrades to 0.
+    assert result.fill_coverage.fills_used == 2
+    # March 2's lead-0 NO ask is still the real 0.90 fill; March 3 is all-mid,
+    # so only one 0.05 reduction (vs 0.10 in the healthy-both-markets test)
+    # applies to the 1.20 mid-mode baseline.
+    assert result.overall.total_pnl == pytest.approx(1.15)
+
+
+def test_backtest_pnl_trades_mode_all_408_degrades_to_mid_totals(
+    monkeypatch: pytest.MonkeyPatch, httpx_mock: Any
+) -> None:
+    """Every trades fetch persistently 408s: the whole replay degrades to mid.
+
+    fills_used is 0 everywhere and the total_pnl matches the mid-mode result
+    for the same events (1.20), because every ask falls back to mid+spread.
+    """
+    monkeypatch.setattr(pnl_backtest_mod, "_FILL_FETCH_BACKOFF_S", 0.0)
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
+    )
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=_asos_fixture())
+    httpx_mock.add_callback(
+        _clob_callback, url=re.compile(re.escape(CLOB_PRICES_URL)), is_reusable=True
+    )
+    httpx_mock.add_response(
+        url=re.compile(re.escape(TRADES_URL)), status_code=408, is_reusable=True
+    )
+    with httpx.Client() as client:
+        result = backtest_pnl(
+            _closed_events_with_condids(),
+            client,
+            on_or_after=date(2026, 3, 1),
+            leads=(0, 1, 2, 3),
+            ask_source="trades",
+            calibration_lookup=lambda icao, lead: _full_cal(),
+        )
+    assert result is not None
+    assert result.fill_coverage is not None
+    assert result.fill_coverage.fills_used == 0
+    assert result.overall.total_pnl == pytest.approx(1.20)
