@@ -36,6 +36,7 @@ Caveats baked in by design:
 """
 
 import json
+import sys
 import time
 from collections import defaultdict
 from collections.abc import Callable, Sequence
@@ -189,29 +190,36 @@ def _fetch_fills_tolerant(
 ) -> list[FillPoint]:
     """fetch_fills, tolerant of transient trades-endpoint failures.
 
-    Retries `httpx.TransportError` and `httpx.HTTPStatusError` with status
-    408, 429, or >= 500 up to `_FILL_FETCH_ATTEMPTS` times, `sleep`ing
-    `_FILL_FETCH_BACKOFF_S` between attempts. A persistent failure returns
-    `[]` rather than raising: replay_market's empty-history path already
-    prices that token's side from mid instead, and fill_coverage honestly
-    reports the miss, so this degrades gracefully instead of aborting the
-    whole backtest.
+    Makes up to `_FILL_FETCH_ATTEMPTS` attempts in total, retrying
+    `httpx.TransportError` and `httpx.HTTPStatusError` with status 408, 429,
+    or >= 500, sleeping `_FILL_FETCH_BACKOFF_S` between attempts. A persistent
+    failure prints one warning to stderr and returns `[]` rather than
+    raising: replay_market's empty-history path already prices that token's
+    side from mid instead, and fill_coverage honestly reports the miss, so
+    this degrades visibly but gracefully instead of aborting the whole
+    backtest.
 
     Everything else (other 4xx: a contract regression, a wrong conditionId,
     or an IP block; JSON decode errors; pydantic validation errors) is not
     transient and is re-raised immediately so it still surfaces.
     """
+    last_exc: Exception = ValueError("unreachable: _FILL_FETCH_ATTEMPTS must be >= 1")
     for attempt in range(_FILL_FETCH_ATTEMPTS):
         try:
             return fetch_fills(condition_id, token_id, client)
-        except httpx.TransportError:
-            pass
+        except httpx.TransportError as exc:
+            last_exc = exc
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             if status not in (408, 429) and status < 500:
                 raise
+            last_exc = exc
         if attempt < _FILL_FETCH_ATTEMPTS - 1:
             sleep(_FILL_FETCH_BACKOFF_S)
+    print(
+        f"fills unavailable for market {condition_id} token {token_id}, using mid: {last_exc}",
+        file=sys.stderr,
+    )
     return []
 
 
