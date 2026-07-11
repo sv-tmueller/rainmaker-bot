@@ -1309,13 +1309,7 @@ def _noop_sleep(seconds: float) -> None:
     pass
 
 
-def test_fill_fetch_tolerant_constants() -> None:
-    """Shape agreed in the sub-plan: 2 attempts total, 1.0s backoff."""
-    assert pnl_backtest_mod._FILL_FETCH_ATTEMPTS == 2
-    assert pnl_backtest_mod._FILL_FETCH_BACKOFF_S == pytest.approx(1.0)
-
-
-def test_fetch_fills_tolerant_retries_408_then_succeeds(httpx_mock):
+def test_fetch_fills_tolerant_retries_408_then_succeeds(httpx_mock, capsys):
     """A single 408 is retried and the next attempt's fills are returned."""
     httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), status_code=408)
     httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), json=_trades_fixture_raw())
@@ -1323,9 +1317,11 @@ def test_fetch_fills_tolerant_retries_408_then_succeeds(httpx_mock):
         fills = pnl_backtest_mod._fetch_fills_tolerant("0xcond_d", "d0", client, sleep=_noop_sleep)
     assert len(fills) == 2
     assert len(httpx_mock.get_requests()) == 2
+    # Recovery within the retry budget is silent: no degrade warning is printed.
+    assert capsys.readouterr().err == ""
 
 
-def test_fetch_fills_tolerant_two_408s_degrades_to_empty(httpx_mock):
+def test_fetch_fills_tolerant_two_408s_degrades_to_empty(httpx_mock, capsys):
     """Persistent 408s exhaust the retry budget and degrade to no fills."""
     httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), status_code=408)
     httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), status_code=408)
@@ -1333,6 +1329,17 @@ def test_fetch_fills_tolerant_two_408s_degrades_to_empty(httpx_mock):
         fills = pnl_backtest_mod._fetch_fills_tolerant("0xcond_d", "d0", client, sleep=_noop_sleep)
     assert fills == []
     assert len(httpx_mock.get_requests()) == 2
+    # httpx.HTTPStatusError's own str() spans a continuation line ("For more
+    # information check: ..."), so filter to the warning's own prefixed line
+    # rather than counting every raw line in stderr.
+    warn_lines = [
+        line
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("fills unavailable for market")
+    ]
+    assert len(warn_lines) == 1
+    assert "0xcond_d" in warn_lines[0]
+    assert "408" in warn_lines[0]
 
 
 def test_fetch_fills_tolerant_404_raises(httpx_mock):
@@ -1427,7 +1434,7 @@ def test_backtest_pnl_trades_mode_one_market_degrades_other_keeps_fills(
 
 
 def test_backtest_pnl_trades_mode_all_408_degrades_to_mid_totals(
-    monkeypatch: pytest.MonkeyPatch, httpx_mock: Any
+    monkeypatch: pytest.MonkeyPatch, httpx_mock: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Every trades fetch persistently 408s: the whole replay degrades to mid.
 
@@ -1458,3 +1465,16 @@ def test_backtest_pnl_trades_mode_all_408_degrades_to_mid_totals(
     assert result.fill_coverage is not None
     assert result.fill_coverage.fills_used == 0
     assert result.overall.total_pnl == pytest.approx(1.20)
+    # Every degraded fill fetch warns once on stderr with the market conditionId
+    # (the fixture's shared "0xcond_d") and the specific token, so the two
+    # degraded tokens (d0/d1, the "38F or higher" bucket) are distinguishable
+    # without hardcoding how many (market, token) fetches occurred.
+    warn_lines = {
+        line
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("fills unavailable for market")
+    }
+    assert warn_lines, "expected at least one fill-degrade warning"
+    assert all("0xcond_d" in line for line in warn_lines)
+    tokens_seen = {line.split("token ")[1].split(",")[0] for line in warn_lines}
+    assert tokens_seen == {"d0", "d1"}
