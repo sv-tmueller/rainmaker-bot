@@ -164,15 +164,22 @@ def _filter_venue(rows: list[dict[str, Any]], venue: str | None) -> list[dict[st
     return [r for r in rows if (r.get("venue") or "polymarket") == venue]
 
 
-def compute_pnl(conn: Conn, venue: str | None = None) -> dict[str, Any]:
+def compute_pnl(
+    conn: Conn, venue: str | None = None, *, rows: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """Hypothetical P&L over recommended bets at a flat one-unit stake.
 
-    With venue set ("polymarket" / "kalshi"), restrict to that venue's markets."""
+    With venue set ("polymarket" / "kalshi"), restrict to that venue's markets.
+    Pass rows= a pre-fetched settled_rows(conn) result to skip the query (#277:
+    lets one process share one full-history read across several calls); conn is
+    then only used if rows is None.
+    """
     total_pnl = 0.0
     total_staked = 0.0
     wins = 0
     n = 0
-    for r in _best_per_market_run(_filter_venue(settled_rows(conn), venue)):
+    all_rows = rows if rows is not None else settled_rows(conn)
+    for r in _best_per_market_run(_filter_venue(all_rows, venue)):
         n += 1
         ask = r["ask"]
         total_staked += ask
@@ -191,11 +198,17 @@ def compute_pnl(conn: Conn, venue: str | None = None) -> dict[str, Any]:
     }
 
 
-def compute_calibration(conn: Conn, venue: str | None = None) -> dict[str, Any]:
+def compute_calibration(
+    conn: Conn, venue: str | None = None, *, rows: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     """Brier over the settled YES bucket-predictions, plus recommended hit rate.
 
-    With venue set, restrict to that venue's markets."""
-    rows = _filter_venue(settled_rows(conn), venue)
+    With venue set, restrict to that venue's markets. Pass rows= a pre-fetched
+    settled_rows(conn) result to skip the query (#277); conn is then only used
+    if rows is None.
+    """
+    all_rows = rows if rows is not None else settled_rows(conn)
+    rows = _filter_venue(all_rows, venue)
     if not rows:
         return {"n": 0, "brier": None, "hit_rate": None}
     # Brier measures forecast calibration over the YES bucket-predictions; each NO
@@ -871,8 +884,11 @@ def compute_tail_calibration(conn: Conn, by_hour: bool = False) -> dict[str, lis
 
 def write_snapshot(conn: Conn, on_date: str, created_at: str) -> dict[str, Any]:
     """Compute the current P&L/calibration and upsert a snapshot row for on_date."""
-    pnl = compute_pnl(conn)
-    cal = compute_calibration(conn)
+    # One full-history read shared by both calls below (#277: this halved the
+    # settled-history reads a snapshot run issues).
+    rows = settled_rows(conn)
+    pnl = compute_pnl(conn, rows=rows)
+    cal = compute_calibration(conn, rows=rows)
     # save_accuracy commits internally after each row; insert the snapshot only
     # after the loop so a mid-loop failure cannot leave a committed snapshot row
     # without its corresponding accuracy rows.

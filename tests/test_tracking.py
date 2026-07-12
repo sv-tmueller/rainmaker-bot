@@ -9,6 +9,7 @@ from rainmaker.tracking import (
     compute_attribution,
     compute_calibration,
     compute_pnl,
+    settled_rows,
 )
 
 
@@ -109,6 +110,36 @@ def test_raw_by_market_id_chunks_large_id_lists():
     assert len(calls) == 2  # one full chunk, one remainder
     assert len(result) == n
     assert result["m0"] == "raw-m0"
+
+
+class _BombConn:
+    """A Conn stand-in that fails if anything touches the store."""
+
+    def execute(self, *args, **kwargs):
+        raise AssertionError("must not query the store when rows= is pre-fetched")
+
+
+def test_compute_pnl_accepts_prefetched_rows_without_querying():
+    conn = connect(":memory:")
+    _setup(conn)
+    rows = settled_rows(conn)
+    fresh_pnl = compute_pnl(conn)
+    conn.close()
+
+    pnl = compute_pnl(_BombConn(), rows=rows)
+    assert pnl == fresh_pnl
+    assert pnl["n_bets"] == 1
+
+
+def test_compute_calibration_accepts_prefetched_rows_without_querying():
+    conn = connect(":memory:")
+    _setup(conn)
+    rows = settled_rows(conn)
+    fresh_cal = compute_calibration(conn)
+    conn.close()
+
+    cal = compute_calibration(_BombConn(), rows=rows)
+    assert cal == fresh_cal
 
 
 def test_compute_pnl_collapses_correlated_bets_to_best_edge():
@@ -617,6 +648,27 @@ def test_compute_live_accuracy_skips_bad_rows():
     # both bad rows are skipped; only the good m1 sample remains
     assert len(rows) == 1
     assert rows[0]["accuracy"].n == 1
+
+
+def test_write_snapshot_fetches_settled_rows_exactly_once(monkeypatch):
+    """One full-history read shared by compute_pnl and compute_calibration (#277)."""
+    import rainmaker.tracking as tracking_mod
+    from rainmaker.tracking import settled_rows as real_settled_rows
+    from rainmaker.tracking import write_snapshot
+
+    fetch_count = 0
+
+    def _spy(conn):
+        nonlocal fetch_count
+        fetch_count += 1
+        return real_settled_rows(conn)
+
+    conn = connect(":memory:")
+    _setup_live(conn)
+    monkeypatch.setattr(tracking_mod, "settled_rows", _spy)
+    write_snapshot(conn, "2026-06-04", "t")
+    conn.close()
+    assert fetch_count == 1
 
 
 def test_write_snapshot_snapshot_after_accuracy(monkeypatch):
