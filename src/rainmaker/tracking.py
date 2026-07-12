@@ -86,16 +86,19 @@ def _latest_run_per_market_day(rows: list[dict[str, Any]]) -> list[dict[str, Any
     return [r for r in rows if (r["market_id"], r["run_id"]) in keep]
 
 
-def _settled_rows(conn: Conn) -> list[dict[str, Any]]:
+def settled_rows(conn: Conn) -> list[dict[str, Any]]:
     # Match the price to the prediction's side; legacy rows with a null side are YES.
-    # city, settlement_date, and raw are carried for compute_attribution and compute_clv;
-    # compute_pnl and compute_calibration ignore these extra keys.
+    # city and settlement_date are carried for compute_attribution; compute_pnl and
+    # compute_calibration ignore these extra keys. markets.raw is NOT selected here:
+    # it duplicates the full market JSON onto every row (#277: egress). compute_clv
+    # is the only caller that needs it, and it fetches raw separately, bounded to
+    # the deduped bet market ids, via _raw_by_market_id.
     rows = conn.execute(
         "SELECT p.market_id AS market_id, p.run_id AS run_id, p.bucket AS bucket, "
         "p.side AS side, p.p_win AS p_win, p.edge AS edge, "
         "p.recommended AS recommended, m.variable AS variable, m.venue AS venue, "
         "m.outcome_spec AS outcome_spec, m.city AS city, "
-        "m.settlement_date AS settlement_date, m.raw AS raw, r.started_at AS started_at, "
+        "m.settlement_date AS settlement_date, r.started_at AS started_at, "
         "pr.price AS ask, o.actual_value AS actual_value "
         "FROM predictions p "
         "JOIN markets m ON m.id = p.market_id "
@@ -107,6 +110,28 @@ def _settled_rows(conn: Conn) -> list[dict[str, Any]]:
         "WHERE p.bucket IS NOT NULL AND pr.price IS NOT NULL"
     ).fetchall()
     return _latest_run_per_market_day([dict(r) for r in rows])
+
+
+_RAW_FETCH_CHUNK_SIZE = 500  # stay under SQLite's default bound-variable limit
+
+
+def _raw_by_market_id(conn: Conn, market_ids: list[str]) -> dict[str, str | None]:
+    """Fetch markets.raw for exactly the given market ids, chunked and bounded.
+
+    Used only by compute_clv, so a full-history call never carries this payload
+    (#277). An empty id list issues no query.
+    """
+    out: dict[str, str | None] = {}
+    unique_ids = list(dict.fromkeys(market_ids))  # de-dupe, preserve order
+    for start in range(0, len(unique_ids), _RAW_FETCH_CHUNK_SIZE):
+        chunk = unique_ids[start : start + _RAW_FETCH_CHUNK_SIZE]
+        placeholders = ",".join("?" * len(chunk))
+        rows = conn.execute(
+            f"SELECT id, raw FROM markets WHERE id IN ({placeholders})", chunk
+        ).fetchall()
+        for r in rows:
+            out[r["id"]] = r["raw"]
+    return out
 
 
 def _edge_key(r: dict[str, Any]) -> tuple[float, float, str, str]:
@@ -147,7 +172,7 @@ def compute_pnl(conn: Conn, venue: str | None = None) -> dict[str, Any]:
     total_staked = 0.0
     wins = 0
     n = 0
-    for r in _best_per_market_run(_filter_venue(_settled_rows(conn), venue)):
+    for r in _best_per_market_run(_filter_venue(settled_rows(conn), venue)):
         n += 1
         ask = r["ask"]
         total_staked += ask
@@ -170,7 +195,7 @@ def compute_calibration(conn: Conn, venue: str | None = None) -> dict[str, Any]:
     """Brier over the settled YES bucket-predictions, plus recommended hit rate.
 
     With venue set, restrict to that venue's markets."""
-    rows = _filter_venue(_settled_rows(conn), venue)
+    rows = _filter_venue(settled_rows(conn), venue)
     if not rows:
         return {"n": 0, "brier": None, "hit_rate": None}
     # Brier measures forecast calibration over the YES bucket-predictions; each NO
@@ -300,7 +325,7 @@ def compute_attribution(conn: Conn) -> dict[str, list[dict[str, Any]]]:
     Each dimension is an exhaustive partition, so per-dimension totals reconcile
     with compute_pnl's headline n/wins/losses/pnl/roi.
     """
-    bets = _best_per_market_run(_settled_rows(conn))
+    bets = _best_per_market_run(settled_rows(conn))
     # Attach bucketed keys for each attribution dimension
     tagged: list[dict[str, Any]] = []
     for r in bets:
@@ -404,12 +429,13 @@ def compute_clv(conn: Conn, client: httpx.Client, lead_hours: int = 24) -> dict[
     """
     _EPS = 1e-9  # threshold for "advised == close" (see n_coincident in docstring)
 
-    bets = _best_per_market_run(_filter_venue(_settled_rows(conn), "polymarket"))
+    bets = _best_per_market_run(_filter_venue(settled_rows(conn), "polymarket"))
     n_bets = len(bets)
+    raw_by_market = _raw_by_market_id(conn, [r["market_id"] for r in bets])
 
     clv_rows: list[dict[str, Any]] = []
     for r in bets:
-        token = _yes_token_for_bucket(r.get("raw"), r["bucket"])
+        token = _yes_token_for_bucket(raw_by_market.get(r["market_id"]), r["bucket"])
         if token is None:
             continue
         settlement_date = r["settlement_date"]

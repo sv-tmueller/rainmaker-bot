@@ -40,6 +40,77 @@ def _setup(conn):
     conn.commit()
 
 
+def test_settled_rows_has_no_raw_key():
+    """The full-history query must not carry markets.raw (#277: egress)."""
+    from rainmaker.tracking import settled_rows
+
+    conn = connect(":memory:")
+    _setup(conn)
+    rows = settled_rows(conn)
+    conn.close()
+    assert rows
+    assert "raw" not in rows[0]
+
+
+def test_raw_by_market_id_looks_up_only_requested_ids():
+    from rainmaker.tracking import _raw_by_market_id
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, raw) VALUES (?, ?, ?, ?, ?)",
+        ("m1", "NYC", "TMAX", "2026-05-30", "raw1"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, raw) VALUES (?, ?, ?, ?, ?)",
+        ("m2", "NYC", "TMAX", "2026-05-30", "raw2"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, raw) VALUES (?, ?, ?, ?, ?)",
+        ("m3", "NYC", "TMAX", "2026-05-30", "raw3"),
+    )
+    conn.commit()
+    result = _raw_by_market_id(conn, ["m1", "m2"])
+    conn.close()
+    assert result == {"m1": "raw1", "m2": "raw2"}  # m3 never fetched
+
+
+def test_raw_by_market_id_empty_list_issues_no_query():
+    from rainmaker.tracking import _raw_by_market_id
+
+    class _BombConn:
+        def execute(self, *args, **kwargs):
+            raise AssertionError("must not query the store for an empty id list")
+
+    assert _raw_by_market_id(_BombConn(), []) == {}
+
+
+def test_raw_by_market_id_chunks_large_id_lists():
+    """Chunk to stay under SQLite's bound-variable limit; verify multiple execute calls."""
+    from rainmaker.tracking import _RAW_FETCH_CHUNK_SIZE, _raw_by_market_id
+
+    calls: list[list[str]] = []
+
+    class _FakeCursor:
+        def __init__(self, ids: list[str]) -> None:
+            self._ids = ids
+
+        def fetchall(self):
+            return [{"id": i, "raw": f"raw-{i}"} for i in self._ids]
+
+    class _RecordingConn:
+        def execute(self, sql, params=()):
+            calls.append(list(params))
+            return _FakeCursor(list(params))
+
+    n = _RAW_FETCH_CHUNK_SIZE + 5
+    ids = [f"m{i}" for i in range(n)]
+    result = _raw_by_market_id(_RecordingConn(), ids)
+    assert len(calls) == 2  # one full chunk, one remainder
+    assert len(result) == n
+    assert result["m0"] == "raw-m0"
+
+
 def test_compute_pnl_collapses_correlated_bets_to_best_edge():
     conn = connect(":memory:")
     _setup(conn)  # m1/r1: 70-71 (edge .20, ask .40, wins) and 72-73 (edge .10, loses)
