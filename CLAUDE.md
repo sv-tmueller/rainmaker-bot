@@ -13,10 +13,12 @@ to the market price, and produces a daily report of bets ranked by edge
 Status: MVP 1.0 advisory is live for 11 US cities (phases 0-4 done, the Phase 5
 city expansion, the TMIN slice, and the monthly-precipitation slice; only the
 daily-precipitation form remains). MVP 2.0 is
-code-complete: a scheduled GitHub Actions run (every 3h) persists to Supabase Postgres, settles
-past markets against NOAA actuals, and writes a daily P&L/calibration snapshot;
-the read-only dashboard lives in `dashboard/` (the Vercel + Cloudflare Access
-deploy is an operator step). MVP 3.0 (automated trading) has not started.
+code-complete: a scheduled GitHub Actions run (every 3h) persists to Supabase
+Postgres and settles past markets against NOAA actuals; a separate daily run
+writes the P&L/calibration snapshot (moved off the 3h cadence to bound
+Supabase egress); the read-only dashboard lives in `dashboard/` (the Vercel +
+Cloudflare Access deploy is an operator step). MVP 3.0 (automated trading) has
+not started.
 
 ## Working principles
 
@@ -165,7 +167,8 @@ src/rainmaker/
     prune.py          drop all-but-latest intraday rows per (settled market, UTC day)
 dashboard/            read-only Next.js dashboard (Vercel, behind Cloudflare Access)
 .github/workflows/
-  daily-run.yml       scheduled cron (every 3h): run -> settle -> prune -> snapshot against Supabase
+  daily-run.yml       scheduled cron (every 3h): run -> settle -> prune against Supabase
+  daily-diagnostics.yml  scheduled cron (daily): snapshot -> track -> tail-check against Supabase
 tests/
   fixtures/           saved API responses (NWS, Open-Meteo, NCEI, Polymarket)
   test_*.py           unit and I/O tests (pytest-httpx for mocked HTTP)

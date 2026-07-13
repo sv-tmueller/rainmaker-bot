@@ -417,10 +417,11 @@ def test_snapshot_command_writes_and_reports(monkeypatch, tmp_path, capsys):
 def test_track_command_reports_pnl_and_calibration(monkeypatch, tmp_path, capsys):
     # overall (venue=None) has bets; the per-venue calls return none so only the
     # overall line prints (the per-venue breakdown is covered in test_tracking).
+    monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
     monkeypatch.setattr(
         cli,
         "compute_pnl",
-        lambda conn, venue=None: {
+        lambda conn, venue=None, *, rows=None: {
             "n_bets": 2 if venue is None else 0,
             "wins": 1,
             "losses": 1,
@@ -429,12 +430,45 @@ def test_track_command_reports_pnl_and_calibration(monkeypatch, tmp_path, capsys
         },
     )
     monkeypatch.setattr(
-        cli, "compute_calibration", lambda conn: {"n": 2, "brier": 0.127, "hit_rate": 0.5}
+        cli,
+        "compute_calibration",
+        lambda conn, *, rows=None: {"n": 2, "brier": 0.127, "hit_rate": 0.5},
     )
     cli.main(["track", "--db", str(tmp_path / "t.db")])
     out = capsys.readouterr().out
     assert "P&L: 2 bets, 1-1" in out
     assert "Brier 0.127" in out
+
+
+def test_track_command_fetches_settled_rows_exactly_once(monkeypatch, tmp_path, capsys):
+    """The acceptance criterion: at most one full-history settled read per run (#277)."""
+    fetch_count = 0
+
+    def _settled_rows(conn):
+        nonlocal fetch_count
+        fetch_count += 1
+        return []
+
+    monkeypatch.setattr(cli, "settled_rows", _settled_rows)
+    monkeypatch.setattr(
+        cli,
+        "compute_pnl",
+        lambda conn, venue=None, *, rows=None: {
+            "n_bets": 0,
+            "wins": 0,
+            "losses": 0,
+            "total_pnl": 0.0,
+            "roi": 0.0,
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "compute_calibration",
+        lambda conn, *, rows=None: {"n": 0, "brier": None, "hit_rate": None},
+    )
+    cli.main(["track", "--db", str(tmp_path / "t.db")])
+    capsys.readouterr()
+    assert fetch_count == 1
 
 
 def test_prune_command_reports_rows_pruned(monkeypatch, tmp_path, capsys):

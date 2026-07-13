@@ -68,6 +68,7 @@ from rainmaker.tracking import (
     compute_clv,
     compute_pnl,
     compute_tail_calibration,
+    settled_rows,
     write_snapshot,
 )
 
@@ -490,9 +491,12 @@ def _track(db_path: str) -> None:
     conn = connect(db_path)
     try:
         init_schema(conn)
-        pnl = compute_pnl(conn)
-        cal = compute_calibration(conn)
-        by_venue = {v: compute_pnl(conn, venue=v) for v in ("polymarket", "kalshi")}
+        # Fetch the full settled history once and share it across all four calls
+        # below (#277: the cron ran this query 4x per `track` invocation).
+        rows = settled_rows(conn)
+        pnl = compute_pnl(conn, rows=rows)
+        cal = compute_calibration(conn, rows=rows)
+        by_venue = {v: compute_pnl(conn, venue=v, rows=rows) for v in ("polymarket", "kalshi")}
     finally:
         conn.close()
     print(

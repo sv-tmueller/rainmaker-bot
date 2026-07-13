@@ -1,16 +1,16 @@
-name: scheduled-run
+name: daily-diagnostics
 on:
   schedule:
-    # Every 3 hours, to refresh recommendations as forecasts and market prices
-    # move intraday (#77). Discovery finds whatever US-city markets are live, so a
-    # pass before the day's markets post simply re-prices the still-open ones.
-    - cron: "0 */3 * * *"
+    # Once a day, after the 21:00 scheduled-run settle so the day's snapshot
+    # row covers the fullest day (#277: track/snapshot/tail-check moved off
+    # the 3h cron to cut Supabase egress; each still does a full-history read).
+    - cron: "45 21 * * *"
   workflow_dispatch: {}
 permissions:
   contents: read
   issues: write
 jobs:
-  run:
+  diagnostics:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -18,10 +18,10 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.2.0
         with:
-          enable-cache: true  # cache deps so 8 runs/day stay well within CI minutes
+          enable-cache: true
       - name: Sync dependencies
         run: uv sync
-      - name: Run the bot
+      - name: Write tracking snapshot
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
@@ -29,8 +29,8 @@ jobs:
             postgres://*|postgresql://*) ;;
             *) echo "DATABASE_URL is not a Postgres DSN; refusing to run (would silently write to ephemeral SQLite)"; exit 1 ;;
           esac
-          uv run rainmaker run
-      - name: Settle past markets
+          uv run rainmaker snapshot
+      - name: Print track and tail-check summaries
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
@@ -38,27 +38,11 @@ jobs:
             postgres://*|postgresql://*) ;;
             *) echo "DATABASE_URL is not a Postgres DSN; refusing to run"; exit 1 ;;
           esac
-          uv run rainmaker settle
-      - name: Prune redundant intraday rows
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          case "$DATABASE_URL" in
-            postgres://*|postgresql://*) ;;
-            *) echo "DATABASE_URL is not a Postgres DSN; refusing to run"; exit 1 ;;
-          esac
-          uv run rainmaker prune
-      - name: Upload report artifacts
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: report-${{ github.run_id }}
-          path: reports/
-          if-no-files-found: ignore
-          retention-days: 7  # intraday runs are transient; keep artifact storage bounded
+          uv run rainmaker track
+          uv run rainmaker tail-check
   notify:
     runs-on: ubuntu-latest
-    needs: [run]
+    needs: [diagnostics]
     if: failure()
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -67,5 +51,5 @@ jobs:
       - name: Alert on failure
         run: |
           bash scripts/notify_failure.sh \
-            "scheduled-run" \
+            "daily-diagnostics" \
             "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

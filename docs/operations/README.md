@@ -8,12 +8,18 @@ bets on Polymarket yourself.
 
 GitHub Actions runs `.github/workflows/daily-run.yml` every 3 hours, on the hour
 (and on manual `workflow_dispatch`): `rainmaker run`, then `rainmaker settle`,
-then `rainmaker prune`, then `rainmaker snapshot`, all against Supabase Postgres
-via the `DATABASE_URL`
+then `rainmaker prune`, all against Supabase Postgres via the `DATABASE_URL`
 repository secret (the Supabase session-pooler connection string). Each step
 refuses to run unless that secret is a Postgres DSN, so a misconfigured secret
 fails loud instead of silently writing to a throwaway SQLite file in the runner.
 The dated md/json report is attached to each run as an artifact.
+
+`.github/workflows/daily-diagnostics.yml` runs once a day, after the 21:00 run's
+settle: `rainmaker snapshot`, then `rainmaker track` and `rainmaker tail-check`.
+These are read-only diagnostics over the full settled history; running them
+every 3 hours instead of daily was most of the Supabase egress this bot
+generates (#277), since `snapshot` upserts one row per day regardless of
+cadence.
 
 Every CLI command targets local SQLite (default `rainmaker.db`) unless
 `DATABASE_URL` is set to a postgres DSN. Export the prod DSN locally only when
