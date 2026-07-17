@@ -30,7 +30,13 @@ from typing import Any
 
 import httpx
 
-from rainmaker.config import BACKFILL_DAYS, OPENMETEO_MODELS, Station, season_start_month
+from rainmaker.config import (
+    BACKFILL_DAYS,
+    CALIBRATION_FAMILY,
+    OPENMETEO_MODELS,
+    Station,
+    season_start_month,
+)
 from rainmaker.forecasts.asos import ICAO_TO_ASOS_STATION, fetch_asos_daily_extreme
 from rainmaker.forecasts.base import ForecastSample
 from rainmaker.forecasts.openmeteo import _daily_field
@@ -40,6 +46,7 @@ from rainmaker.probability.calibration import (
     CalibrationPair,
     compute_accuracy,
     fit_calibration,
+    fit_student_t_free_df,
 )
 from rainmaker.probability.distribution import Gaussian
 
@@ -334,15 +341,24 @@ def run_backfill(
     One Previous Runs request covers every requested lead. Leads with no
     overlapping actual are omitted rather than erroring (not every lead has
     enough season-window history to fit).
+
+    The fit family is dispatched per variable via CALIBRATION_FAMILY (#291):
+    TMIN cells fit through fit_student_t_free_df (df set); every other
+    variable stays on the untouched Gaussian fit_calibration (df=None).
     """
     by_lead = fetch_historical_lead_forecasts(station, leads, start, end, client, variable)
     actuals = venue_actuals(station, start, end, client, variable)
+    fitter = (
+        fit_student_t_free_df
+        if CALIBRATION_FAMILY.get(variable) == "student_t"
+        else fit_calibration
+    )
     out: dict[int, tuple[Calibration, Accuracy]] = {}
     for lead in leads:
         pairs = build_pairs(by_lead[lead], actuals)
         if pairs:
             out[lead] = (
-                fit_calibration(station.icao, variable, lead, pairs),
+                fitter(station.icao, variable, lead, pairs),
                 compute_accuracy(pairs),
             )
     return out

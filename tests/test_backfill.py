@@ -224,6 +224,46 @@ def test_run_backfill_tmin_pairs_min_forecast_with_tmin_actual(httpx_mock):
     assert acc.n == 2
 
 
+def test_run_backfill_dispatches_tmin_cells_to_student_t(httpx_mock):
+    """A TMIN cell fits through fit_student_t_free_df: df is set on the result."""
+    asos_csv = (
+        "station,valid,tmpc\n"
+        "LGA,2026-03-01 06:00,2.0\n"
+        "LGA,2026-03-01 12:00,3.9\n"
+        "LGA,2026-03-02 06:00,-0.556\n"
+        "LGA,2026-03-02 12:00,1.0\n"
+    )
+    httpx_mock.add_response(url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_PREVIOUS_RUNS_MIN)
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_csv)
+    with httpx.Client() as client:
+        results = run_backfill(KLGA, "TMIN", (1,), date(2026, 3, 1), date(2026, 3, 2), client)
+    cal, _ = results[1]
+    assert cal.variable == "TMIN"
+    assert cal.df is not None
+    assert 2.0 < cal.df <= 62.0
+
+
+def test_run_backfill_keeps_tmax_cells_gaussian(httpx_mock):
+    """A TMAX cell stays on the untouched Gaussian fit_calibration: df is None."""
+    httpx_mock.add_response(
+        url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
+    )
+    asos_csv = (
+        "station,valid,tmpc\n"
+        "LGA,2026-03-01 06:00,5.0\n"
+        "LGA,2026-03-01 12:00,7.0\n"
+        "LGA,2026-03-02 06:00,-1.0\n"
+        "LGA,2026-03-02 12:00,2.0\n"
+    )
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_csv)
+    with httpx.Client() as client:
+        results = run_backfill(KLGA, "TMAX", (1, 2), date(2026, 3, 1), date(2026, 3, 2), client)
+    for lead in (1, 2):
+        cal, _ = results[lead]
+        assert cal.variable == "TMAX"
+        assert cal.df is None
+
+
 def test_fetch_historical_lead_forecasts_builds_gaussian_per_lead(httpx_mock):
     httpx_mock.add_response(
         url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()

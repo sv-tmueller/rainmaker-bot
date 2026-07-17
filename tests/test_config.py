@@ -249,3 +249,16 @@ def test_every_intl_station_is_valid() -> None:
         assert -180 <= s.lon <= 180, city
         assert s.wunderground_url.startswith("https://"), city
         zoneinfo.ZoneInfo(s.timezone)
+
+
+def test_calibration_family_maps_tmin_to_student_t() -> None:
+    from rainmaker.config import CALIBRATION_FAMILY
+
+    assert CALIBRATION_FAMILY.get("TMIN") == "student_t"
+
+
+def test_calibration_family_defaults_to_gaussian_for_unlisted_variables() -> None:
+    from rainmaker.config import CALIBRATION_FAMILY
+
+    assert CALIBRATION_FAMILY.get("TMAX", "gaussian") == "gaussian"
+    assert CALIBRATION_FAMILY.get("PRECIP_MONTHLY", "gaussian") == "gaussian"
