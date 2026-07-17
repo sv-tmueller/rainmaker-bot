@@ -231,6 +231,8 @@ class BustRow:
     required_sigma: float  # depth_f / sigma_raw
     season: str
     kind: str  # "forecast-type" / "spread-type" / "unknown"
+    envelope_min: float | None = None  # coldest of the 5 models' own daily extreme, if known
+    envelope_max: float | None = None  # warmest of the 5 models' own daily extreme, if known
 
 
 @dataclass(frozen=True)
@@ -410,14 +412,25 @@ def classify_bust_kind(actual: float, model_extremes: dict[str, float]) -> str:
 
 
 def attach_envelope_kinds(busts: list[BustRow], per_model_data: PerModelData) -> list[BustRow]:
-    """Fill in each bust's `kind` from the per-model envelope, "unknown" when
-    no envelope was recovered for that (station, lead, date).
+    """Fill in each bust's `kind` (and envelope_min/max) from the per-model
+    envelope, "unknown" (with envelope bounds left None) when no envelope was
+    recovered for that (station, lead, date).
     """
     out: list[BustRow] = []
     for b in busts:
         envelope = per_model_data.get(b.icao, {}).get(b.lead, {}).get(b.target_date)
-        kind = classify_bust_kind(b.actual, envelope) if envelope else "unknown"
-        out.append(replace(b, kind=kind))
+        if envelope:
+            kind = classify_bust_kind(b.actual, envelope)
+            out.append(
+                replace(
+                    b,
+                    kind=kind,
+                    envelope_min=min(envelope.values()),
+                    envelope_max=max(envelope.values()),
+                )
+            )
+        else:
+            out.append(replace(b, kind="unknown"))
     return out
 
 
@@ -817,13 +830,21 @@ def fetch_or_load_per_model_data(
 
 
 def render_bust_table(busts: list[BustRow]) -> str:
-    header = "| Station | Lead | Date | Depth (F) | PIT | Required-sigma | In/Out | Season |"
-    rule = "| --- " * 8 + "|"
+    header = (
+        "| Station | Lead | Date | Depth (F) | PIT | Required-sigma | Envelope [min, max] | "
+        "In/Out | Season |"
+    )
+    rule = "| --- " * 9 + "|"
     lines = [header, rule]
     for b in sorted(busts, key=lambda x: (x.icao, x.lead, x.target_date)):
+        envelope_desc = (
+            f"[{b.envelope_min:.1f}, {b.envelope_max:.1f}]"
+            if b.envelope_min is not None and b.envelope_max is not None
+            else "-"
+        )
         lines.append(
             f"| {b.icao} | {b.lead} | {b.target_date.isoformat()} | {b.depth_f:.1f} | "
-            f"{b.pit:.3f} | {b.required_sigma:.2f} | {b.kind} | {b.season} |"
+            f"{b.pit:.3f} | {b.required_sigma:.2f} | {envelope_desc} | {b.kind} | {b.season} |"
         )
     return "\n".join(lines) + "\n"
 

@@ -548,3 +548,408 @@ umbrella), not a family or season-window change to the live calibration.
   comparison's own caveats above: multi-model disagreement, not the live
   pooled-source spread, and lead-0's archive is mildly fresher than the live
   morning run sees.
+
+## Addendum (#296): KSFO/KNYC per-station tail anatomy
+
+Part of the #280 umbrella, the follow-up the #289 addendum's Recommendation
+section named: KSFO and KNYC account for the majority of TMAX lead 1-2's
+broken lower tail, via "two distinct candidate mechanisms" -- this addendum
+tests which mechanism each station actually has (forecast-model skill vs
+pooled-spread miscalibration) and maps the answer to one recommendation per
+station. No live-path change and no fix implementation; code lives in a
+second sibling spike module, `src/rainmaker/spikes/station_tail_anatomy.py`
+(tests: `tests/test_station_tail_anatomy_spike.py`), which imports
+`tail_objective.py` and `tmax_tail_diagnosis.py` read-only and never edits
+either. Reproduce with:
+
+```
+uv run python -m rainmaker.spikes.station_tail_anatomy
+```
+
+### Provenance
+
+Two caches, both outside the repo and not committed. The pooled archive
+(`tail_objective.DEFAULT_CACHE_PATH`) is the exact cache the #289 addendum
+used: 13 stations, TMAX and TMIN, leads 0-2, 2026-03-18 to 2026-07-16 (the
+frozen window). `verify_pooled_window` is a trip-wire that aborts before any
+fetch if that window has drifted; it passed (no drift) on this run. A second,
+new cache (`DEFAULT_PER_MODEL_CACHE_PATH`) holds the per-model envelope: one
+Open-Meteo Previous Runs request per station, TMAX only, leads 1-2, for
+exactly 4 stations -- KSFO, KNYC, KMDW, and KSEA (the ASOS control the
+deterministic rule below selected) -- keeping each of the 5 models' own daily
+extreme rather than reducing to a Gaussian mean/stdev. Both caches are
+present on disk; a second, fully offline run of the module (no network)
+reproduced this addendum's tables byte-for-byte.
+
+### Frozen rules (stated before any number below; verbatim from the module docstring)
+
+**Primary bust definition**: the exact Diagnostic-B hit set from #289 --
+baseline (Gaussian EMOS) eval-window standardized residual z with PIT < 0.05,
+on the same 60/40 chronological split, TMAX leads 1 and 2. **Companion
+series** (seasonal coverage only): raw misses, actual <= mu_raw - 5.0 F, no
+calibration, over the full 121-day window.
+
+**Bust-anatomy classification.** Each primary bust is **forecast-type** if
+the actual falls below every one of the 5 Open-Meteo models' own daily
+extreme (the pool could not have produced this value at all -- a
+forecast-skill problem), or **spread-type** if the actual is at or above the
+envelope's minimum (some model reached it -- the pooled reduction, not any
+model, is overconfident). "Source" here means 5-model Open-Meteo agreement
+only; NWS/ensemble agreement lives in the prod forecasts table, not
+recoverable here without the prod DSN (a caveat, below). A station reads
+**spread-dominant** at >= 2/3 known-kind spread-type busts, **forecast-dominant**
+at >= 2/3 forecast-type, **mixed** otherwise, **insufficient-data** if every
+bust is "unknown" (no envelope recovered).
+
+**Recommendation rules**, per classification:
+
+- *spread-dominant*: evidence bar = a season-pure per-station refit (JJA-only
+  fit before a newest-14-day eval window, one fit per lead) moves the
+  station's lower-.05 PIT ratio into [0.5, 1.5] at **both** TMAX leads.
+  Inside at both leads -> station-specific calibration adjustment; missing or
+  outside at either lead -> confidence penalty. This refit runs *only* in
+  this branch.
+- *forecast-dominant*: penalty vs exclusion by severity -- observed lower-.05
+  hit rate >= 4x nominal (>= 0.20) at *both* leads -> exclusion-grade; below
+  at either lead -> penalty-grade. Independently, if >= 75% of the station's
+  full-window raw misses fall in [2026-05-01, 2026-07-16] and the off-season
+  arm is thin (< 60 distinct off-season days in the archive), the action is
+  season-scoped with an explicit revisit date rather than permanent.
+- *mixed*: confidence penalty if median bust depth >= 3.0 F, else "no action,
+  revisit at n >= 60 busts (or after 2026-11-15)" (`REVISIT_MIN_N` doubles
+  `MIN_CAL_SAMPLES`; `REVISIT_DATE` is ~75 days into meteorological autumn,
+  the same off-season-accrual horizon the #289 addendum's KSFO-seasonality
+  bullet names).
+
+**Controls.** KMDW is fixed (GHCND, clean in #289's Diagnostic B). The ASOS
+control is `select_asos_control`'s deterministic rule: minimize
+|hit rate - 0.05| summed over TMAX leads 1-2 among the 11 domestic
+ASOS-settled Polymarket stations, tie-break larger pooled n then
+alphabetical ICAO. **This run selected KSEA** (lead 1: 4/49 = 8% hit rate,
+lead 2: 2/49 = 4%, both close to the 5% nominal). KLGA is a free paired
+comparator for KNYC (already in the pooled cache, zero extra fetch), not a
+control: it is itself mildly flagged at TMAX lead 2 in #289's Diagnostic B.
+
+### Per-station bust tables (primary Diagnostic-B hit set, TMAX leads 1-2)
+
+Reproduces #289's own per-station hit counts exactly (KSFO lead 1: 30/49,
+lead 2: 20/49; KNYC lead 1: 24/48, lead 2: 12/48), confirming this rebuild
+reads the same population Diagnostic B counted. KMDW (6 busts, 4 at lead 1
+against ~2.45 expected, 2 at lead 2) and KSEA (6 busts, same split) sit close
+enough to their ~5% nominal that neither cleared #289's descriptive p < 0.05
+filter, which is why neither appeared in that table.
+
+
+| Station | Lead | Date | Depth (F) | PIT | Required-sigma | Envelope [min, max] | In/Out | Season |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| KMDW | 1 | 2026-06-11 | 3.8 | 0.020 | 1.65 | [83.4, 89.7] | forecast-type | JJA |
+| KMDW | 1 | 2026-06-24 | 3.5 | 0.025 | 1.85 | [76.0, 80.7] | forecast-type | JJA |
+| KMDW | 1 | 2026-06-28 | 4.1 | 0.024 | 1.00 | [84.0, 93.5] | forecast-type | JJA |
+| KMDW | 1 | 2026-07-01 | 2.9 | 0.049 | 1.34 | [93.6, 99.4] | spread-type | JJA |
+| KMDW | 2 | 2026-06-11 | 5.1 | 0.048 | 1.48 | [84.0, 92.7] | forecast-type | JJA |
+| KMDW | 2 | 2026-06-28 | 4.6 | 0.029 | 2.29 | [84.5, 89.1] | forecast-type | JJA |
+| KNYC | 1 | 2026-05-29 | 2.8 | 0.017 | 1.49 | [75.3, 80.5] | forecast-type | MAM |
+| KNYC | 1 | 2026-06-05 | 3.3 | 0.042 | 0.84 | [86.6, 95.4] | spread-type | JJA |
+| KNYC | 1 | 2026-06-06 | 6.6 | 0.000 | 2.15 | [89.3, 96.7] | forecast-type | JJA |
+| KNYC | 1 | 2026-06-07 | 3.3 | 0.003 | 3.54 | [83.3, 85.2] | forecast-type | JJA |
+| KNYC | 1 | 2026-06-11 | 3.7 | 0.028 | 0.96 | [90.0, 98.4] | spread-type | JJA |
+| KNYC | 1 | 2026-06-12 | 4.2 | 0.001 | 2.45 | [92.2, 95.9] | forecast-type | JJA |
+| KNYC | 1 | 2026-06-13 | 3.2 | 0.004 | 2.87 | [86.7, 89.8] | forecast-type | JJA |
+| KNYC | 1 | 2026-06-14 | 3.7 | 0.013 | 1.27 | [86.9, 93.6] | spread-type | JJA |
+| KNYC | 1 | 2026-06-15 | 4.0 | 0.010 | 1.30 | [73.8, 82.3] | spread-type | JJA |
+| KNYC | 1 | 2026-06-16 | 2.6 | 0.017 | 1.61 | [77.1, 81.0] | forecast-type | JJA |
+| KNYC | 1 | 2026-06-18 | 2.9 | 0.007 | 3.27 | [88.0, 89.9] | forecast-type | JJA |
+| KNYC | 1 | 2026-06-19 | 2.4 | 0.037 | 1.07 | [79.6, 85.0] | spread-type | JJA |
+| KNYC | 1 | 2026-06-20 | 1.8 | 0.049 | 1.12 | [80.7, 84.6] | spread-type | JJA |
+| KNYC | 1 | 2026-06-22 | 3.1 | 0.014 | 1.41 | [73.6, 78.9] | forecast-type | JJA |
+| KNYC | 1 | 2026-06-26 | 6.2 | 0.000 | 3.12 | [83.2, 88.5] | forecast-type | JJA |
+| KNYC | 1 | 2026-06-30 | 3.3 | 0.010 | 1.55 | [86.7, 91.9] | spread-type | JJA |
+| KNYC | 1 | 2026-07-01 | 3.4 | 0.050 | 0.78 | [90.0, 101.2] | spread-type | JJA |
+| KNYC | 1 | 2026-07-03 | 4.6 | 0.001 | 2.06 | [99.2, 104.4] | forecast-type | JJA |
+| KNYC | 1 | 2026-07-04 | 5.8 | 0.000 | 2.14 | [95.3, 102.0] | forecast-type | JJA |
+| KNYC | 1 | 2026-07-05 | 4.4 | 0.011 | 1.21 | [81.2, 90.6] | forecast-type | JJA |
+| KNYC | 1 | 2026-07-06 | 4.2 | 0.000 | 7.56 | [72.6, 74.0] | forecast-type | JJA |
+| KNYC | 1 | 2026-07-07 | 2.3 | 0.033 | 1.19 | [70.2, 75.3] | forecast-type | JJA |
+| KNYC | 1 | 2026-07-10 | 3.3 | 0.023 | 1.08 | [84.1, 92.4] | spread-type | JJA |
+| KNYC | 1 | 2026-07-14 | 5.9 | 0.000 | 2.13 | [92.4, 100.1] | forecast-type | JJA |
+| KNYC | 2 | 2026-05-29 | 2.2 | 0.037 | 1.63 | [75.6, 79.2] | forecast-type | MAM |
+| KNYC | 2 | 2026-06-06 | 5.0 | 0.013 | 1.66 | [89.5, 96.9] | forecast-type | JJA |
+| KNYC | 2 | 2026-06-07 | 4.5 | 0.003 | 2.71 | [83.7, 87.8] | forecast-type | JJA |
+| KNYC | 2 | 2026-06-09 | 3.2 | 0.049 | 1.11 | [79.1, 86.4] | forecast-type | JJA |
+| KNYC | 2 | 2026-06-13 | 3.3 | 0.027 | 1.47 | [85.5, 91.2] | forecast-type | JJA |
+| KNYC | 2 | 2026-06-15 | 3.3 | 0.012 | 2.28 | [75.4, 79.2] | forecast-type | JJA |
+| KNYC | 2 | 2026-06-23 | 4.1 | 0.025 | 1.39 | [70.7, 78.0] | spread-type | JJA |
+| KNYC | 2 | 2026-06-26 | 4.8 | 0.001 | 4.55 | [83.9, 86.0] | forecast-type | JJA |
+| KNYC | 2 | 2026-07-03 | 4.4 | 0.024 | 1.39 | [98.2, 105.6] | forecast-type | JJA |
+| KNYC | 2 | 2026-07-06 | 3.8 | 0.007 | 2.50 | [70.8, 74.1] | forecast-type | JJA |
+| KNYC | 2 | 2026-07-09 | 3.2 | 0.020 | 1.76 | [82.2, 87.1] | forecast-type | JJA |
+| KNYC | 2 | 2026-07-14 | 3.9 | 0.025 | 1.41 | [90.5, 97.4] | forecast-type | JJA |
+| KSEA | 1 | 2026-06-26 | 2.0 | 0.046 | 0.78 | [62.3, 69.3] | spread-type | JJA |
+| KSEA | 1 | 2026-06-29 | 3.4 | 0.011 | 1.41 | [64.8, 70.7] | forecast-type | JJA |
+| KSEA | 1 | 2026-06-30 | 3.5 | 0.008 | 2.26 | [62.9, 66.8] | forecast-type | JJA |
+| KSEA | 1 | 2026-07-01 | 2.8 | 0.017 | 1.80 | [64.9, 69.1] | forecast-type | JJA |
+| KSEA | 2 | 2026-06-29 | 2.6 | 0.030 | 0.96 | [62.9, 70.3] | spread-type | JJA |
+| KSEA | 2 | 2026-06-30 | 4.1 | 0.008 | 1.68 | [63.8, 70.3] | forecast-type | JJA |
+| KSFO | 1 | 2026-05-31 | 1.5 | 0.006 | 0.63 | [68.5, 74.4] | spread-type | MAM |
+| KSFO | 1 | 2026-06-01 | 4.1 | 0.000 | 1.49 | [71.1, 78.3] | forecast-type | JJA |
+| KSFO | 1 | 2026-06-02 | 1.4 | 0.028 | 0.39 | [63.4, 72.2] | spread-type | JJA |
+| KSFO | 1 | 2026-06-04 | 2.6 | 0.001 | 1.01 | [65.7, 72.3] | spread-type | JJA |
+| KSFO | 1 | 2026-06-05 | 2.5 | 0.003 | 0.82 | [68.5, 76.8] | spread-type | JJA |
+| KSFO | 1 | 2026-06-07 | 1.6 | 0.005 | 0.82 | [66.9, 71.3] | spread-type | JJA |
+| KSFO | 1 | 2026-06-08 | 2.4 | 0.001 | 1.16 | [64.3, 68.8] | forecast-type | JJA |
+| KSFO | 1 | 2026-06-12 | 0.7 | 0.048 | 0.22 | [80.3, 88.1] | spread-type | JJA |
+| KSFO | 1 | 2026-06-13 | 6.9 | 0.000 | 1.88 | [73.9, 81.2] | forecast-type | JJA |
+| KSFO | 1 | 2026-06-15 | 3.3 | 0.000 | 1.14 | [68.9, 75.7] | spread-type | JJA |
+| KSFO | 1 | 2026-06-16 | 2.2 | 0.015 | 0.58 | [68.2, 78.4] | spread-type | JJA |
+| KSFO | 1 | 2026-06-17 | 1.0 | 0.013 | 0.44 | [70.0, 76.0] | spread-type | JJA |
+| KSFO | 1 | 2026-06-19 | 1.0 | 0.027 | 0.33 | [66.8, 75.0] | spread-type | JJA |
+| KSFO | 1 | 2026-06-22 | 2.0 | 0.007 | 0.66 | [64.8, 71.4] | spread-type | JJA |
+| KSFO | 1 | 2026-06-23 | 1.0 | 0.014 | 0.64 | [68.2, 71.3] | spread-type | JJA |
+| KSFO | 1 | 2026-06-24 | 0.2 | 0.049 | 0.10 | [68.1, 72.1] | spread-type | JJA |
+| KSFO | 1 | 2026-06-29 | 2.9 | 0.000 | 1.72 | [72.9, 76.9] | spread-type | JJA |
+| KSFO | 1 | 2026-07-01 | 0.9 | 0.030 | 0.30 | [67.9, 75.1] | spread-type | JJA |
+| KSFO | 1 | 2026-07-02 | 1.0 | 0.039 | 0.31 | [66.1, 74.4] | spread-type | JJA |
+| KSFO | 1 | 2026-07-03 | 3.8 | 0.000 | 1.16 | [67.9, 76.5] | spread-type | JJA |
+| KSFO | 1 | 2026-07-04 | 4.6 | 0.000 | 1.24 | [68.1, 76.4] | forecast-type | JJA |
+| KSFO | 1 | 2026-07-05 | 0.4 | 0.035 | 0.18 | [65.9, 72.0] | spread-type | JJA |
+| KSFO | 1 | 2026-07-07 | 1.7 | 0.004 | 1.11 | [62.1, 65.4] | forecast-type | JJA |
+| KSFO | 1 | 2026-07-08 | 3.0 | 0.000 | 1.15 | [63.4, 70.4] | spread-type | JJA |
+| KSFO | 1 | 2026-07-09 | 3.2 | 0.000 | 1.50 | [67.4, 72.8] | forecast-type | JJA |
+| KSFO | 1 | 2026-07-10 | 2.7 | 0.003 | 0.82 | [63.6, 72.1] | spread-type | JJA |
+| KSFO | 1 | 2026-07-11 | 5.5 | 0.000 | 1.39 | [66.1, 76.2] | spread-type | JJA |
+| KSFO | 1 | 2026-07-12 | 1.5 | 0.005 | 0.74 | [72.2, 77.8] | spread-type | JJA |
+| KSFO | 1 | 2026-07-13 | 3.9 | 0.026 | 0.62 | [76.5, 91.0] | forecast-type | JJA |
+| KSFO | 1 | 2026-07-15 | 3.4 | 0.028 | 0.58 | [69.0, 83.1] | spread-type | JJA |
+| KSFO | 2 | 2026-05-31 | 4.3 | 0.013 | 1.00 | [69.7, 81.6] | spread-type | MAM |
+| KSFO | 2 | 2026-06-04 | 5.8 | 0.018 | 1.00 | [65.2, 81.4] | spread-type | JJA |
+| KSFO | 2 | 2026-06-07 | 2.8 | 0.028 | 0.77 | [64.5, 74.0] | spread-type | JJA |
+| KSFO | 2 | 2026-06-08 | 1.3 | 0.048 | 0.60 | [62.4, 67.9] | spread-type | JJA |
+| KSFO | 2 | 2026-06-13 | 8.0 | 0.000 | 1.92 | [74.2, 85.5] | forecast-type | JJA |
+| KSFO | 2 | 2026-06-15 | 6.6 | 0.040 | 0.85 | [67.6, 88.1] | spread-type | JJA |
+| KSFO | 2 | 2026-06-16 | 5.1 | 0.038 | 0.82 | [68.4, 84.1] | spread-type | JJA |
+| KSFO | 2 | 2026-06-19 | 2.0 | 0.025 | 0.70 | [67.3, 74.3] | spread-type | JJA |
+| KSFO | 2 | 2026-06-22 | 6.5 | 0.012 | 1.09 | [66.6, 81.8] | forecast-type | JJA |
+| KSFO | 2 | 2026-06-23 | 4.3 | 0.026 | 0.87 | [68.4, 81.4] | spread-type | JJA |
+| KSFO | 2 | 2026-06-24 | 2.9 | 0.034 | 0.74 | [69.3, 79.2] | spread-type | JJA |
+| KSFO | 2 | 2026-06-29 | 4.2 | 0.004 | 1.17 | [71.6, 81.6] | spread-type | JJA |
+| KSFO | 2 | 2026-07-03 | 2.3 | 0.012 | 0.84 | [66.9, 73.4] | spread-type | JJA |
+| KSFO | 2 | 2026-07-04 | 4.0 | 0.003 | 1.23 | [67.7, 76.0] | spread-type | JJA |
+| KSFO | 2 | 2026-07-07 | 3.7 | 0.005 | 1.13 | [62.7, 71.3] | forecast-type | JJA |
+| KSFO | 2 | 2026-07-08 | 4.3 | 0.005 | 1.14 | [62.5, 72.9] | spread-type | JJA |
+| KSFO | 2 | 2026-07-09 | 5.1 | 0.029 | 0.88 | [66.7, 80.9] | spread-type | JJA |
+| KSFO | 2 | 2026-07-10 | 4.2 | 0.005 | 1.15 | [64.4, 74.2] | spread-type | JJA |
+| KSFO | 2 | 2026-07-11 | 8.9 | 0.007 | 1.25 | [66.7, 86.6] | spread-type | JJA |
+| KSFO | 2 | 2026-07-13 | 8.7 | 0.000 | 3.23 | [83.0, 89.3] | forecast-type | JJA |
+
+### Seasonal split
+
+Almost the entire primary-bust population sits in JJA, as the frozen rules
+anticipated (the eval window, roughly 2026-05-28 to 2026-07-16, is entirely
+JJA at both leads for all but the earliest few dates): KSFO 48/50 JJA (2 MAM,
+both 2026-05-31), KNYC 34/36 JJA (2 MAM, both 2026-05-29), KMDW 6/6 JJA, KSEA
+6/6 JJA. This alone cannot separate "TMAX's lower tail is a JJA-only
+mechanism" from "the eval window just happens to be JJA"; the raw-miss
+companion series (full 121-day window, no split) is the check:
+
+| Station | Raw misses (full window) | Share in-season [May 1 - Jul 16] | Off-season days in archive |
+| --- | ---: | ---: | ---: |
+| KSFO | 14 | 100% | 44 |
+| KNYC | 6 | 67% | 44 |
+| KMDW | 1 | 100% | 44 |
+| KSEA | 1 | 100% | 44 |
+
+KSFO's raw misses are *entirely* in-season even over the full window (marine-layer
+fog burnoff is a summer phenomenon at this station, consistent with #289's
+physical hypothesis), but KSFO classifies **spread-dominant** below, so the
+frozen rules' season-scoping clause (which lives only in the forecast-dominant
+branch) never applies to it -- a real divergence from the #289 addendum's
+bullet 6 expectation ("a forecast-dominant, season-concentrated KSFO reads as
+season-scoped"), reported here rather than silently reconciled: KSFO turned
+out spread-dominant, not forecast-dominant, so a different branch of the same
+frozen tree fires instead. KNYC's raw misses are less concentrated (67%
+in-season, below the 75% cut) and KNYC classifies forecast-dominant with an
+exclusion-grade severity, so its recommendation below is unconditional, not
+season-scoped, despite KNYC's own MAM canopy hypothesis (#289 bullet 6). Both
+controls (KMDW, KSEA) have only 1 raw miss each over 121 days: too few to read
+anything into their in-season share.
+
+### Controls, including the KLGA paired comparison
+
+**KMDW and KSEA read mechanically "forecast-dominant" despite being clean.**
+Both controls have only 6 primary busts each (close to the ~4.9 expected
+under a well-calibrated 5% rate at n=49x2), and by chance 5/6 (KMDW) and 4/6
+(KSEA) of those few busts happen to be forecast-type, which mechanically
+clears the >= 2/3 threshold. The frozen recommendation rules then correctly
+route both to a low-severity outcome (observed hit rates 8%/4%, both far
+below the 20% exclusion cut) and, because their few raw misses are
+concentrated in-season against a thin 44-day off-season arm, both land on
+"season-scoped confidence penalty" rather than exclusion. This is the
+right *severity* reading (a confidence penalty this mild against nominal
+hit rates is close to a no-op), but the *classification label* itself
+("forecast-dominant") should not be read as a real finding for a control: at
+n=6, the forecast/spread split is dominated by sampling noise, not a genuine
+mechanism. The hit rates, not the classification label, are the correct
+signal that KMDW and KSEA are clean, matching #289.
+
+**KLGA paired-date deltas support the "KNYC-specific", not "regional cold
+snap", reading.** For each of KNYC's 36 primary busts, the table above shows
+KLGA's own actual on the identical date/lead, from the same pooled cache
+(zero extra fetch):
+
+| Date | Lead | KNYC actual | KLGA actual | Delta | KLGA depth (F) | KLGA raw miss |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-05-29 | 1 | 75.0 | 78.0 | -3.0 | -0.5 | False |
+| 2026-06-05 | 1 | 88.0 | 90.0 | -2.0 | 0.6 | False |
+| 2026-06-06 | 1 | 87.0 | 91.0 | -4.0 | 1.5 | False |
+| 2026-06-07 | 1 | 81.0 | 81.0 | +0.0 | 3.1 | False |
+| 2026-06-11 | 1 | 91.0 | 95.0 | -4.0 | -1.2 | False |
+| 2026-06-12 | 1 | 90.0 | 94.0 | -4.0 | 0.0 | False |
+| 2026-06-13 | 1 | 85.0 | 88.0 | -3.0 | -0.0 | False |
+| 2026-06-14 | 1 | 87.0 | 89.0 | -2.0 | 0.9 | False |
+| 2026-06-15 | 1 | 74.0 | 78.0 | -4.0 | -0.1 | False |
+| 2026-06-16 | 1 | 76.0 | 78.0 | -2.0 | 0.4 | False |
+| 2026-06-18 | 1 | 86.0 | 89.0 | -3.0 | -1.2 | False |
+| 2026-06-19 | 1 | 81.0 | 84.0 | -3.0 | -0.9 | False |
+| 2026-06-20 | 1 | 81.0 | 83.0 | -2.0 | -0.3 | False |
+| 2026-06-22 | 1 | 73.0 | 77.0 | -4.0 | -0.4 | False |
+| 2026-06-26 | 1 | 80.0 | 83.0 | -3.0 | 2.9 | False |
+| 2026-06-30 | 1 | 87.0 | 90.0 | -3.0 | -0.7 | False |
+| 2026-07-01 | 1 | 93.0 | 92.0 | +1.0 | 3.0 | False |
+| 2026-07-03 | 1 | 98.0 | 100.0 | -2.0 | 1.8 | False |
+| 2026-07-04 | 1 | 94.0 | 97.0 | -3.0 | 1.8 | False |
+| 2026-07-05 | 1 | 81.0 | 84.0 | -3.0 | 1.4 | False |
+| 2026-07-06 | 1 | 69.0 | 77.0 | -8.0 | -3.2 | False |
+| 2026-07-07 | 1 | 70.0 | 72.0 | -2.0 | 0.6 | False |
+| 2026-07-10 | 1 | 85.0 | 88.0 | -3.0 | -0.5 | False |
+| 2026-07-14 | 1 | 90.0 | 92.0 | -2.0 | 3.4 | False |
+| 2026-05-29 | 2 | 75.0 | 78.0 | -3.0 | -0.4 | False |
+| 2026-06-06 | 2 | 87.0 | 91.0 | -4.0 | 2.0 | False |
+| 2026-06-07 | 2 | 81.0 | 81.0 | +0.0 | 5.6 | True |
+| 2026-06-09 | 2 | 79.0 | 79.0 | +0.0 | 3.1 | False |
+| 2026-06-13 | 2 | 85.0 | 88.0 | -3.0 | 1.2 | False |
+| 2026-06-15 | 2 | 74.0 | 78.0 | -4.0 | 0.1 | False |
+| 2026-06-23 | 2 | 71.0 | 75.0 | -4.0 | 1.3 | False |
+| 2026-06-26 | 2 | 80.0 | 83.0 | -3.0 | 3.0 | False |
+| 2026-07-03 | 2 | 98.0 | 100.0 | -2.0 | 3.6 | False |
+| 2026-07-06 | 2 | 69.0 | 77.0 | -8.0 | -4.0 | False |
+| 2026-07-09 | 2 | 82.0 | 87.0 | -5.0 | -0.7 | False |
+| 2026-07-14 | 2 | 90.0 | 92.0 | -2.0 | 3.0 | False |
+
+KNYC reads colder than KLGA on 32 of 36 paired dates (89%), by a median of
+3.0 F and a mean of 2.9 F, and KLGA's own depth clears the 5 F raw-miss
+threshold on only 1 of those 36 dates (2026-06-07, lead 2). If KNYC's lower
+tail were "Manhattan weather" -- a genuine regional cold anomaly on those
+dates -- nearby KLGA (about 8 miles away, same metro, same synoptic
+conditions) should show comparable depth misses on most of the same dates;
+it essentially never does. This is consistent with #289's "Central Park
+siting" candidate mechanism (canopy shading, the historic non-standard
+exposure of the Central Park cooperative station) rather than a shared
+regional forecast bust, though it does not by itself rule out a
+KNYC-specific *forecast* input (e.g., a station-metadata mismatch between
+what the model queries and what actually sits at Central Park) versus a
+*measurement* siting effect -- both would produce this same paired-delta
+signature, and disambiguating them is out of this addendum's scope (no
+station-metadata audit was done here).
+
+### Forecast-vs-spread answer, with numbers
+
+| Station | Classification | Known busts | Forecast-type | Spread-type |
+| --- | --- | ---: | ---: | ---: |
+| KSFO | spread-dominant | 50 | 11 (22%) | 39 (78%) |
+| KNYC | forecast-dominant | 36 | 26 (72%) | 10 (28%) |
+| KMDW (control) | forecast-dominant* | 6 | 5 (83%)* | 1 (17%)* |
+| KSEA (control) | forecast-dominant* | 6 | 4 (67%)* | 2 (33%)* |
+
+(*small-n classification noise for the controls; see Controls section above.)
+
+**KSFO and KNYC have two distinct, opposite mechanisms**, confirming #289's
+hypothesis with a mechanism test rather than settlement-source correlation
+alone. KSFO is a genuine spread problem: 78% of its busts land inside the
+5-model envelope (some Open-Meteo model reached the actual value; the pooled
+mean/sigma reduction, not any individual model, is what is overconfident).
+KNYC is a genuine forecast-skill problem: 72% of its busts fall below every
+one of the 5 models' own daily extreme (no Open-Meteo model, individually,
+forecast the actual). Neither reads as "mixed."
+
+### One recommendation per station
+
+| Station | Classification | Known | Forecast-type | Spread-type | Unknown | Median depth (F) | Action |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| KMDW | forecast-dominant | 6 | 5 | 1 | 0 | 4.0 | season-scoped confidence penalty, revisit after 2026-11-15 (SON accrual) |
+| KNYC | forecast-dominant | 36 | 26 | 10 | 0 | 3.5 | exclusion |
+| KSEA | forecast-dominant | 6 | 4 | 2 | 0 | 3.1 | season-scoped confidence penalty, revisit after 2026-11-15 (SON accrual) |
+| KSFO | spread-dominant | 50 | 11 | 39 | 0 | 3.0 | confidence penalty |
+
+- **KMDW**: forecast-dominant (5/6 forecast-type); lead1 hit rate 8%, lead2 hit rate 4% vs the 4x-nominal exclusion cut (20%); 100% of raw misses in-season, 44 off-season days of archive data
+- **KNYC**: forecast-dominant (26/36 forecast-type); lead1 hit rate 50%, lead2 hit rate 25% vs the 4x-nominal exclusion cut (20%); 67% of raw misses in-season, 44 off-season days of archive data
+- **KSEA**: forecast-dominant (4/6 forecast-type); lead1 hit rate 8%, lead2 hit rate 4% vs the 4x-nominal exclusion cut (20%); 100% of raw misses in-season, 44 off-season days of archive data
+- **KSFO**: spread-dominant (39/50 spread-type); season-pure refit (lead 1: 4.29, lead 2: 2.86) misses the evidence bar [0.5, 1.5] at one or more leads; falling back to a confidence penalty per the frozen rule
+
+**KNYC: exclusion.** Both leads clear the 4x-nominal severity cut by a wide
+margin (50% and 25% observed lower-.05 hit rates against a 20% cut, i.e.
+10x and 5x nominal, not just 4x), and the raw-miss share is below the
+75% season-scoping cut (67%), so the recommendation is unconditional
+exclusion from the live path's TMAX ladder, not a season-scoped one. A
+forecast-skill problem this severe is not something a calibration refit
+(scale/bias correction) can fix by construction: no amount of widening or
+shifting a Gaussian recovers information no input model ever had.
+
+**KSFO: confidence penalty (not calibration-fixable by the frozen evidence
+bar, despite being a spread problem).** KSFO's 78% spread-type share makes it
+the "calibration should fix this" case the frozen rules anticipated, but the
+required season-pure per-station refit check failed decisively: lower-.05
+lands at 4.29 (lead 1) and 2.86 (lead 2), both far outside the [0.5, 1.5]
+evidence bar and both *worse* than the already-broken pooled baseline
+(2.71 at lead 1, from the comparison table above). A per-station EMOS refit,
+even season-pure, does not fix KSFO's lower tail; the pooled 5-model spread
+itself is too narrow on KSFO's worst marine-layer days regardless of how the
+station's own bias/scale parameters are set, which points toward a genuinely
+underdispersed ensemble on this station's hardest days rather than a fixable
+station-level bias or scale error. Per the frozen rule, a failed refit falls
+back to a confidence penalty, not exclusion (KSFO's own severity numbers were
+not computed against the exclusion cut, since the spread-dominant branch
+does not read them; the recommendation table's median depth, 3.0 F, is a
+descriptive attribute here, not part of this branch's decision).
+
+**KMDW and KSEA: no material action.** Both controls' recommendations
+("season-scoped confidence penalty") are a mild, mechanical artifact of
+small-n classification noise (see Controls section); their actual hit rates
+(8%/4%) are close enough to the 5% nominal that no real penalty is warranted.
+Read these as "confirmed clean," matching #289, not as flagged stations.
+
+### Caveats
+
+- **5-model-only agreement, not NWS/ensemble.** "Source" in the
+  forecast-vs-spread classification means 5-model Open-Meteo agreement only
+  (`gfs_seamless`, `ecmwf_ifs025`, `icon_seamless`, `gem_seamless`,
+  `meteofrance_seamless`). The live path also pools NWS and a true ensemble
+  spread; both live in the prod forecasts table, not recoverable here without
+  the prod DSN. An optional operator-assisted follow-up (querying the prod DB
+  directly) could extend this anatomy to the live pooled-source population;
+  out of this addendum's scope.
+- **Archive-proxy sigma.** As in the base comparison and the #289 addendum:
+  the predictive spread throughout is multi-model disagreement, not the live
+  pooled-source spread, so absolute PIT ratios here (including the season-pure
+  refit's Lo.05 numbers) should not be read as predictions of the live
+  numbers, only as comparisons within this archive.
+- **Eval window entirely in marine-layer/late-spring season.** The primary
+  bust population (Diagnostic-B hit set) is 46-48 of ~48-50 busts JJA per
+  station; only the raw-miss companion series (full window) gives any
+  off-season signal, and even that is thin (44 off-season days, well under
+  the season-scoping branch's own 60-day thinness cut).
+- **13-way (here, 4-way) multiplicity, uncorrected**, carried over from #289:
+  none of this addendum's descriptive severity numbers are multiplicity-
+  corrected across the 4 target stations or the 2 leads.
+- **Off-season thinness blocks a permanent verdict for the season-scoped
+  stations.** KMDW and KSEA's "season-scoped confidence penalty" and any
+  future forecast-dominant, season-concentrated station's exclusion verdict
+  cannot be confirmed to persist off-season with only 44 days of pre-May
+  archive; `REVISIT_DATE = 2026-11-15` is the named point to re-run this
+  module once SON data accrues.
+- **KLGA paired-delta interpretation is suggestive, not conclusive.** The
+  89%-of-dates, ~3 F systematic KNYC-colder-than-KLGA pattern is consistent
+  with a KNYC-specific mechanism, but this addendum did not audit Central
+  Park's station metadata (coordinates, canopy, sensor siting) against what
+  the forecast models and settlement pipeline actually query, so it cannot
+  distinguish a siting/measurement cause from a station-metadata mismatch in
+  the forecast input itself.

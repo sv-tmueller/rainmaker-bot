@@ -89,6 +89,22 @@ def test_attach_envelope_kinds_uses_the_matching_date_lead_station_envelope() ->
     }
     out = attach_envelope_kinds(bust, per_model_data)
     assert out[0].kind == "forecast-type"  # actual 50.0 < envelope min 55.0
+    assert out[0].envelope_min == 55.0
+    assert out[0].envelope_max == 56.0
+
+
+def test_attach_envelope_kinds_leaves_envelope_bounds_none_when_missing() -> None:
+    bust = primary_busts(
+        cell_data={("KAAA", "TMAX", 1): [(date(2026, 6, 1), 60.0, 3.0, 50.0)] * 20},
+        residuals=[
+            ResidualRow(icao="KAAA", variable="TMAX", lead=1, target_date=date(2026, 6, 1), z=-3.0)
+        ],
+        icaos=frozenset({"KAAA"}),
+        leads=(1,),
+    )
+    out = attach_envelope_kinds(bust, per_model_data={})
+    assert out[0].envelope_min is None
+    assert out[0].envelope_max is None
 
 
 # -----------------------------------------------------------------------------
