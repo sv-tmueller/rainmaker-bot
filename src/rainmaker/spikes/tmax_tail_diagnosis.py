@@ -71,6 +71,7 @@ machinery scores every candidate here) plus n and the gated-station count.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -82,8 +83,10 @@ from scipy.stats import binomtest, norm
 from rainmaker.config import MIN_CAL_SAMPLES, MIN_SIGMA_F, season_start_month
 from rainmaker.probability.calibration import CalibrationPair, fit_calibration
 from rainmaker.spikes.tail_objective import (
+    DEFAULT_CACHE_PATH,
     CellEval,
     apply_emos_regime,
+    fetch_or_load_cell_data,
     fit_student_t_free_df,
     score_candidate_cell,
 )
@@ -611,3 +614,107 @@ def run_diagnostic_c(
                     cell_data, variable, lead, "mam", candidate, mam_window
                 )
     return results
+
+
+# -----------------------------------------------------------------------------
+# Rendering
+# -----------------------------------------------------------------------------
+
+
+def render_diagnostic_a(shapes: dict[tuple[str, int], ResidualShape]) -> str:
+    """Markdown table: per (variable, lead) cell's g1/g2/Kelly skew plus the
+    pre-stated classification, using TMIN's same-lead g2 as TMAX's contrast
+    (and vice versa) where available.
+    """
+    header = "| Variable | Lead | n | g1 | se_skew | g2 | se_kurt | Kelly | Reading |"
+    rule = "| --- " * 8 + "|"
+    lines = [header, rule]
+    for (variable, lead), shape in sorted(shapes.items()):
+        contrast_variable = "TMIN" if variable == "TMAX" else "TMAX"
+        contrast = shapes.get((contrast_variable, lead))
+        reading = classify_residual_shape(shape, contrast.g2 if contrast else None)
+        lines.append(
+            f"| {variable} | {lead} | {shape.n} | {shape.g1:.3f} | {se_skew(shape.n):.3f} | "
+            f"{shape.g2:.3f} | {se_kurt(shape.n):.3f} | {shape.kelly:.3f} | {reading} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def render_diagnostic_b(rows: list[ResidualRow], cells: tuple[tuple[str, int], ...]) -> str:
+    """Per-cell station table (observed vs expected hits, top-2 share,
+    descriptive binomial p) followed by the per-date companion (dates with at
+    least one lower-.05 hit).
+    """
+    sections: list[str] = []
+    for variable, lead in cells:
+        station_stats = station_concentration(rows, variable, lead)
+        date_stats = [d for d in date_concentration(rows, variable, lead) if d.hits_05 > 0]
+        hit_share, n_share = top2_station_share(station_stats)
+        section = [f"### {variable} lead {lead}", ""]
+        section.append("| Station | n | Hits.05 | Exp.05 | Hits.10 | Exp.10 | p(>=Hits.05) |")
+        section.append("| --- | --- | --- | --- | --- | --- | --- |")
+        for s in station_stats:
+            section.append(
+                f"| {s.icao} | {s.n} | {s.hits_05} | {s.expected_05:.1f} | {s.hits_10} | "
+                f"{s.expected_10:.1f} | {s.binom_p_05:.3f} |"
+            )
+        section.append("")
+        section.append(f"Top-2 stations: {hit_share:.0%} of Lo.05 hits, {n_share:.0%} of n.")
+        section.append("")
+        section.append("| Date | n | Hits.05 |")
+        section.append("| --- | --- | --- |")
+        for d in date_stats:
+            section.append(f"| {d.target_date.isoformat()} | {d.n} | {d.hits_05} |")
+        sections.append("\n".join(section))
+    return "\n\n".join(sections) + "\n"
+
+
+def render_diagnostic_c(results: dict[tuple[str, str, int, str], SeasonArmResult]) -> str:
+    header = (
+        "| Arm | Candidate | Var | Lead | Stations | Gated | n | Up.10 | Lo.10 | "
+        "Up.05 | Lo.05 | Brier | BodyMaxDev |"
+    )
+    rule = "| --- " * 13 + "|"
+    lines = [header, rule]
+    arm_order = {"jja_mixed": 0, "jja_season_pure": 1, "mam": 2}
+    for key in sorted(
+        results, key=lambda k: (k[1], k[2], arm_order.get(k[0], 99), C_CANDIDATES.index(k[3]))
+    ):
+        arm, variable, lead, candidate = key
+        r = results[key]
+        c = r.cell_eval
+        if c is None:
+            lines.append(
+                f"| {arm} | {candidate} | {variable} | {lead} | {r.n_stations} | "
+                f"{r.n_stations_gated} | - | - | - | - | - | - | - |"
+            )
+            continue
+        lines.append(
+            f"| {arm} | {candidate} | {variable} | {lead} | {r.n_stations} | "
+            f"{r.n_stations_gated} | {c.n} | {c.upper_10:.2f} | {c.lower_10:.2f} | "
+            f"{c.upper_05:.2f} | {c.lower_05:.2f} | {c.brier:.3f} | {c.body_max_dev:.3f} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def main() -> None:
+    cell_data = fetch_or_load_cell_data(DEFAULT_CACHE_PATH)
+    all_dates = [d for rows in cell_data.values() for d, _mu, _sigma, _actual in rows]
+    data_start, window_end = min(all_dates), max(all_dates)
+    print(f"archive window: {data_start.isoformat()} to {window_end.isoformat()}", file=sys.stderr)
+
+    residuals = baseline_eval_residuals(cell_data)
+    shapes = residual_shape_by_cell(residuals)
+    print("## Diagnostic A: residual shape\n")
+    print(render_diagnostic_a(shapes))
+
+    print("## Diagnostic B: concentration of lower-tail hits\n")
+    print(render_diagnostic_b(residuals, B_CELLS))
+
+    print("## Diagnostic C: season A/B on fit windows\n")
+    c_results = run_diagnostic_c(cell_data, data_start, window_end)
+    print(render_diagnostic_c(c_results))
+
+
+if __name__ == "__main__":
+    main()

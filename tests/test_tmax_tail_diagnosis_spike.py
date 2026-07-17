@@ -15,12 +15,14 @@ import numpy as np
 from scipy.stats import skewnorm
 from scipy.stats import t as student_t
 
+from rainmaker.spikes.tail_objective import CellEval
 from rainmaker.spikes.tmax_tail_diagnosis import (
     B_CELLS,
     JJA_EVAL_DAYS,
     MAM_FIT_DAYS,
     ResidualRow,
     ResidualShape,
+    SeasonArmResult,
     baseline_eval_residuals,
     classify_residual_shape,
     date_concentration,
@@ -29,6 +31,9 @@ from rainmaker.spikes.tmax_tail_diagnosis import (
     jja_arm_windows,
     mam_arm_window_or_none,
     moment_skewness,
+    render_diagnostic_a,
+    render_diagnostic_b,
+    render_diagnostic_c,
     residual_shape_by_cell,
     run_diagnostic_c,
     se_kurt,
@@ -469,3 +474,65 @@ def test_run_diagnostic_c_returns_no_mam_key_when_arm_is_dropped() -> None:
     results = run_diagnostic_c(cell_data, data_start, window_end, cells=(("TMAX", 1),))
     assert ("mam", "TMAX", 1, "baseline") not in results
     assert ("jja_mixed", "TMAX", 1, "baseline") in results
+
+
+# -----------------------------------------------------------------------------
+# Rendering
+# -----------------------------------------------------------------------------
+
+
+def test_render_diagnostic_a_includes_classification_and_numbers() -> None:
+    shapes = {
+        ("TMAX", 1): ResidualShape(variable="TMAX", lead=1, n=635, g1=-0.6, g2=0.1, kelly=-0.2),
+        ("TMIN", 1): ResidualShape(variable="TMIN", lead=1, n=635, g1=0.02, g2=1.2, kelly=0.01),
+    }
+    table = render_diagnostic_a(shapes)
+    assert "TMAX" in table and "TMIN" in table
+    assert "skew, not kurtosis" in table
+    assert "kurtosis, not skew" in table
+    assert "-0.600" in table or "-0.60" in table
+
+
+def test_render_diagnostic_b_includes_station_and_date_tables() -> None:
+    rows = [
+        ResidualRow(icao="KAAA", variable="TMAX", lead=1, target_date=date(2026, 7, 1), z=z)
+        for z in [-5.0] * 3 + [0.0] * 17
+    ] + [
+        ResidualRow(icao="KBBB", variable="TMAX", lead=1, target_date=date(2026, 7, 1), z=0.0)
+        for _ in range(20)
+    ]
+    table = render_diagnostic_b(rows, (("TMAX", 1),))
+    assert "KAAA" in table and "KBBB" in table
+    assert "2026-07-01" in table
+
+
+def test_render_diagnostic_c_reports_gated_count() -> None:
+    cell_eval = CellEval(
+        candidate="baseline",
+        variable="TMAX",
+        lead=1,
+        n=180,
+        upper_10=1.0,
+        lower_10=1.0,
+        upper_05=1.0,
+        lower_05=1.3,
+        brier=0.7,
+        mean_crps=1.5,
+        body_max_dev=0.3,
+        top_bin_yes=None,
+        top_bin_no=None,
+    )
+    results = {
+        ("jja_mixed", "TMAX", 1, "baseline"): SeasonArmResult(
+            arm="jja_mixed",
+            candidate="baseline",
+            variable="TMAX",
+            lead=1,
+            n_stations=13,
+            n_stations_gated=0,
+            cell_eval=cell_eval,
+        ),
+    }
+    table = render_diagnostic_c(results)
+    assert "jja_mixed" in table
+    assert "1.30" in table
