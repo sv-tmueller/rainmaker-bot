@@ -43,6 +43,10 @@ class Calibration(BaseModel):
     bias: float
     var_a: float = Field(ge=0)  # EMOS intercept: irreducible variance floor
     var_b: float = Field(ge=0)  # EMOS slope: ensemble-variance amplification
+    # Student-t degrees of freedom. None means Gaussian; apply_calibration trusts
+    # this presence/absence to dispatch family, not a separate variable lookup, so
+    # rollback is a refit (write df=None again), not a code change.
+    df: float | None = None
     n_samples: int
 
 

@@ -402,6 +402,44 @@ def test_calibration_save_load_round_trip():
     conn.close()
 
 
+def test_calibration_df_defaults_to_none():
+    """A Calibration built without df (the Gaussian case) has df=None, not 0."""
+    cal = Calibration(
+        station="KLGA", variable="TMAX", lead_time=1, bias=0.0, var_a=0.0, var_b=1.0, n_samples=40
+    )
+    assert cal.df is None
+
+
+def test_calibration_df_round_trips_through_the_store():
+    """A Student-t cell's df survives save/load; NULL stays a valid Gaussian row."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    cal = Calibration(
+        station="KKMDW",
+        variable="TMIN",
+        lead_time=1,
+        bias=0.5,
+        var_a=1.0,
+        var_b=1.5,
+        df=6.2,
+        n_samples=45,
+    )
+    save_calibration(conn, cal, updated_at="2026-07-17T10:00:00Z")
+    reloaded = load_calibration(conn, "KKMDW", "TMIN", 1)
+    assert reloaded == cal
+    assert reloaded is not None and reloaded.df == pytest.approx(6.2)
+
+    # A Gaussian cell (df=None) round-trips as NULL, not absent.
+    gaussian_cal = Calibration(
+        station="KLGA", variable="TMAX", lead_time=1, bias=0.0, var_a=0.0, var_b=1.0, n_samples=40
+    )
+    save_calibration(conn, gaussian_cal, updated_at="2026-07-17T10:00:00Z")
+    reloaded_gaussian = load_calibration(conn, "KLGA", "TMAX", 1)
+    assert reloaded_gaussian is not None and reloaded_gaussian.df is None
+    conn.close()
+    conn.close()
+
+
 # ---------------------------------------------------------------------------
 # compute_accuracy: unchanged
 # ---------------------------------------------------------------------------

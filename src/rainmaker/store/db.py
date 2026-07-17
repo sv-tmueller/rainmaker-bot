@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS calibration (
     bias         REAL,
     var_a        REAL,
     var_b        REAL,
+    df           REAL,
     n_samples    INTEGER,
     updated_at   TEXT,
     PRIMARY KEY (station, variable, lead_time)
