@@ -183,7 +183,7 @@ def _shaped_noise_pairs(sample: object, n: int, seed: int) -> list[CalibrationPa
     ]
 
 
-def test_fit_student_t_free_df_recovers_a_heavy_tail_on_t_df5_noise():
+def test_fit_student_t_free_df_df_channel_responds_to_tail_shape():
     """The df channel must respond to the data's actual tail shape, not sit
     inert at the df0=8.0 warm start.
 
@@ -200,12 +200,12 @@ def test_fit_student_t_free_df_recovers_a_heavy_tail_on_t_df5_noise():
     non-monotonic sensitivity to tail shape once the variance parameters
     (var_a, var_b) are also free to fit: they can absorb tail risk as extra
     spread instead of the shape parameter absorbing it. Verified empirically
-    against this exact fitter: on t(df=5) noise (the acceptance criteria's
-    original choice) the live/dead gap is only ~0.03, too thin a margin to
-    be a reliable regression signal; t(df=3) noise (heavier, still a genuine
-    Student-t) gives a robust, deterministic gap. This test asserts the
-    channel is alive (responds differently to differently-shaped noise), not
-    that a specific df value is recovered exactly.
+    against this exact fitter with seed=11/12: t(df=5) noise (the acceptance
+    criteria's original choice) gives a live/dead gap of only ~0.03, too thin
+    a margin to be a reliable regression signal; t(df=3) noise (heavier,
+    still a genuine Student-t) gives a robust, deterministic gap. This test
+    asserts the channel is alive (responds differently to differently-shaped
+    noise), not that a specific df value is recovered exactly.
     """
     heavy_pairs = _shaped_noise_pairs(
         lambda rng, n: student_t.rvs(3.0, size=n, random_state=rng), 400, seed=11
@@ -226,12 +226,13 @@ def test_fit_student_t_free_df_improves_lower_tail_pit_on_tail_thin_tmin_constru
     lower-tail PIT ratio must land closer to 1.0 (honest) than the Gaussian
     fit's, while the body (mid-range PIT-centering error) does not blow up.
     Also asserts the fitted df materially left the df0=8.0 warm start: with
-    an 8% rate of small (-3 sigma) cold-snap outliers (the original
-    construction), the df movement is only ~0.03, too thin a margin to
-    double as a dead-channel regression check; -6 sigma cold snaps (same 8%
-    rate, still a tail-thin construction, fewer fit pairs) give a robust,
-    deterministic gap while leaving the PIT-improvement claim intact
-    (verified empirically against this exact fitter).
+    an 8% rate of small (-3 sigma) cold-snap outliers and 600 fit pairs (the
+    original construction, seed=20260717+1), the df movement is only ~0.03,
+    too thin a margin to double as a dead-channel regression check; -6 sigma
+    cold snaps at 300 fit pairs (same seed, same 8% rate, still a tail-thin
+    construction) give a robust, deterministic gap while leaving the
+    PIT-improvement claim intact (verified empirically against this exact
+    fitter).
 
     "Tail-thin" construction: a Gaussian body contaminated with an 8% rate of
     cold-snap outliers (a genuinely fatter, more realistic lower tail than a

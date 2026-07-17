@@ -14,6 +14,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 import httpx
+import numpy as np
 from pydantic import ValidationError
 from scipy.stats import norm
 
@@ -21,11 +22,79 @@ from rainmaker.backtest import COVERAGE_LEVELS, crps_gaussian, reliability_bins
 from rainmaker.config import KALSHI_STATIONS, STATIONS
 from rainmaker.domain import BucketKind, Market, parse_bucket_label, parse_precip_bracket_label
 from rainmaker.polymarket.prices import fetch_price_history, last_before
-from rainmaker.probability.calibration import Accuracy, CalibrationPair, compute_accuracy
+from rainmaker.probability.calibration import (
+    Accuracy,
+    CalibrationPair,
+    compute_accuracy,
+    numeric_crps,
+    std_cdf_for,
+)
 from rainmaker.probability.outcomes import settles
 from rainmaker.probability.precip_outcomes import precip_settles
 from rainmaker.store.db import Conn
 from rainmaker.store.record import save_accuracy
+
+# Cap on how many Student-t rows share one numeric_crps call: bounds the (N, grid)
+# matrix numeric_crps builds per call, on top of numeric_crps's own internal cap.
+_CRPS_BATCH_SIZE = 1000
+
+
+def _parse_df(params: dict[str, Any]) -> tuple[float | None, bool]:
+    """Read dist_params["df"]: (df, ok). df=None means Gaussian (absent key or
+    explicit null); ok=False means the row must be skipped (present but
+    non-numeric or <= 0), mirroring the existing sigma<=0 guard -- a row never
+    silently scores as Gaussian just because its df was unusable.
+    """
+    df_raw = params.get("df")
+    if df_raw is None:
+        return None, True
+    try:
+        df = float(df_raw)
+    except (TypeError, ValueError):
+        return None, False
+    if df <= 0:
+        return None, False
+    return df, True
+
+
+def _cdf_at(mu: float, sigma: float, df: float | None, actual: float) -> float:
+    """Standardized predictive CDF at `actual`, dispatched by family (df)."""
+    if df is None:
+        return float(norm.cdf(actual, loc=mu, scale=sigma))
+    z = np.array([(actual - mu) / sigma])
+    return float(std_cdf_for(df)(z)[0])
+
+
+def _crps_family_aware(
+    samples: list[tuple[float, float, float | None, float]],
+) -> list[float]:
+    """CRPS per (mu, sigma, df, actual) sample, dispatched by each row's own family.
+
+    Gaussian rows (df=None) use the closed-form crps_gaussian. Student-t rows are
+    grouped by their exact df value and scored in one vectorized numeric_crps call
+    per group (chunked at _CRPS_BATCH_SIZE), instead of one Python-level call per
+    row: with ~15k historical rows this keeps the diagnostic well inside the
+    daily-diagnostics timeout.
+    """
+    out = [0.0] * len(samples)
+    t_idx_by_df: dict[float, list[int]] = defaultdict(list)
+    for i, (mu, sigma, df, actual) in enumerate(samples):
+        if df is None:
+            out[i] = crps_gaussian(mu, sigma, actual)
+        else:
+            t_idx_by_df[df].append(i)
+
+    for df, idxs in t_idx_by_df.items():
+        std_cdf = std_cdf_for(df)
+        for start in range(0, len(idxs), _CRPS_BATCH_SIZE):
+            chunk = idxs[start : start + _CRPS_BATCH_SIZE]
+            mu_arr = np.array([samples[i][0] for i in chunk])
+            sigma_arr = np.array([samples[i][1] for i in chunk])
+            actual_arr = np.array([samples[i][3] for i in chunk])
+            scores = numeric_crps(std_cdf, mu_arr, sigma_arr, actual_arr)
+            for j, i in enumerate(chunk):
+                out[i] = float(scores[j])
+    return out
 
 
 def _won(
@@ -599,10 +668,12 @@ def compute_live_calibration(conn: Conn) -> list[dict[str, Any]]:
         "AND m.variable != 'PRCP'"
     ).fetchall()
 
-    # (variable, lead) -> list of (mu, sigma, actual) for CRPS + coverage
-    # PRCP is excluded: its mu/sigma describe a gamma (mean/sqrt-var), not a Gaussian,
-    # so crps_gaussian and norm.cdf coverage are methodologically wrong for it.
-    dist_groups: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
+    # (variable, lead) -> list of (mu, sigma, df, actual) for CRPS + coverage.
+    # PRCP is excluded: its mu/sigma describe a gamma (mean/sqrt-var), not a Gaussian
+    # or Student-t, so this family-aware scoring is methodologically wrong for it.
+    dist_groups: dict[tuple[str, int], list[tuple[float, float, float | None, float]]] = (
+        defaultdict(list)
+    )
     for r in _latest_run_per_market_day([dict(row) for row in rows]):
         lead = (
             date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
@@ -616,7 +687,10 @@ def compute_live_calibration(conn: Conn) -> list[dict[str, Any]]:
         mu, sigma = params.get("mu"), params.get("sigma")
         if mu is None or sigma is None or sigma <= 0:
             continue
-        dist_groups[(r["variable"], lead)].append((mu, sigma, r["actual_value"]))
+        df, df_ok = _parse_df(params)
+        if not df_ok:
+            continue
+        dist_groups[(r["variable"], lead)].append((mu, sigma, df, r["actual_value"]))
 
     # Reliability: YES bucket rows (all buckets, not just best-edge). No dedup here:
     # each (run, market, bucket) is one (p_win, won) data point for the reliability diagram.
@@ -660,10 +734,10 @@ def compute_live_calibration(conn: Conn) -> list[dict[str, Any]]:
     # Combine into result rows; only emit groups that have dist samples.
     out: list[dict[str, Any]] = []
     for (variable, lead), samples in sorted(dist_groups.items()):
-        crps_vals = [crps_gaussian(mu, sigma, actual) for mu, sigma, actual in samples]
+        crps_vals = _crps_family_aware(samples)
         coverages: dict[float, list[bool]] = {q: [] for q in COVERAGE_LEVELS}
-        for mu, sigma, actual in samples:
-            cdf_actual = float(norm.cdf(actual, loc=mu, scale=sigma))
+        for mu, sigma, df, actual in samples:
+            cdf_actual = _cdf_at(mu, sigma, df, actual)
             for q in COVERAGE_LEVELS:
                 coverages[q].append(abs(cdf_actual - 0.5) <= q / 2)
         n = len(samples)
@@ -700,16 +774,16 @@ def _tail_bin(value: float) -> str:
     return "[0.95,1.0]"
 
 
-def _pit_tail_ratios(triples: list[tuple[float, float, float]]) -> dict[str, float | int]:
+def _pit_tail_ratios(pits: list[float]) -> dict[str, float | int]:
     """Tail-occurrence ratios P(PIT > 1-q)/q and P(PIT < q)/q at q = 0.10 and 0.05.
 
-    Bucket-geometry-free: driven only by the stored (mu, sigma, actual), so it
-    isolates distribution-tail miscalibration from the bucket-width artifact the
-    claimed-vs-realized table can show (a narrow bucket inflates p_win regardless
-    of tail thickness).
+    Takes precomputed PITs (each already dispatched to its row's own family by
+    the caller via _cdf_at) rather than (mu, sigma, actual) triples, so this stays
+    bucket-geometry-free and family-agnostic: it isolates distribution-tail
+    miscalibration from the bucket-width artifact the claimed-vs-realized table
+    can show (a narrow bucket inflates p_win regardless of tail thickness).
     """
-    n = len(triples)
-    pits = [float(norm.cdf(actual, loc=mu, scale=sigma)) for mu, sigma, actual in triples]
+    n = len(pits)
 
     def ratio(q: float, upper: bool) -> float:
         if upper:
@@ -792,9 +866,10 @@ def compute_tail_calibration(
         since_params,
     ).fetchall()
 
-    pit_groups: dict[tuple[str, int, int | None], list[tuple[float, float, float]]] = defaultdict(
-        list
-    )
+    # Each PIT is computed at collection time with the row's own family (df):
+    # pit_groups holds precomputed floats, not (mu, sigma, actual) triples, so
+    # _pit_tail_ratios stays family-agnostic (see its docstring).
+    pit_groups: dict[tuple[str, int, int | None], list[float]] = defaultdict(list)
     for r in dedup([dict(row) for row in dist_rows]):
         try:
             lead = (
@@ -811,8 +886,11 @@ def compute_tail_calibration(
         mu, sigma = params.get("mu"), params.get("sigma")
         if mu is None or sigma is None or sigma <= 0:
             continue
+        df, df_ok = _parse_df(params)
+        if not df_ok:
+            continue
         hour = int(r["started_at"][11:13]) if by_hour else None
-        pit_groups[(r["variable"], lead, hour)].append((mu, sigma, r["actual_value"]))
+        pit_groups[(r["variable"], lead, hour)].append(_cdf_at(mu, sigma, df, r["actual_value"]))
 
     yes_rows_raw = conn.execute(
         "SELECT p.run_id AS run_id, p.market_id AS market_id, "
@@ -887,9 +965,9 @@ def compute_tail_calibration(
         )
 
     pit: list[dict[str, Any]] = []
-    for (variable, lead, hour), triples in sorted(pit_groups.items()):
+    for (variable, lead, hour), pits in sorted(pit_groups.items()):
         pit.append(
-            {"variable": variable, "lead_time": lead, "hour": hour, **_pit_tail_ratios(triples)}
+            {"variable": variable, "lead_time": lead, "hour": hour, **_pit_tail_ratios(pits)}
         )
 
     return {"primary": primary, "pit": pit}

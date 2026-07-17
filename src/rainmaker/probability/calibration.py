@@ -252,6 +252,13 @@ def fit_student_t_free_df(
     walk sigma toward zero to exploit truncation rather than genuinely fitting
     the data (see numeric_crps's docstring). A physical floor forecloses that
     regardless of grid width.
+
+    df is weakly identified by this objective: mean CRPS has weak, non-monotonic
+    sensitivity to tail shape once var_a/var_b are also free to fit, since they
+    can absorb tail risk as extra spread instead of df absorbing it as shape
+    (see tests/test_calibration_student_t.py's df-channel-aliveness test). Treat
+    a fitted df as "materially non-Gaussian or not", not as a precise degrees-of-
+    freedom estimate.
     """
     if not pairs:
         raise ValueError("cannot fit calibration with no pairs")

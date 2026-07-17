@@ -42,6 +42,11 @@ class MarketReport(BaseModel):
     settlement_date: date
     mu: float | None
     sigma: float | None
+    # Student-t degrees of freedom of the predictive distribution (#292). None
+    # means Gaussian: the empty-samples early return and evaluate_precip_market
+    # never set it, so it defaults None; apply_calibration only sets df in the
+    # "full" regime (see its docstring), so uncalibrated/bias_only stay None too.
+    df: float | None = None
     n_sources: int
     calibrated: Literal["uncalibrated", "bias_only", "full"]
     coverage: list[SourceCoverage]
@@ -167,6 +172,7 @@ def evaluate_market(
         calibrated=calibrated,
         mu=predictive.mu,
         sigma=predictive.sigma,
+        df=predictive.df,
         outcomes=outcomes,
         excluded_no_ask=excluded,
     )
