@@ -183,8 +183,11 @@ def _record_predictions(
     report: MarketReport,
     created_at: str,
 ) -> None:
+    # df is always written, null for Gaussian: historical rows with no "df" key
+    # and new "df": null rows both read back as params.get("df") is None, so the
+    # read side (tracking.py) treats absence and explicit null identically.
     dist_params = json.dumps(
-        {"mu": report.mu, "sigma": report.sigma, "n_sources": report.n_sources}
+        {"mu": report.mu, "sigma": report.sigma, "n_sources": report.n_sources, "df": report.df}
     )
     for o in report.outcomes:
         conn.execute(

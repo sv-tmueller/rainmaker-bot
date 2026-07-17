@@ -173,6 +173,79 @@ def test_record_predictions_stores_bucket():
     assert {r["bucket"] for r in rows} == {o.bucket_label for o in report.outcomes}
 
 
+def test_record_predictions_writes_null_df_for_gaussian():
+    """dist_params always carries a "df" key; Gaussian reports write null (#292)."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    market, fs, report = _evaluated()
+    assert report.df is None  # no calibration passed to _evaluated(): Gaussian
+    record_run(
+        conn,
+        run_id="run-1",
+        started_at="t0",
+        finished_at="t1",
+        status="ok",
+        evaluated=[(market, fs, report)],
+    )
+    rows = conn.execute(
+        "SELECT dist_params FROM predictions WHERE run_id = ?", ("run-1",)
+    ).fetchall()
+    conn.close()
+    assert rows  # at least one prediction row was written
+    for r in rows:
+        params = json.loads(r["dist_params"])
+        assert "df" in params
+        assert params["df"] is None
+
+
+def test_record_predictions_writes_df_identically_across_bucket_rows():
+    """dist_params round-trips a non-null df with an identical string across every
+    bucket row of one (run, market): compute_live_accuracy's DISTINCT-collapse
+    invariant depends on this (see its docstring)."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    market = _nyc_market()
+    fs = _forecast_set(market.target)
+    from rainmaker.probability.calibration import Calibration
+
+    cal = Calibration(
+        station=market.target.station.icao,
+        variable=market.target.variable,
+        lead_time=1,
+        bias=0.0,
+        var_a=0.0,
+        var_b=1.0,
+        df=6.5,
+        n_samples=50,
+    )
+    report = evaluate_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_F,
+        min_edge=MIN_EDGE,
+        calibration=cal,
+    )
+    assert report.calibrated == "full"
+    assert report.df == 6.5
+    record_run(
+        conn,
+        run_id="run-1",
+        started_at="t0",
+        finished_at="t1",
+        status="ok",
+        evaluated=[(market, fs, report)],
+    )
+    rows = conn.execute(
+        "SELECT dist_params FROM predictions WHERE run_id = ?", ("run-1",)
+    ).fetchall()
+    conn.close()
+    dist_params_strings = {r["dist_params"] for r in rows}
+    assert len(dist_params_strings) == 1  # identical string across every bucket row
+    assert json.loads(next(iter(dist_params_strings)))["df"] == 6.5
+
+
 def _precip_evaluated():
     from rainmaker.config import PRECIP_VAR_FLOOR
     from rainmaker.forecasts.precip import PrecipForecastSet

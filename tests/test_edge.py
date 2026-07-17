@@ -308,6 +308,101 @@ def test_evaluate_market_bias_only_calibration():
 
 
 # ---------------------------------------------------------------------------
+# MarketReport.df (#292): threads the Student-t predictive family through
+# to the report so record.py can persist it. Only the full-EMOS regime
+# carries a fitted df; every other path stays Gaussian (df=None).
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_market_df_threads_from_full_calibration():
+    market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.20)])
+    fs = _forecast_set([70, 70, 71, 71])
+    cal = Calibration(
+        station="KLGA",
+        variable="TMIN",
+        lead_time=1,
+        bias=0.0,
+        var_a=0.0,
+        var_b=1.0,
+        df=6.5,
+        n_samples=50,
+    )
+    report = evaluate_market(
+        market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0, calibration=cal
+    )
+    assert report.calibrated == "full"
+    assert report.df == 6.5
+
+
+def test_evaluate_market_df_stays_none_on_uncalibrated():
+    market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.20)])
+    fs = _forecast_set([70, 70, 71, 71])
+    cal = Calibration(
+        station="KLGA",
+        variable="TMIN",
+        lead_time=1,
+        bias=0.0,
+        var_a=0.0,
+        var_b=1.0,
+        df=6.5,
+        n_samples=5,
+    )
+    report = evaluate_market(
+        market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0, calibration=cal
+    )
+    assert report.calibrated == "uncalibrated"
+    assert report.df is None
+
+
+def test_evaluate_market_df_stays_none_on_bias_only():
+    market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.20)])
+    fs = _forecast_set([70, 70, 71, 71])
+    cal = Calibration(
+        station="KLGA",
+        variable="TMIN",
+        lead_time=1,
+        bias=0.0,
+        var_a=0.0,
+        var_b=1.0,
+        df=6.5,
+        n_samples=15,
+    )
+    report = evaluate_market(
+        market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0, calibration=cal
+    )
+    assert report.calibrated == "bias_only"
+    assert report.df is None
+
+
+def test_evaluate_market_df_stays_none_on_no_calibration():
+    market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.20)])
+    fs = _forecast_set([70, 70, 71, 71])
+    report = evaluate_market(market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0)
+    assert report.calibrated == "uncalibrated"
+    assert report.df is None
+
+
+def test_evaluate_market_df_stays_none_on_no_samples():
+    market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.20)])
+    fs = ForecastSet(
+        target=build_target("NYC", "TMAX", date(2026, 5, 31)),
+        samples=[],
+        coverage=[SourceCoverage(source="nws", ok=False, n_samples=0, error="down")],
+    )
+    report = evaluate_market(market, fs, floor=0.50, min_sources=2, min_sigma=1.5, min_edge=0.0)
+    assert report.df is None
+
+
+def test_evaluate_precip_market_df_stays_none():
+    market = _precip_market()
+    fs = _precip_forecast_set(market.target)
+    report = evaluate_precip_market(
+        market, fs, floor=0.5, min_sources=1, min_edge=0.0, var_floor=PRECIP_VAR_FLOOR
+    )
+    assert report.df is None
+
+
+# ---------------------------------------------------------------------------
 # Recommendation gate requires an applied full calibration (#225)
 # ---------------------------------------------------------------------------
 
