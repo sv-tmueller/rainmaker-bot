@@ -597,6 +597,125 @@ def test_compute_tail_calibration_gaussian_only_regression_pin():
     assert pit["lower_10"] == pytest.approx(10.0, abs=1e-12)
 
 
+# ---------------------------------------------------------------------------
+# Family-aware PIT (#292): the secondary ("pit") table computes each PIT with
+# the row's own family instead of always norm.cdf.
+# ---------------------------------------------------------------------------
+
+
+def _insert_row_with_df(
+    conn,
+    market_id: str,
+    run_id: str,
+    *,
+    started_at: str,
+    settlement_date: str,
+    p_win: float,
+    mu: float,
+    sigma: float,
+    df,
+    actual: float,
+    bucket_kind: str,
+    lo: float | None = None,
+    hi: float | None = None,
+    threshold: float | None = None,
+    variable: str = "TMIN",
+    bucket_label: str = "B",
+):
+    conn.execute(
+        "INSERT OR IGNORE INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        (run_id, started_at, "ok"),
+    )
+    spec = json.dumps(
+        [{"label": bucket_label, "kind": bucket_kind, "lo": lo, "hi": hi, "threshold": threshold}]
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, outcome_spec) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (market_id, "NYC", variable, settlement_date, spec),
+    )
+    dist = json.dumps({"mu": mu, "sigma": sigma, "n_sources": 2, "df": df})
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, dist_params, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, market_id, bucket_label, p_win, dist, 0.1, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        (market_id, actual, "t"),
+    )
+
+
+def test_compute_tail_calibration_pit_uses_family_aware_cdf_for_student_t_row():
+    """A Student-t row's PIT is t.cdf-based, not norm.cdf-based: the ratio at
+    this construction differs materially between the two families."""
+    from scipy.stats import t as student_t
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    # z=1.3: norm.cdf(1.3)=0.9032 (crosses 0.90) but student_t.cdf(1.3, df=5)=0.8748
+    # (does not): the two families land on opposite sides of the upper_10 cutoff, so
+    # this only passes if compute_tail_calibration is genuinely family-aware.
+    mu, sigma, df = 50.0, 2.0, 5.0
+    actual = mu + 1.3 * sigma
+    _insert_row_with_df(
+        conn,
+        market_id="p1",
+        run_id="rp1",
+        started_at="2026-07-01T12:00:00+00:00",
+        settlement_date="2026-07-02",
+        p_win=0.70,
+        mu=mu,
+        sigma=sigma,
+        df=df,
+        actual=actual,
+        bucket_kind="range",
+        lo=50,
+        hi=51,
+    )
+    conn.commit()
+    result = compute_tail_calibration(conn)
+    conn.close()
+
+    pit = _pit_row(result, "TMIN", 1)
+    assert pit is not None
+    assert pit["n"] == 1
+    z = (actual - mu) / sigma
+    t_pit = float(student_t.cdf(z, df))
+    normal_pit = float(norm.cdf(z))
+    assert t_pit <= 0.90 < normal_pit  # families land on opposite sides of the cutoff
+    # upper_10 is 1/1 divided by q=0.10 (=10.0) exactly when the PIT clears 1-0.10=0.90.
+    assert pit["upper_10"] == 0.0  # the t-family PIT does not clear 0.90
+
+
+def test_compute_tail_calibration_pit_skips_invalid_df():
+    """A present-but-invalid df (non-numeric or <= 0) skips the row from the
+    pit population, like the existing sigma<=0 guard."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    _insert_row_with_df(
+        conn,
+        market_id="p1",
+        run_id="rp1",
+        started_at="2026-07-01T12:00:00+00:00",
+        settlement_date="2026-07-02",
+        p_win=0.70,
+        mu=50.0,
+        sigma=2.0,
+        df="bogus",
+        actual=55.0,
+        bucket_kind="range",
+        lo=50,
+        hi=51,
+    )
+    conn.commit()
+    result = compute_tail_calibration(conn)
+    conn.close()
+
+    assert _pit_row(result, "TMIN", 1) is None  # excluded, never scored as Gaussian
+
+
 def test_cli_tail_check_smoke(tmp_path, capsys):
     db = str(tmp_path / "tail.db")
     conn = connect(db)

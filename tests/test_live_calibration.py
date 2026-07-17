@@ -460,6 +460,126 @@ def test_compute_live_calibration_gaussian_only_regression_pin():
     assert tmin3["coverage_90"] == pytest.approx(1.0, abs=1e-12)
 
 
+# ---------------------------------------------------------------------------
+# Family-aware tracking (#292): dist_params carrying "df" score with the
+# Student-t predictive family instead of the Gaussian.
+# ---------------------------------------------------------------------------
+
+
+def _pred_with_df(conn, run_id, market_id, bucket, p_win, mu, sigma, df, side="YES"):
+    dist = json.dumps({"mu": mu, "sigma": sigma, "n_sources": 2, "df": df})
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, side, p_win, dist_params, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, market_id, bucket, side, p_win, dist, 0.1, 1, "t"),
+    )
+
+
+def test_compute_live_calibration_student_t_row_uses_family_aware_crps_and_coverage():
+    """A row with a Student-t df scores CRPS/coverage via the t predictive, not
+    the Gaussian: this must differ measurably from crps_gaussian/norm.cdf and
+    match numeric_crps/std_cdf_for at the same df (the same engine calibration.py
+    fits with)."""
+    from rainmaker.probability.calibration import numeric_crps, std_cdf_for
+    from rainmaker.tracking import compute_live_calibration
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    mu, sigma, df, actual = 70.0, 2.0, 5.0, 74.5  # 2.25 sigma out: t(df=5) tail heavier than normal
+    _run(conn, "r1", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m1", variable="TMIN", settlement_date="2026-05-31")
+    _pred_with_df(conn, "r1", "m1", "70-71°F", p_win=0.70, mu=mu, sigma=sigma, df=df)
+    _outcome(conn, "m1", actual)
+    conn.commit()
+
+    rows = compute_live_calibration(conn)
+    conn.close()
+
+    assert len(rows) == 1
+    row = rows[0]
+    expected_crps = float(numeric_crps(std_cdf_for(df), mu, sigma, actual)[0])
+    assert row["crps"] == pytest.approx(expected_crps, abs=1e-9)
+    assert row["crps"] != pytest.approx(crps_gaussian(mu, sigma, actual), abs=1e-3)
+
+    from scipy.stats import t as student_t
+
+    z = (actual - mu) / sigma
+    expected_cdf = float(student_t.cdf(z, df))
+    gap = abs(expected_cdf - 0.5)
+    for q in COVERAGE_LEVELS:
+        assert row[f"coverage_{int(q * 100)}"] == pytest.approx(1.0 if gap <= q / 2 else 0.0)
+
+
+def test_compute_live_calibration_mixed_family_rows_route_independently():
+    """One (variable, lead) group with a legacy no-df-key row, an explicit
+    "df": null row, and a Student-t row: each must score with its own family,
+    and the pooled n_samples/crps must equal the per-row sum/count."""
+    from rainmaker.probability.calibration import numeric_crps, std_cdf_for
+    from rainmaker.tracking import compute_live_calibration
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    _run(conn, "r1", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m1", variable="TMIN", settlement_date="2026-05-31")
+    _pred(conn, "r1", "m1", "70-71°F", p_win=0.70, mu=70.0, sigma=2.0)  # legacy: no df key
+    _outcome(conn, "m1", 70.5)
+
+    _run(conn, "r2", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m2", variable="TMIN", settlement_date="2026-05-31")
+    # explicit null (already-migrated Gaussian row)
+    _pred_with_df(conn, "r2", "m2", "60-61°F", p_win=0.60, mu=60.0, sigma=2.0, df=None)
+    _outcome(conn, "m2", 60.5)
+
+    _run(conn, "r3", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m3", variable="TMIN", settlement_date="2026-05-31")
+    _pred_with_df(conn, "r3", "m3", "50-51°F", p_win=0.55, mu=50.0, sigma=2.0, df=5.0)
+    _outcome(conn, "m3", 53.0)
+
+    conn.commit()
+    rows = compute_live_calibration(conn)
+    conn.close()
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["n_samples"] == 3
+    expected = (
+        crps_gaussian(70.0, 2.0, 70.5)
+        + crps_gaussian(60.0, 2.0, 60.5)
+        + float(numeric_crps(std_cdf_for(5.0), 50.0, 2.0, 53.0)[0])
+    ) / 3
+    assert row["crps"] == pytest.approx(expected, abs=1e-9)
+
+
+def test_compute_live_calibration_skips_invalid_df():
+    """A present-but-invalid df (non-numeric or <= 0) skips the row, like the
+    existing sigma<=0 guard, never silently scoring it as Gaussian."""
+    from rainmaker.tracking import compute_live_calibration
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    _run(conn, "r1", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m1", variable="TMIN", settlement_date="2026-05-31")
+    _pred_with_df(conn, "r1", "m1", "70-71°F", p_win=0.70, mu=70.0, sigma=2.0, df="bogus")
+    _outcome(conn, "m1", 70.5)
+
+    _run(conn, "r2", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m2", variable="TMIN", settlement_date="2026-05-31")
+    _pred_with_df(conn, "r2", "m2", "60-61°F", p_win=0.60, mu=60.0, sigma=2.0, df=0.0)
+    _outcome(conn, "m2", 60.5)
+
+    _run(conn, "r3", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m3", variable="TMIN", settlement_date="2026-05-31")
+    _pred_with_df(conn, "r3", "m3", "50-51°F", p_win=0.55, mu=50.0, sigma=2.0, df=-3.0)
+    _outcome(conn, "m3", 53.0)
+
+    conn.commit()
+    rows = compute_live_calibration(conn)
+    conn.close()
+
+    assert rows == []  # every row had an invalid df: nothing scored
+
+
 def test_compute_live_calibration_skips_bad_dist_params():
     """Rows with unparsable dist_params are skipped without raising."""
     from rainmaker.tracking import compute_live_calibration
