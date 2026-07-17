@@ -9,7 +9,7 @@ by cli.py or any live-path module. Run it directly:
     uv run python -m rainmaker.spikes.tmax_tail_diagnosis
 
 `tail_objective.py` is imported read-only (fetch_or_load_cell_data,
-DEFAULT_CACHE_PATH, fit_student_t_free_df, apply_emos_regime, pit_tail_ratios,
+DEFAULT_CACHE_PATH, fit_student_t_free_df, apply_emos_regime,
 score_candidate_cell, CellEval) and is never edited: it is the recorded
 artifact of #284, and a concurrent #280-batch package ports code from it, so
 this module stays a sibling rather than a patch to that file.

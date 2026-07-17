@@ -1,10 +1,11 @@
 """Sanity tests for the #289 TMAX lower-tail diagnosis module.
 
 Synthetic data only: this suite never hits a live endpoint or the spike's
-cache file. `tail_objective.py` is imported read-only here (fetch_or_load_cell_data,
-DEFAULT_CACHE_PATH, fit_student_t_free_df, apply_emos_regime, pit_tail_ratios,
-score_candidate_cell, CellEval) and must never be edited by this package: a
-concurrent package ports code from it, so a shared edit would race.
+cache file. `tail_objective.py` is imported read-only here (via
+tmax_tail_diagnosis: fetch_or_load_cell_data, DEFAULT_CACHE_PATH,
+fit_student_t_free_df, apply_emos_regime, score_candidate_cell, CellEval) and
+must never be edited by this package: a concurrent package ports code from
+it, so a shared edit would race.
 """
 
 from __future__ import annotations
