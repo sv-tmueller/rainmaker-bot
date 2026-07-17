@@ -213,11 +213,11 @@ def save_calibration(conn: Conn, cal: Calibration, *, updated_at: str) -> None:
     conn.execute(
         """
         INSERT INTO calibration
-            (station, variable, lead_time, bias, var_a, var_b, n_samples, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (station, variable, lead_time, bias, var_a, var_b, df, n_samples, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(station, variable, lead_time) DO UPDATE SET
             bias = excluded.bias, var_a = excluded.var_a, var_b = excluded.var_b,
-            n_samples = excluded.n_samples, updated_at = excluded.updated_at
+            df = excluded.df, n_samples = excluded.n_samples, updated_at = excluded.updated_at
         """,
         (
             cal.station,
@@ -226,6 +226,7 @@ def save_calibration(conn: Conn, cal: Calibration, *, updated_at: str) -> None:
             cal.bias,
             cal.var_a,
             cal.var_b,
+            cal.df,
             cal.n_samples,
             updated_at,
         ),

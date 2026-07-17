@@ -53,7 +53,7 @@ from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import parse_market
 from rainmaker.polymarket.prices import PricePoint, fetch_price_history, last_before
 from rainmaker.polymarket.trades import FillPoint, fetch_fills
-from rainmaker.probability.calibration import Calibration
+from rainmaker.probability.calibration import Calibration, Predictive
 from rainmaker.probability.distribution import fit_gaussian
 from rainmaker.probability.outcomes import bucket_probability, settles
 from rainmaker.ranking.edge import RankedOutcome, evaluate_market
@@ -555,8 +555,9 @@ def backtest_pnl(
             candidate_token_ids: list[str] = []
             # Use the lowest floor for candidate selection (widest net across sides).
             _candidate_floor = min(floor, floor_no) if floor_no is not None else floor
+            raw_predictive = Predictive(mu=gaussian.mu, sigma=gaussian.sigma)
             for bucket in market.buckets:
-                p_win = bucket_probability(gaussian, bucket)
+                p_win = bucket_probability(raw_predictive, bucket)
                 if p_win >= floor or (1 - p_win) >= _candidate_floor:  # candidate on some side
                     histories[bucket.yes_token_id] = fetch_price_history(
                         bucket.yes_token_id, start_ts, end_ts, client

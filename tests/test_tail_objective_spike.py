@@ -81,10 +81,10 @@ def test_pit_tail_ratios_matches_hand_count() -> None:
 def test_bucket_probability_generic_matches_gaussian_outcomes() -> None:
     """Ported continuity correction must match outcomes.bucket_probability exactly."""
     from rainmaker.domain import Bucket
-    from rainmaker.probability.distribution import Gaussian
+    from rainmaker.probability.calibration import Predictive
     from rainmaker.probability.outcomes import bucket_probability
 
-    g = Gaussian(mu=55.0, sigma=4.0)
+    g = Predictive(mu=55.0, sigma=4.0)
     buckets = [
         Bucket(
             label="54° or below",

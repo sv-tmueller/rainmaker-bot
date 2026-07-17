@@ -45,6 +45,10 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
             "ALTER TABLE forecast_accuracy ADD COLUMN reliability TEXT",
         ],
     ),
+    # Student-t degrees of freedom for a calibration cell (#291). NULL is a valid
+    # Gaussian row, not an absent one: apply_calibration trusts df presence to
+    # dispatch family, so a legacy or Gaussian-fit row must stay NULL, not 0.
+    ("0011_calibration_df", ["ALTER TABLE calibration ADD COLUMN df REAL"]),
 ]
 
 

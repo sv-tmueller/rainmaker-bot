@@ -398,6 +398,13 @@ MIN_CAL_SAMPLES = 30  # a cell needs this many pairs before its calibration is t
 UNCALIBRATED_WIDEN = 1.25  # widen the raw spread when a cell is uncalibrated
 BACKFILL_DAYS = 45  # default history window for calibration; literature optimum ~30-45 days
 
+# Predictive family per variable (#291): governs FIT dispatch in run_backfill.
+# Variables not listed default to "gaussian" (see callers' CALIBRATION_FAMILY.get(...,
+# "gaussian")). APPLY-side dispatch is separate and lives on the row itself
+# (Calibration.df presence), not here: this map only decides what a fresh
+# backfill fits, not how an already-stored row is applied.
+CALIBRATION_FAMILY: dict[str, str] = {"TMIN": "student_t"}
+
 # Meteorological season start months: DJF=Dec, MAM=Mar, JJA=Jun, SON=Sep.
 _SEASON_START_MONTHS = {
     12: 12,

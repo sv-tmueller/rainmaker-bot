@@ -195,6 +195,20 @@ def test_load_calibration_returns_none_for_null_emos_columns():
     assert result is None
 
 
+def test_migration_adds_calibration_df_column():
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO calibration (station, variable, lead_time, bias, var_a, var_b, df, n_samples)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("KKMDW", "TMIN", 1, -0.5, 1.2, 0.8, 6.5, 45),
+    )
+    conn.commit()
+    row = conn.execute("SELECT df FROM calibration").fetchone()
+    conn.close()
+    assert row["df"] == pytest.approx(6.5)
+
+
 def test_apply_migrations_crash_safe_when_alter_already_applied():
     """apply_migrations must succeed when a column was added but never recorded.
 

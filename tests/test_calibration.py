@@ -375,6 +375,78 @@ def test_apply_boundary_n30_is_full():
 
 
 # ---------------------------------------------------------------------------
+# apply_calibration: family-aware (df presence dispatches Gaussian vs Student-t)
+# ---------------------------------------------------------------------------
+
+
+def test_apply_full_regime_with_df_returns_student_t_predictive():
+    """df present on a full-regime cell surfaces on the returned Predictive."""
+    g = Gaussian(mu=70.0, sigma=2.0)
+    cal = Calibration(
+        station="KKMDW",
+        variable="TMIN",
+        lead_time=1,
+        bias=1.0,
+        var_a=1.0,
+        var_b=2.0,
+        df=6.0,
+        n_samples=50,
+    )
+    out, state = apply_calibration(g, cal, min_sigma=1.5, min_samples=30)
+    assert state == "full"
+    assert out.mu == pytest.approx(69.0)
+    assert out.sigma == pytest.approx(3.0)
+    assert out.df == pytest.approx(6.0)
+
+
+def test_apply_full_regime_without_df_is_gaussian_predictive():
+    """The literal existing Gaussian branch: df absent -> Predictive.df is None."""
+    g = Gaussian(mu=70.0, sigma=2.0)
+    cal = Calibration(
+        station="KLGA", variable="TMAX", lead_time=1, bias=1.0, var_a=1.0, var_b=2.0, n_samples=50
+    )
+    out, state = apply_calibration(g, cal, min_sigma=1.5, min_samples=30)
+    assert state == "full"
+    assert out.df is None
+
+
+def test_apply_bias_only_regime_ignores_df():
+    """df applies only in the full regime; bias_only stays Gaussian-widened."""
+    g = Gaussian(mu=70.0, sigma=2.0)
+    cal = Calibration(
+        station="KKMDW",
+        variable="TMIN",
+        lead_time=1,
+        bias=1.0,
+        var_a=0.0,
+        var_b=1.0,
+        df=6.0,
+        n_samples=15,
+    )
+    out, state = apply_calibration(g, cal, min_sigma=1.5, min_samples=30, min_bias_samples=10)
+    assert state == "bias_only"
+    assert out.df is None
+
+
+def test_apply_uncalibrated_regime_ignores_df():
+    """df applies only in the full regime; uncalibrated stays Gaussian-widened."""
+    g = Gaussian(mu=70.0, sigma=2.0)
+    cal = Calibration(
+        station="KKMDW",
+        variable="TMIN",
+        lead_time=1,
+        bias=1.0,
+        var_a=0.0,
+        var_b=1.0,
+        df=6.0,
+        n_samples=5,
+    )
+    out, state = apply_calibration(g, cal, min_sigma=1.5, min_samples=30, min_bias_samples=10)
+    assert state == "uncalibrated"
+    assert out.df is None
+
+
+# ---------------------------------------------------------------------------
 # Store round-trip: var_a and var_b persist and reload correctly
 # ---------------------------------------------------------------------------
 
@@ -399,6 +471,43 @@ def test_calibration_save_load_round_trip():
     reloaded = load_calibration(conn, "KLGA", "TMAX", 1)
     assert reloaded is not None and reloaded.bias == 2.0
     assert load_calibration(conn, "KLGA", "TMAX", 2) is None
+    conn.close()
+
+
+def test_calibration_df_defaults_to_none():
+    """A Calibration built without df (the Gaussian case) has df=None, not 0."""
+    cal = Calibration(
+        station="KLGA", variable="TMAX", lead_time=1, bias=0.0, var_a=0.0, var_b=1.0, n_samples=40
+    )
+    assert cal.df is None
+
+
+def test_calibration_df_round_trips_through_the_store():
+    """A Student-t cell's df survives save/load; NULL stays a valid Gaussian row."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    cal = Calibration(
+        station="KKMDW",
+        variable="TMIN",
+        lead_time=1,
+        bias=0.5,
+        var_a=1.0,
+        var_b=1.5,
+        df=6.2,
+        n_samples=45,
+    )
+    save_calibration(conn, cal, updated_at="2026-07-17T10:00:00Z")
+    reloaded = load_calibration(conn, "KKMDW", "TMIN", 1)
+    assert reloaded == cal
+    assert reloaded is not None and reloaded.df == pytest.approx(6.2)
+
+    # A Gaussian cell (df=None) round-trips as NULL, not absent.
+    gaussian_cal = Calibration(
+        station="KLGA", variable="TMAX", lead_time=1, bias=0.0, var_a=0.0, var_b=1.0, n_samples=40
+    )
+    save_calibration(conn, gaussian_cal, updated_at="2026-07-17T10:00:00Z")
+    reloaded_gaussian = load_calibration(conn, "KLGA", "TMAX", 1)
+    assert reloaded_gaussian is not None and reloaded_gaussian.df is None
     conn.close()
 
 
