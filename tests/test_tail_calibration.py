@@ -383,6 +383,63 @@ def test_prcp_excluded_and_variable_lead_keys_stay_separate():
     assert _pit_row(result, "TMIN", 2) is not None
 
 
+def test_since_filter_restricts_to_runs_on_or_after_the_cutoff():
+    """--since filters both the primary and PIT populations on runs.started_at.
+
+    Two runs on distinct markets straddle the cutoff date. Without `since`, both
+    count; with `since` set to the cutoff, only the later run's row survives.
+    """
+    conn = connect(":memory:")
+    init_schema(conn)
+    _insert_row(
+        conn,
+        market_id="m9-before",
+        run_id="r9-before",
+        started_at="2026-07-05T12:00:00+00:00",
+        settlement_date="2026-07-06",
+        p_win=0.90,
+        mu=70.0,
+        sigma=10.0,
+        actual=70.0,
+        bucket_kind="below",
+        threshold=75,
+    )
+    _insert_row(
+        conn,
+        market_id="m9-after",
+        run_id="r9-after",
+        started_at="2026-07-06T12:00:00+00:00",
+        settlement_date="2026-07-07",
+        p_win=0.90,
+        mu=70.0,
+        sigma=10.0,
+        actual=70.0,
+        bucket_kind="below",
+        threshold=75,
+    )
+    conn.commit()
+
+    unfiltered = compute_tail_calibration(conn)
+    filtered = compute_tail_calibration(conn, since="2026-07-06")
+    conn.close()
+
+    row_unfiltered = _primary_row(unfiltered, "TMAX", 1, "YES", "[0.90,0.95)")
+    assert row_unfiltered is not None
+    assert row_unfiltered["n"] == 2
+
+    row_filtered = _primary_row(filtered, "TMAX", 1, "YES", "[0.90,0.95)")
+    assert row_filtered is not None
+    assert row_filtered["n"] == 1
+
+    pit_unfiltered = _pit_row(unfiltered, "TMAX", 1)
+    assert pit_unfiltered is not None
+    assert pit_unfiltered["n"] == 2
+
+    pit_filtered = _pit_row(filtered, "TMAX", 1)
+    assert pit_filtered is not None
+    assert pit_filtered["n"] == 1
+
+
 def test_cli_tail_check_smoke(tmp_path, capsys):
     db = str(tmp_path / "tail.db")
     conn = connect(db)
@@ -413,3 +470,9 @@ def test_cli_tail_check_smoke(tmp_path, capsys):
     assert "PIT tail-occurrence" in out
     assert "TMAX" in out
     assert "OVER" in out
+    assert "since:" not in out  # omitting --since prints no filter line
+
+    _tail_check(db, since="2026-07-06")
+
+    out_since = capsys.readouterr().out
+    assert "since: 2026-07-06" in out_since

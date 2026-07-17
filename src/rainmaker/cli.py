@@ -589,17 +589,19 @@ def _clv(db_path: str) -> None:
             print(f"{s['segment']:<20} {s['n']:>5} {clv_val:>10}")
 
 
-def _tail_check(db_path: str, by_hour: bool = False) -> None:
+def _tail_check(db_path: str, by_hour: bool = False, since: str | None = None) -> None:
     if "://" not in db_path:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
     try:
         init_schema(conn)
-        result = compute_tail_calibration(conn, by_hour=by_hour)
+        result = compute_tail_calibration(conn, by_hour=by_hour, since=since)
     finally:
         conn.close()
 
     hour_hdr = f"{'Hr':>3} " if by_hour else ""
+    if since is not None:
+        print(f"since: {since}")
     print("--- Claimed vs realized (tail calibration) ---")
     print(
         f"{'Variable':<9} {'Lead':>4} {hour_hdr}{'Side':<4} {'Bin':<12} {'n':>4} "
@@ -826,6 +828,12 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="also split each (variable, lead) cell by the run's UTC hour",
     )
+    tail_check.add_argument(
+        "--since",
+        type=date.fromisoformat,
+        default=None,
+        help="restrict to predictions whose run started on or after this date (YYYY-MM-DD)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -870,4 +878,5 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "snapshot":
         _snapshot(db)
     elif args.command == "tail-check":
-        _tail_check(db, args.by_hour)
+        since = args.since.isoformat() if args.since is not None else None
+        _tail_check(db, args.by_hour, since)

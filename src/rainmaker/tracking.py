@@ -745,14 +745,19 @@ def _latest_run_per_market_day_hour(rows: list[dict[str, Any]]) -> list[dict[str
     return [r for r in rows if (r["market_id"], r["run_id"]) in keep]
 
 
-def compute_tail_calibration(conn: Conn, by_hour: bool = False) -> dict[str, list[dict[str, Any]]]:
+def compute_tail_calibration(
+    conn: Conn, by_hour: bool = False, since: str | None = None
+) -> dict[str, list[dict[str, Any]]]:
     """Claimed-vs-realized tail calibration plus PIT tail ratios, per (variable, lead).
 
     Read-only diagnostic: no refit, no gate change, no persistence. Temperature
     only (m.variable != 'PRCP'); same population and dedup as compute_live_calibration
     (see its docstring) unless by_hour is set, which dedups per (market, UTC day,
     hour) instead of per (market, UTC day) so the hour split survives the
-    intraday-rerun collapse, and adds hour to every group key.
+    intraday-rerun collapse, and adds hour to every group key. When since is set
+    (an ISO date string), both populations are restricted to predictions whose
+    run started on or after that date (runs.started_at, not settlement time),
+    for regime-clean readouts after a calibration or code change.
 
     Primary ("primary"): a YES bucket row is a YES-tail claim at its own p_win
     when p_win >= 0.5, else a NO-tail claim at 1 - p_win (event: the bucket did
@@ -767,6 +772,12 @@ def compute_tail_calibration(conn: Conn, by_hour: bool = False) -> dict[str, lis
     """
     dedup = _latest_run_per_market_day_hour if by_hour else _latest_run_per_market_day
 
+    # started_at is TEXT ISO-8601 on both backends, so lexicographic comparison
+    # of the "YYYY-MM-DD" cutoff against a full timestamp gives on-or-after
+    # semantics ("2026-07-06" < "2026-07-06T00:...") without a cast.
+    since_clause = " AND r.started_at >= ?" if since is not None else ""
+    since_params = (since,) if since is not None else ()
+
     dist_rows = conn.execute(
         "SELECT DISTINCT p.run_id AS run_id, p.market_id AS market_id, "
         "p.dist_params AS dist_params, m.variable AS variable, "
@@ -777,7 +788,8 @@ def compute_tail_calibration(conn: Conn, by_hour: bool = False) -> dict[str, lis
         "JOIN markets m ON m.id = p.market_id "
         "JOIN runs r ON r.id = p.run_id "
         "WHERE p.dist_params IS NOT NULL AND o.actual_value IS NOT NULL "
-        "AND m.variable != 'PRCP'"
+        "AND m.variable != 'PRCP'" + since_clause,
+        since_params,
     ).fetchall()
 
     pit_groups: dict[tuple[str, int, int | None], list[tuple[float, float, float]]] = defaultdict(
@@ -814,7 +826,8 @@ def compute_tail_calibration(conn: Conn, by_hour: bool = False) -> dict[str, lis
         "JOIN runs r ON r.id = p.run_id "
         "WHERE p.bucket IS NOT NULL AND o.actual_value IS NOT NULL "
         "AND COALESCE(p.side, 'YES') = 'YES' "
-        "AND m.variable != 'PRCP'"
+        "AND m.variable != 'PRCP'" + since_clause,
+        since_params,
     ).fetchall()
 
     tail_groups: dict[tuple[str, int, int | None, str, str], list[tuple[float, bool]]] = (
