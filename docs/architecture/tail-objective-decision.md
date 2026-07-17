@@ -269,3 +269,276 @@ spike's non-goals (no live-path changes, no refit) and belongs to the next
   `standard_buckets` (2-degree ranges, +/-10 degrees), not real market
   buckets, mirroring `backtest.py`'s existing synthetic-ladder methodology,
   not real Polymarket/Kalshi ladders.
+
+## Addendum (#289): TMAX lower-tail resistance, diagnosed
+
+Part of the #280 umbrella, batch #287. This diagnoses why TMAX lead 1-2's
+lower tail gets worse under every heavier-tailed variant above while TMIN's is
+fixed, before any live-path family change is proposed. No live-path change and
+no refit here; the deliverable is evidence and one recommendation. Code lives
+in a sibling spike module, `src/rainmaker/spikes/tmax_tail_diagnosis.py`
+(tests: `tests/test_tmax_tail_diagnosis_spike.py`), which imports
+`tail_objective.py` read-only and never edits it. Reproduce with:
+
+```
+uv run python -m rainmaker.spikes.tmax_tail_diagnosis
+```
+
+**Provenance.** This reuses the exact cached archive from the comparison
+above (`fetch_or_load_cell_data`, same `DEFAULT_CACHE_PATH`; no refetch was
+needed), so the two write-ups share one data pull: 13 stations, TMAX and TMIN,
+leads 0-2, 2026-03-18 to 2026-07-16 (120 days). Meteorological-season
+composition of that window: 75 days MAM (Mar 18 - May 31) and 46 days JJA
+(Jun 1 - Jul 16), confirming the sub-plan's observation that the comparison's
+60/40 chronological split (fit oldest 60%, eval newest 40%) fits on a
+MAM-dominated window and evaluates on a JJA-dominated one -- closer to a
+season-*mismatched* fit than a season-*mixed* one. That observation is the
+lead hypothesis Diagnostic C tests directly below.
+
+### Decision rules, stated before any number below
+
+**Diagnostic A (residual shape).** A cell reads **"skew, not kurtosis"**
+when moment skewness g1 < -3\*se_skew (se_skew = sqrt(6/n)) *and* the robust
+decile (Kelly) skewness agrees in sign, while excess kurtosis g2 is not
+significant (\|g2\| < 3\*se_kurt, se_kurt = sqrt(24/n)) or clearly below a
+named contrast cell's g2 (TMIN's same lead for a TMAX row, and vice versa).
+The mirror, **"kurtosis, not skew"**, is g2 > 3\*se_kurt with no matching
+skew signal. Anything else is **"inconclusive"** at this sample size.
+
+**Diagnostic C (season A/B).** The season-pure fit is read as *fixing* the
+mechanism only if it collapses TMAX's Lo.05 toward 1.0 (and toward the live
+1.30 read below) *and* that collapse holds across arms (JJA season-pure and
+the fully-in-season MAM arm), not just one. A collapse in one arm only is
+read as arm-specific noise, not a mechanism finding.
+
+### Diagnostic A: residual shape per (variable, lead) cell
+
+Baseline (Gaussian EMOS) fit, same 60/40 split and per-station design as the
+comparison above, pooled per (variable, lead) across the 13 stations (6
+cells: 2 variables x 3 leads; the sub-plan's estimate of "12 cells" appears to
+have conflated cell count with the comparison table's per-candidate row
+count above). se_skew = sqrt(6/n), se_kurt = sqrt(24/n) at each row's own n.
+
+| Variable | Lead | n | g1 | se_skew | g2 | se_kurt | Kelly | Reading |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| TMAX | 0 | 635 | 1.630 | 0.097 | 9.897 | 0.194 | 0.070 | kurtosis, not skew |
+| TMAX | 1 | 635 | 0.832 | 0.097 | 4.919 | 0.194 | -0.030 | kurtosis, not skew |
+| TMAX | 2 | 635 | 0.597 | 0.097 | 4.569 | 0.194 | 0.034 | kurtosis, not skew |
+| TMIN | 0 | 635 | -0.240 | 0.097 | 0.871 | 0.194 | -0.038 | kurtosis, not skew |
+| TMIN | 1 | 635 | -0.611 | 0.097 | 2.283 | 0.194 | -0.175 | skew, not kurtosis |
+| TMIN | 2 | 635 | -0.593 | 0.097 | 1.569 | 0.194 | -0.161 | skew, not kurtosis |
+
+**This is the opposite of the naive hypothesis in #289's issue body** ("if
+cold busts make the TMAX error distribution asymmetric, the deficit is skew,
+not kurtosis"). By the pre-stated rule, TMAX reads *kurtosis, not skew* at
+every lead (g2 large and clearly above TMIN's same-lead g2, Kelly skew near
+zero) while TMIN reads *skew, not kurtosis* at leads 1-2 (Kelly skew agrees in
+sign with g1, and g2 -- while itself non-trivial -- is clearly smaller than
+TMAX's same-lead g2). Read alone, this would suggest a symmetric heavier tail
+*should* help TMAX and *shouldn't* help TMIN -- backwards from the
+comparison's actual PIT-ratio results above.
+
+The resolution is in the *robust* column, not the significance flags: TMAX's
+Kelly skewness (0.03 to 0.07) is close to zero -- the P10-P90 body is nearly
+symmetric -- while its moment g1 and g2 are large and driven by whatever the
+single most extreme points in the pooled sample are (kurtosis is a 4th-power
+statistic; a handful of large outliers dominate it regardless of where in the
+distribution the actual miscalibration lives). That is exactly the "outliers,
+not a shape" signature the robust companion exists to catch. TMIN's Kelly
+skewness (-0.16 to -0.18), by contrast, is a real, moderate, robust-agreeing
+body-level skew. Diagnostic A alone does not resolve which population is
+producing TMAX's extreme moments; Diagnostic B does.
+
+### Diagnostic B: concentration of lower-tail hits
+
+Same z population as A, TMAX leads 1-2 (the diagnosis target) with TMIN leads
+0-1 as contrast (#244's other two flagged cells). Expected hits at q=0.05:
+n\*0.05 (~31.8 per pooled cell here); p-values are descriptive exact-binomial,
+one-sided, **not corrected for the 13-way per-station multiplicity** (flagged
+explicitly, per the sub-plan).
+
+| Cell | Total hits.05 | Expected | Top-2 share of hits | Top-2 share of n | Distinct dates w/ >=1 hit | Max hits on one date |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| TMAX lead 1 | 86 | 31.8 | 63% | 15% | 44 / 50 | 4 / 13 stations |
+| TMAX lead 2 | 69 | 31.8 | 46% | 15% | 40 / 50 | 4 / 13 stations |
+| TMIN lead 0 | 37 | 31.8 | 35% | 15% | 31 / 50 | 2 / 13 stations |
+| TMIN lead 1 | 43 | 31.8 | 37% | 15% | 30 / 50 | 4 / 13 stations |
+
+Per-station detail for the two TMAX cells (13 stations, n per station ~48-49;
+only stations with a descriptive p < 0.05 shown, most-concentrated first; full
+per-station and per-date tables reproduce from a fresh run):
+
+| Cell | Station | Hits.05 | n | Hit rate | Expected rate | p (descriptive) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| TMAX lead 1 | KSFO | 30 | 49 | 61% | 5% | < 0.001 |
+| TMAX lead 1 | KNYC | 24 | 48 | 50% | 5% | < 0.001 |
+| TMAX lead 1 | KLAX | 9 | 49 | 18% | 5% | 0.0006 |
+| TMAX lead 2 | KSFO | 20 | 49 | 41% | 5% | < 0.001 |
+| TMAX lead 2 | KNYC | 12 | 48 | 25% | 5% | < 0.001 |
+| TMAX lead 2 | KLGA | 8 | 49 | 16% | 5% | 0.0028 |
+| TMIN lead 0 | KSEA | 7 | 49 | 14% | 5% | 0.011 |
+| TMIN lead 0 | KNYC | 6 | 48 | 13% | 5% | 0.032 |
+| TMIN lead 1 | KSEA | 9 | 49 | 18% | 5% | 0.0006 |
+| TMIN lead 1 | KNYC | 7 | 48 | 14% | 5% | 0.0095 |
+
+**Reading: station concentration, not a synoptic date cluster.** The
+per-date column rules out "a few correlated cold-snap weeks hitting every
+city at once": TMAX lead 1's 86 hits spread across 44 of the eval window's 50
+distinct dates, never more than 4 of 13 stations on any single day (versus
+the ~0.65 expected per day under a well-calibrated q=0.05). If a synoptic
+regime were driving this, hits would cluster on a handful of dates across
+most stations; instead they recur almost daily at two specific stations.
+KSFO and KNYC alone -- 2 of 13 stations, 15% of the pooled sample -- account
+for 63% (lead 1) and 46% (lead 2) of all TMAX lower-tail hits, at
+individually-implausible rates under a well-calibrated q=0.05 model (KSFO:
+61% and 41% observed hit rates against a 5% claim; KNYC: 50% and 25%). Both
+recur at both TMAX leads. TMIN's concentration is milder (35-37% from the
+same 15% of stations) and driven by a different pair (KSEA, KNYC) with no
+individual rate above 18%, consistent with TMIN's problem being closer to
+diffuse/systemic than TMAX's.
+
+Two distinct, plausible mechanisms, not one: **KSFO** is TMAX-specific (it
+does not appear among TMIN's flagged stations at either contrast lead),
+consistent with San Francisco's marine-layer fog-burnoff timing being a
+known, physical daily-high forecasting difficulty that would not equally
+affect the overnight low. **KNYC** recurs across all four cells in this
+table and is the one station in this diagnosis that is not on the ASOS path:
+per `backfill.py`'s own routing (mirrored in `ICAO_TO_ASOS_STATION`), KNYC is
+a Kalshi-only station settled against NCEI GHCND daily-summaries, not ASOS
+like every other station here, so a systematic difference in siting,
+rounding, or day-boundary convention is a live candidate mechanism, not
+merely a coincidence.
+
+### Diagnostic C: season A/B on fit windows
+
+Eval rows held fixed per arm (identical eval-row set across the mixed and
+season-pure fits, by construction -- both share one `ArmWindow.eval_start` /
+`eval_end`); only the fit window varies. JJA arm's eval = the newest 14 days
+of the archive (2026-07-03 to 2026-07-16, pooled n = 178 per cell); mixed fit
+= everything before that (2026-03-18 to 2026-07-02, MAM-heavy, the
+comparison's own design); season-pure fit = JJA-only pairs before the eval
+start (2026-06-01 to 2026-07-02, 32 days, 416 pairs pooled / ~32 per station,
+clearing `MIN_CAL_SAMPLES` = 30 at every one of the 13 stations -- 0 stations
+gated in every row below). MAM arm: fit = the archive's first 44 days
+(2026-03-18 to 2026-04-30, 572 pairs pooled / 44 per station), eval = the
+rest of that meteorological spring (2026-05-01 to 2026-05-31, 403 pairs
+pooled / ~31 per station), both fully in-season by construction; 0 stations
+gated here too.
+
+| Arm | Candidate | Var | Lead | Stations | Gated | n | Up.10 | Lo.10 | Up.05 | Lo.05 | Brier | BodyMaxDev |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| jja_mixed | baseline | TMAX | 1 | 13 | 0 | 178 | 1.07 | 2.08 | 1.12 | 2.70 | 0.792 | 0.529 |
+| jja_mixed | t_free_df | TMAX | 1 | 13 | 0 | 178 | 1.12 | 2.53 | 1.12 | 3.26 | 0.819 | 0.574 |
+| jja_season_pure | baseline | TMAX | 1 | 13 | 0 | 178 | 1.40 | 1.91 | 1.80 | 2.47 | 0.756 | 0.596 |
+| jja_season_pure | t_free_df | TMAX | 1 | 13 | 0 | 178 | 1.12 | 1.69 | 0.90 | 1.57 | 0.746 | 0.662 |
+| mam | baseline | TMAX | 1 | 13 | 0 | 403 | 0.92 | 1.66 | 1.29 | 2.18 | 0.790 | 0.408 |
+| mam | t_free_df | TMAX | 1 | 13 | 0 | 403 | 0.89 | 2.08 | 1.14 | 2.48 | 0.804 | 0.333 |
+| jja_mixed | baseline | TMAX | 2 | 13 | 0 | 178 | 0.67 | 2.25 | 0.56 | 2.47 | 0.813 | 0.688 |
+| jja_mixed | t_free_df | TMAX | 2 | 13 | 0 | 178 | 0.45 | 2.53 | 0.45 | 2.81 | 0.821 | 0.579 |
+| jja_season_pure | baseline | TMAX | 2 | 13 | 0 | 178 | 0.73 | 1.91 | 1.24 | 2.58 | 0.777 | 0.592 |
+| jja_season_pure | t_free_df | TMAX | 2 | 13 | 0 | 178 | 0.79 | 1.80 | 1.01 | 1.80 | 0.768 | 0.533 |
+| mam | baseline | TMAX | 2 | 13 | 0 | 403 | 0.87 | 0.97 | 1.39 | 1.09 | 0.799 | 0.411 |
+| mam | t_free_df | TMAX | 2 | 13 | 0 | 403 | 0.77 | 1.07 | 1.24 | 1.34 | 0.811 | 0.593 |
+| jja_mixed | baseline | TMIN | 0 | 13 | 0 | 178 | 0.84 | 1.35 | 0.45 | 1.12 | 0.666 | 0.534 |
+| jja_mixed | t_free_df | TMIN | 0 | 13 | 0 | 178 | 0.56 | 0.90 | 0.34 | 0.56 | 0.671 | 0.596 |
+| jja_season_pure | baseline | TMIN | 0 | 13 | 0 | 178 | 0.90 | 1.29 | 0.45 | 1.12 | 0.658 | 0.452 |
+| jja_season_pure | t_free_df | TMIN | 0 | 13 | 0 | 178 | 0.67 | 1.01 | 0.45 | 0.79 | 0.662 | 0.450 |
+| mam | baseline | TMIN | 0 | 13 | 0 | 403 | 0.45 | 0.97 | 0.35 | 0.99 | 0.667 | 0.402 |
+| mam | t_free_df | TMIN | 0 | 13 | 0 | 403 | 0.27 | 0.87 | 0.30 | 0.55 | 0.688 | 0.217 |
+| jja_mixed | baseline | TMIN | 1 | 13 | 0 | 178 | 0.45 | 1.29 | 0.34 | 1.57 | 0.709 | 0.675 |
+| jja_mixed | t_free_df | TMIN | 1 | 13 | 0 | 178 | 0.56 | 1.29 | 0.67 | 1.57 | 0.712 | 0.408 |
+| jja_season_pure | baseline | TMIN | 1 | 13 | 0 | 178 | 0.84 | 1.35 | 0.67 | 1.46 | 0.710 | 0.537 |
+| jja_season_pure | t_free_df | TMIN | 1 | 13 | 0 | 178 | 0.84 | 1.35 | 1.24 | 1.69 | 0.713 | 0.438 |
+| mam | baseline | TMIN | 1 | 13 | 0 | 403 | 0.50 | 1.54 | 0.55 | 1.74 | 0.734 | 0.286 |
+| mam | t_free_df | TMIN | 1 | 13 | 0 | 403 | 0.57 | 1.27 | 0.50 | 1.49 | 0.747 | 0.275 |
+
+**Reading: season purity does not fix it; the family fix is not robust
+either.** By the pre-stated rule, TMAX lead 1's baseline Lo.05 barely moves
+across fit windows (mixed 2.70 -> season-pure 2.47 -> fully-in-season MAM
+2.18): still 2.2-2.7x nominal in every arm, including the MAM arm, which is
+immune to season mixing by construction (fit and eval both entirely within
+one meteorological spring). If season mismatch were the primary mechanism,
+the MAM arm's baseline should read close to 1.0; it does not. Lead 2's MAM
+arm baseline (1.09) does read close to nominal, but that one good reading
+does not hold up across the other four TMAX rows in this table, so it reads
+as arm-specific noise (n=403, ~31/station) rather than a season-mismatch
+confirmation, per the decision rule stated above. The `t_free_df` candidate
+is not a reliable fix either: it improves Lo.05 in the JJA season-pure arm
+(2.47 -> 1.57 at lead 1; 2.58 -> 1.80 at lead 2) but is *worse* than baseline
+in the mixed arm (2.70 -> 3.26; 2.47 -> 2.81) and the MAM arm (2.18 -> 2.48;
+1.09 -> 1.34) -- the same arm-dependent, unreliable pattern the comparison
+above already found for the family change, now confirmed on in-season fit
+windows too.
+
+### Reconciling the three TMAX lead-1 Lo.05 numbers: 2.71, 1.30, 2.90
+
+All three are the same underlying mechanism (a couple of stations
+persistently under-covering, per Diagnostic B) seen through populations of
+very different size, recency, and calibration-refresh cadence -- not three
+conflicting readings:
+
+- **2.71 (this comparison's spike archive, n=635).** One static 60/40 split
+  fit over the whole 120-day window, pooled across 13 stations. KSFO and
+  KNYC's persistent under-coverage (63% of lead-1's lower-tail hits from 15%
+  of the pooled sample, Diagnostic B above) drags the pooled ratio hard, and
+  a single retrospective fit never re-adjusts to either station's drift
+  within the window.
+- **1.30 (live full-history `tail-check`, n=675, this doc's own evidence
+  baseline).** The live path refits every station's calibration on its own
+  season-clamped, continuously-rolling window (`backfill.season_window`,
+  `BACKFILL_DAYS=45`) on every scheduled run, not once retrospectively. If a
+  station's true bias or spread drifts, the live path tracks it far more
+  closely than one static split does, which dilutes exactly the kind of
+  persistent per-station miss Diagnostic B found. The live population is
+  also much larger and spans more months and weather regimes, further
+  diluting any two stations' share of the pooled ratio.
+- **2.90 (#244's post-fix week, n=124).** The smallest and most recent
+  slice: about 9-10 predictions per station over one week. With that few
+  observations per station, a single bad day at KSFO or KNYC swings the
+  pooled ratio hard in the same direction the larger populations already
+  show, which is exactly the "one correlated week" noise #244 itself
+  flagged, not a contradiction of the other two numbers.
+
+None of the three numbers requires abandoning the Gaussian family; they are
+consistent with a station-level, not a variable-wide, mechanism.
+
+### Recommendation
+
+**Stay Gaussian for TMAX; no live-path family change.** Neither the
+season-window hypothesis (Diagnostic C: the fully in-season MAM arm is still
+2.2x off nominal at lead 1) nor a variable-wide family change (the
+comparison above, plus Diagnostic C's `t_free_df` arms, both show it helps in
+some arms and actively worsens others) is supported by this data. Diagnostic
+B's finding is specific and actionable instead: two stations, KSFO and KNYC,
+account for the majority of TMAX's broken lower tail, via two distinct and
+plausible mechanisms (KSFO: a physical San-Francisco-specific TMAX
+forecasting difficulty; KNYC: the one station in this diagnosis settled
+against a different actuals source, NCEI GHCND rather than ASOS). The
+next step is a **per-station investigation of KSFO and KNYC's TMAX
+forecast/actuals pipeline** (not filed as an issue by this diagnosis; a
+follow-up decision for the #280 umbrella), not a family or season-window
+change to the live calibration.
+
+### Caveats
+
+- **13-way multiplicity, uncorrected.** Diagnostic B's per-station p-values
+  are descriptive, not multiplicity-corrected; KSFO and KNYC's rates (p <
+  0.001 each, both leads) are far past any reasonable correction threshold,
+  but the third-ranked station at each lead (KLAX, KLGA, p ~ 0.001-0.003)
+  should be read as suggestive, not confirmed.
+- **Season-arm sample sizes.** The JJA arms pool n=178 (~14/station); the MAM
+  arm pools n=403 (~31/station). Both are thinner than the comparison's own
+  ~48-day eval window (n=635), so Diagnostic C's individual ratios carry more
+  sampling noise than the headline comparison table above, even though the
+  qualitative "does not collapse toward 1.0" reading is consistent across
+  five of six TMAX rows.
+- **Correlated-day exposure remains, even though this diagnosis's own
+  per-date table did not find it.** Diagnostic B's date column rules out a
+  *single dominant* synoptic date for TMAX's lower-tail hits, but the eval
+  windows are still short (14-50 days) and cold or warm spells still
+  correlate weather across nearby stations on any given day; this is not a
+  fully independent-sample guarantee.
+- **Archive-proxy sigma and lead-0 freshness** carry over unchanged from the
+  comparison's own caveats above: multi-model disagreement, not the live
+  pooled-source spread, and lead-0's archive is mildly fresher than the live
+  morning run sees.
