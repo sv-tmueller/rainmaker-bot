@@ -16,10 +16,18 @@ The dated md/json report is attached to each run as an artifact.
 
 `.github/workflows/daily-diagnostics.yml` runs once a day, after the 21:00 run's
 settle: `rainmaker snapshot`, then `rainmaker track` and `rainmaker tail-check`.
-These are read-only diagnostics over the full settled history; running them
-every 3 hours instead of daily was most of the Supabase egress this bot
-generates (#277), since `snapshot` upserts one row per day regardless of
-cadence.
+These are read-only diagnostics; running them every 3 hours instead of daily
+was most of the Supabase egress this bot generates (#277), since `snapshot`
+upserts one row per day regardless of cadence.
+
+`tail-check` runs twice: once over the full settled history, and once with
+`--since` restricted to the active calibration regime's start date
+(currently 2026-07-06, hardcoded in the workflow). The full-history run is
+the cross-regime baseline; the since-filtered run isolates calibration under
+the current fit, since a prior refit can make older runs a poor guide to
+current performance. When a refit lands (a prod `backfill` re-run), update
+the `--since` date in `daily-diagnostics.yml` in the same change that
+records the refit.
 
 Every CLI command targets local SQLite (default `rainmaker.db`) unless
 `DATABASE_URL` is set to a postgres DSN. Export the prod DSN locally only when
