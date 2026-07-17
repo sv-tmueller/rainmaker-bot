@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict
 from rainmaker.domain import Market, PrecipMonthlyMarket
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.forecasts.precip import PrecipForecastSet
-from rainmaker.probability.calibration import Calibration, apply_calibration
+from rainmaker.probability.calibration import Calibration, Predictive, apply_calibration
 from rainmaker.probability.distribution import fit_gaussian
 from rainmaker.probability.outcomes import bucket_probability
 from rainmaker.probability.precip_distribution import fit_gamma
@@ -105,14 +105,16 @@ def evaluate_market(
     # the fitted Gaussian lives in the same unit as the bucket edges.
     samples = [_f_to_c(s) for s in forecast_set.samples] if unit == "C" else forecast_set.samples
     gaussian = fit_gaussian(samples, min_sigma=min_sigma)
-    # Apply calibration only when a cell is provided; with none, use the raw fit.
+    # Apply calibration only when a cell is provided; with none, use the raw fit
+    # wrapped as a Gaussian (df=None) predictive.
     calibrated: Literal["uncalibrated", "bias_only", "full"] = "uncalibrated"
+    predictive = Predictive(mu=gaussian.mu, sigma=gaussian.sigma)
     if calibration is not None:
-        gaussian, calibrated = apply_calibration(gaussian, calibration, min_sigma=min_sigma)
+        predictive, calibrated = apply_calibration(gaussian, calibration, min_sigma=min_sigma)
     outcomes: list[RankedOutcome] = []
     excluded: list[str] = []
     for bucket in market.buckets:
-        p_win = bucket_probability(gaussian, bucket)
+        p_win = bucket_probability(predictive, bucket)
         # YES side: priced off the YES ask. recommended gates are confidence floor
         # + min sources + minimum edge. The edge threshold keeps near-worthless
         # bets (pay 0.99 to win 0.01) out of the recommendations.
@@ -163,8 +165,8 @@ def evaluate_market(
     return MarketReport(
         **common,
         calibrated=calibrated,
-        mu=gaussian.mu,
-        sigma=gaussian.sigma,
+        mu=predictive.mu,
+        sigma=predictive.sigma,
         outcomes=outcomes,
         excluded_no_ask=excluded,
     )

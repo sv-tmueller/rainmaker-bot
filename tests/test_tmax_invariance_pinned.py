@@ -46,7 +46,9 @@ def _bucket(kind: str, *, lo=None, hi=None, threshold=None) -> Bucket:
 
 
 def test_pinned_apply_calibration_full_regime():
-    out, state = apply_calibration(RAW, _cal(50), min_sigma=1.5, min_samples=30, min_bias_samples=10)
+    out, state = apply_calibration(
+        RAW, _cal(50), min_sigma=1.5, min_samples=30, min_bias_samples=10
+    )
     assert state == "full"
     assert out.mu == 69.2
     assert out.sigma == 3.5304390661785967
@@ -54,7 +56,9 @@ def test_pinned_apply_calibration_full_regime():
 
 
 def test_pinned_apply_calibration_bias_only_regime():
-    out, state = apply_calibration(RAW, _cal(15), min_sigma=1.5, min_samples=30, min_bias_samples=10)
+    out, state = apply_calibration(
+        RAW, _cal(15), min_sigma=1.5, min_samples=30, min_bias_samples=10
+    )
     assert state == "bias_only"
     assert out.mu == 69.2
     assert out.sigma == 3.375

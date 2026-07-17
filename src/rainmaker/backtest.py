@@ -23,8 +23,7 @@ from rainmaker.backfill import build_pairs, fetch_historical_forecasts, venue_ac
 from rainmaker.config import MIN_CAL_SAMPLES, MIN_SIGMA_F, Station
 from rainmaker.domain import Bucket, BucketKind, Market
 from rainmaker.polymarket.markets import parse_market
-from rainmaker.probability.calibration import apply_calibration, fit_calibration
-from rainmaker.probability.distribution import Gaussian
+from rainmaker.probability.calibration import Predictive, apply_calibration, fit_calibration
 from rainmaker.probability.outcomes import bucket_probability, settles
 
 COVERAGE_LEVELS = (0.50, 0.80, 0.90)
@@ -131,7 +130,7 @@ class BacktestPair(BaseModel):
     calibrated: BacktestResult
 
 
-def score_day(g: Gaussian, buckets: list[Bucket], actual: float) -> DayScore:
+def score_day(g: Predictive, buckets: list[Bucket], actual: float) -> DayScore:
     """Score one (forecast, actual) day over a bucket ladder."""
     probs = [bucket_probability(g, b) for b in buckets]
     wins = [settles(b.kind, b.lo, b.hi, b.threshold, actual) for b in buckets]
@@ -227,7 +226,7 @@ def backtest_synthetic(
             continue
         actual = actuals[d]
         buckets = standard_buckets(g.mu, width=width, span=span)
-        uncal_days.append(score_day(g, buckets, actual))
+        uncal_days.append(score_day(Predictive(mu=g.mu, sigma=g.sigma), buckets, actual))
         g_cal, _ = apply_calibration(g, cal, min_sigma=MIN_SIGMA_F, min_samples=MIN_CAL_SAMPLES)
         cal_days.append(score_day(g_cal, buckets, actual))
 
@@ -397,5 +396,5 @@ def backtest_real(
             actual = actuals.get(market.target.local_date)
             if g is None or actual is None:
                 continue
-            days.append(score_day(g, market.buckets, actual))
+            days.append(score_day(Predictive(mu=g.mu, sigma=g.sigma), market.buckets, actual))
     return aggregate(days) if days else None

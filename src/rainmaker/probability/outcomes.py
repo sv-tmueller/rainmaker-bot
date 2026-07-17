@@ -1,18 +1,23 @@
-from scipy.stats import norm
+from scipy.stats import norm, t
 
 from rainmaker.domain import Bucket, BucketKind
-from rainmaker.probability.distribution import Gaussian
+from rainmaker.probability.calibration import Predictive
 
 
-def bucket_probability(g: Gaussian, bucket: Bucket) -> float:
+def bucket_probability(g: Predictive, bucket: Bucket) -> float:
     """P(settled value falls in this bucket), continuity-corrected.
 
     Settlement rounds to whole degrees F, so bucket "A-B" captures true temperatures
     in [A-0.5, B+0.5); "X or below" is (-inf, X+0.5]; "Y or higher" is [Y-0.5, +inf).
+
+    g.df is None -> the original Gaussian norm.cdf computation, byte-identical to
+    before this generalized; g.df set -> Student-t(df) at the same (mu, sigma).
     """
 
     def cdf(x: float) -> float:
-        return float(norm.cdf(x, loc=g.mu, scale=g.sigma))
+        if g.df is None:
+            return float(norm.cdf(x, loc=g.mu, scale=g.sigma))
+        return float(t.cdf((x - g.mu) / g.sigma, g.df))
 
     if bucket.kind == "below":
         # parse_bucket guarantees a "below" bucket always has a threshold set.

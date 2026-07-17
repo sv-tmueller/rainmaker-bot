@@ -12,7 +12,7 @@ from rainmaker.backtest import (
     standard_buckets,
 )
 from rainmaker.domain import parse_bucket_label
-from rainmaker.probability.distribution import Gaussian
+from rainmaker.probability.calibration import Predictive
 from rainmaker.probability.outcomes import bucket_probability
 
 # ---------------------------------------------------------------------------
@@ -41,7 +41,7 @@ def test_crps_gaussian_shrinks_to_abs_error_as_sigma_approaches_zero():
 
 def test_standard_buckets_partition_sums_to_one():
     buckets = standard_buckets(70.0)
-    g = Gaussian(mu=71.3, sigma=4.0)
+    g = Predictive(mu=71.3, sigma=4.0)
     total = sum(bucket_probability(g, b) for b in buckets)
     assert total == pytest.approx(1.0, abs=1e-9)
 
@@ -62,7 +62,7 @@ def test_standard_buckets_labels_round_trip():
 
 
 def test_score_day_hit_is_well_covered():
-    g = Gaussian(mu=70.0, sigma=2.0)
+    g = Predictive(mu=70.0, sigma=2.0)
     score = score_day(g, standard_buckets(70.0), actual=70.0)
     assert score.modal_won is True
     # actual at the mean: cdf = 0.5, inside every central interval
@@ -70,14 +70,14 @@ def test_score_day_hit_is_well_covered():
 
 
 def test_score_day_one_sigma_coverage():
-    g = Gaussian(mu=70.0, sigma=2.0)
+    g = Predictive(mu=70.0, sigma=2.0)
     score = score_day(g, standard_buckets(70.0), actual=72.0)  # +1 sigma
     # cdf(+1 sigma) ~= 0.841, |0.841-0.5| = 0.341: outside 50%, inside 80%/90%
     assert score.coverage == {0.5: False, 0.8: True, 0.9: True}
 
 
 def test_score_day_far_miss_loses_modal():
-    g = Gaussian(mu=70.0, sigma=2.0)
+    g = Predictive(mu=70.0, sigma=2.0)
     score = score_day(g, standard_buckets(70.0), actual=64.0)
     assert score.modal_won is False
     assert score.coverage[0.9] is False
