@@ -394,6 +394,72 @@ def test_compute_live_calibration_excludes_prcp():
     assert "TMAX" in variables
 
 
+# ---------------------------------------------------------------------------
+# Regression pin (#292): captured from the pre-family-aware implementation on
+# a Gaussian-only, no-df-key (historical shape) seeded store. Family-aware
+# tracking must reproduce these exact numbers for rows with no "df" key: this
+# is the proof that adding Student-t support does not perturb Gaussian scoring.
+# ---------------------------------------------------------------------------
+
+
+def test_compute_live_calibration_gaussian_only_regression_pin():
+    from rainmaker.tracking import compute_live_calibration
+
+    conn = connect(":memory:")
+    init_schema(conn)
+
+    def _mk(market_id, variable, settlement_date, run_id, started_at, bucket, p_win, mu, sigma):
+        _run(conn, run_id, started_at)
+        _market(conn, market_id, variable=variable, settlement_date=settlement_date)
+        _pred(conn, run_id, market_id, bucket, p_win=p_win, mu=mu, sigma=sigma)
+
+    _mk("p1", "TMAX", "2026-07-02", "rp1", "2026-07-01T12:00:00+00:00", "70-71°F", 0.72, 70.0, 2.0)
+    _outcome(conn, "p1", 70.5)
+    _mk("p2", "TMAX", "2026-07-02", "rp2", "2026-07-01T12:00:00+00:00", "72-73°F", 0.55, 71.0, 3.0)
+    _outcome(conn, "p2", 74.0)
+    _mk("p3", "TMAX", "2026-07-03", "rp3", "2026-07-01T12:00:00+00:00", "68-69°F", 0.30, 65.0, 2.5)
+    _outcome(conn, "p3", 68.5)
+    _mk("p4", "TMIN", "2026-07-03", "rp4", "2026-07-01T09:00:00+00:00", "50-51°F", 0.61, 49.0, 1.8)
+    _outcome(conn, "p4", 50.2)
+    _mk("p5", "TMIN", "2026-07-04", "rp5", "2026-07-01T09:00:00+00:00", "45-46°F", 0.44, 47.0, 2.2)
+    _outcome(conn, "p5", 44.0)
+    conn.commit()
+
+    rows = compute_live_calibration(conn)
+    conn.close()
+
+    by_key = {(r["variable"], r["lead_time"]): r for r in rows}
+    assert set(by_key) == {("TMAX", 1), ("TMAX", 2), ("TMIN", 2), ("TMIN", 3)}
+
+    tmax1 = by_key[("TMAX", 1)]
+    assert tmax1["n_samples"] == 2
+    assert tmax1["crps"] == pytest.approx(1.1621618493408286, abs=1e-12)
+    assert tmax1["coverage_50"] == pytest.approx(0.5, abs=1e-12)
+    assert tmax1["coverage_80"] == pytest.approx(1.0, abs=1e-12)
+    assert tmax1["coverage_90"] == pytest.approx(1.0, abs=1e-12)
+
+    tmax2 = by_key[("TMAX", 2)]
+    assert tmax2["n_samples"] == 1
+    assert tmax2["crps"] == pytest.approx(2.272866754672936, abs=1e-12)
+    assert tmax2["coverage_50"] == pytest.approx(0.0, abs=1e-12)
+    assert tmax2["coverage_80"] == pytest.approx(0.0, abs=1e-12)
+    assert tmax2["coverage_90"] == pytest.approx(1.0, abs=1e-12)
+
+    tmin2 = by_key[("TMIN", 2)]
+    assert tmin2["n_samples"] == 1
+    assert tmin2["crps"] == pytest.approx(0.7284894793818931, abs=1e-12)
+    assert tmin2["coverage_50"] == pytest.approx(1.0, abs=1e-12)
+    assert tmin2["coverage_80"] == pytest.approx(1.0, abs=1e-12)
+    assert tmin2["coverage_90"] == pytest.approx(1.0, abs=1e-12)
+
+    tmin3 = by_key[("TMIN", 3)]
+    assert tmin3["n_samples"] == 1
+    assert tmin3["crps"] == pytest.approx(1.9334868174616031, abs=1e-12)
+    assert tmin3["coverage_50"] == pytest.approx(0.0, abs=1e-12)
+    assert tmin3["coverage_80"] == pytest.approx(0.0, abs=1e-12)
+    assert tmin3["coverage_90"] == pytest.approx(1.0, abs=1e-12)
+
+
 def test_compute_live_calibration_skips_bad_dist_params():
     """Rows with unparsable dist_params are skipped without raising."""
     from rainmaker.tracking import compute_live_calibration

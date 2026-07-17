@@ -7,6 +7,7 @@ approximate. No RNG.
 
 import json
 
+import pytest
 from scipy.stats import norm
 
 from rainmaker.cli import _tail_check
@@ -438,6 +439,162 @@ def test_since_filter_restricts_to_runs_on_or_after_the_cutoff():
     pit_filtered = _pit_row(filtered, "TMAX", 1)
     assert pit_filtered is not None
     assert pit_filtered["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Regression pin (#292): captured from the pre-family-aware implementation on
+# a Gaussian-only, no-df-key (historical shape) seeded store. Family-aware
+# tracking must reproduce these exact numbers for rows with no "df" key.
+# ---------------------------------------------------------------------------
+
+
+def test_compute_tail_calibration_gaussian_only_regression_pin():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _insert_row(
+        conn,
+        market_id="p1",
+        run_id="rp1",
+        started_at="2026-07-01T12:00:00+00:00",
+        settlement_date="2026-07-02",
+        p_win=0.72,
+        mu=70.0,
+        sigma=2.0,
+        actual=70.5,
+        bucket_kind="range",
+        lo=70,
+        hi=71,
+        bucket_label="70-71°F",
+        variable="TMAX",
+    )
+    _insert_row(
+        conn,
+        market_id="p2",
+        run_id="rp2",
+        started_at="2026-07-01T12:00:00+00:00",
+        settlement_date="2026-07-02",
+        p_win=0.55,
+        mu=71.0,
+        sigma=3.0,
+        actual=74.0,
+        bucket_kind="range",
+        lo=72,
+        hi=73,
+        bucket_label="72-73°F",
+        variable="TMAX",
+    )
+    _insert_row(
+        conn,
+        market_id="p3",
+        run_id="rp3",
+        started_at="2026-07-01T12:00:00+00:00",
+        settlement_date="2026-07-03",
+        p_win=0.30,
+        mu=65.0,
+        sigma=2.5,
+        actual=68.5,
+        bucket_kind="range",
+        lo=68,
+        hi=69,
+        bucket_label="68-69°F",
+        variable="TMAX",
+    )
+    _insert_row(
+        conn,
+        market_id="p4",
+        run_id="rp4",
+        started_at="2026-07-01T09:00:00+00:00",
+        settlement_date="2026-07-03",
+        p_win=0.61,
+        mu=49.0,
+        sigma=1.8,
+        actual=50.2,
+        bucket_kind="range",
+        lo=50,
+        hi=51,
+        bucket_label="50-51°F",
+        variable="TMIN",
+    )
+    _insert_row(
+        conn,
+        market_id="p5",
+        run_id="rp5",
+        started_at="2026-07-01T09:00:00+00:00",
+        settlement_date="2026-07-04",
+        p_win=0.44,
+        mu=47.0,
+        sigma=2.2,
+        actual=44.0,
+        bucket_kind="range",
+        lo=45,
+        hi=46,
+        bucket_label="45-46°F",
+        variable="TMIN",
+    )
+    conn.commit()
+    result = compute_tail_calibration(conn)
+    conn.close()
+
+    row = _primary_row(result, "TMAX", 1, "YES", "<0.75")
+    assert row is not None
+    assert row["n"] == 2
+    assert row["wins"] == 1
+    assert row["claimed_mean"] == pytest.approx(0.635, abs=1e-12)
+    assert row["realized_freq"] == pytest.approx(0.5, abs=1e-12)
+    assert row["wilson_lo"] == pytest.approx(0.09452865480086614, abs=1e-12)
+    assert row["wilson_hi"] == pytest.approx(0.9054713451991339, abs=1e-12)
+    assert row["thin"] is True
+    assert row["verdict"] is None
+
+    row = _primary_row(result, "TMAX", 2, "NO", "<0.75")
+    assert row is not None
+    assert row["n"] == 1
+    assert row["wins"] == 0
+    assert row["claimed_mean"] == pytest.approx(0.7, abs=1e-12)
+    assert row["realized_freq"] == pytest.approx(0.0, abs=1e-12)
+    assert row["wilson_hi"] == pytest.approx(0.7934567085261071, abs=1e-12)
+
+    row = _primary_row(result, "TMIN", 2, "YES", "<0.75")
+    assert row is not None
+    assert row["n"] == 1
+    assert row["wins"] == 1
+    assert row["claimed_mean"] == pytest.approx(0.61, abs=1e-12)
+    assert row["wilson_lo"] == pytest.approx(0.20654329147389294, abs=1e-12)
+
+    row = _primary_row(result, "TMIN", 3, "NO", "<0.75")
+    assert row is not None
+    assert row["n"] == 1
+    assert row["wins"] == 1
+    assert row["claimed_mean"] == pytest.approx(0.56, abs=1e-12)
+    assert row["wilson_lo"] == pytest.approx(0.20654329147389294, abs=1e-12)
+
+    pit = _pit_row(result, "TMAX", 1)
+    assert pit is not None
+    assert pit["n"] == 2
+    assert pit["upper_10"] == pytest.approx(0.0, abs=1e-12)
+    assert pit["lower_10"] == pytest.approx(0.0, abs=1e-12)
+    assert pit["upper_05"] == pytest.approx(0.0, abs=1e-12)
+    assert pit["lower_05"] == pytest.approx(0.0, abs=1e-12)
+
+    pit = _pit_row(result, "TMAX", 2)
+    assert pit is not None
+    assert pit["n"] == 1
+    assert pit["upper_10"] == pytest.approx(10.0, abs=1e-12)
+    assert pit["lower_10"] == pytest.approx(0.0, abs=1e-12)
+    assert pit["upper_05"] == pytest.approx(0.0, abs=1e-12)
+    assert pit["lower_05"] == pytest.approx(0.0, abs=1e-12)
+
+    pit = _pit_row(result, "TMIN", 2)
+    assert pit is not None
+    assert pit["n"] == 1
+    assert pit["upper_10"] == pytest.approx(0.0, abs=1e-12)
+    assert pit["lower_10"] == pytest.approx(0.0, abs=1e-12)
+
+    pit = _pit_row(result, "TMIN", 3)
+    assert pit is not None
+    assert pit["n"] == 1
+    assert pit["upper_10"] == pytest.approx(0.0, abs=1e-12)
+    assert pit["lower_10"] == pytest.approx(10.0, abs=1e-12)
 
 
 def test_cli_tail_check_smoke(tmp_path, capsys):
