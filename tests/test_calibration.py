@@ -509,7 +509,6 @@ def test_calibration_df_round_trips_through_the_store():
     reloaded_gaussian = load_calibration(conn, "KLGA", "TMAX", 1)
     assert reloaded_gaussian is not None and reloaded_gaussian.df is None
     conn.close()
-    conn.close()
 
 
 # ---------------------------------------------------------------------------

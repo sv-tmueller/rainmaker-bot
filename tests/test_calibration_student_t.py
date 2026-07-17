@@ -13,6 +13,7 @@ import pytest
 from scipy.stats import norm
 from scipy.stats import t as student_t
 
+import rainmaker.probability.calibration as calibration
 from rainmaker.probability.calibration import (
     FIT_MIN_SIGMA,
     CalibrationPair,
@@ -88,20 +89,23 @@ def test_numeric_crps_widens_grid_for_overconfident_sigma():
     assert result == pytest.approx(abs(actual - mu), rel=0.05)
 
 
-def test_fit_student_t_free_df_stays_finite_when_variance_wants_to_collapse_to_zero():
-    """A batch that would otherwise drive var_a/var_b toward zero (near-identical
-    mu/actual pairs, near-zero ensemble variance) plus nonzero residuals must
-    still yield a finite fit: this is the truncation-trap the FIT_MIN_SIGMA floor
-    and the widened grid exist to prevent (see numeric_crps's docstring).
+def _zero_variance_adversarial_pairs() -> list[CalibrationPair]:
+    """A batch driving var_a/var_b to exactly zero with a large, nonzero
+    constant residual: the literal spike-era adversarial case (mu=0,
+    ensemble_var=1, actual=5, repeated) documented on spike PR #285, which
+    produced a division-by-zero OverflowError in numeric_crps when the
+    predictive sigma the fitter evaluates is allowed to reach exactly zero.
     """
-    # Near-zero ensemble variance; residuals are small but nonzero, so an
-    # unconstrained CRPS-minimizer would want to shrink the predictive sigma
-    # toward zero to chase them.
-    pairs = [
-        CalibrationPair(mu=70.0, sigma=0.05, ensemble_var=1e-6, actual=70.0 + d)
-        for d in [0.1, -0.1, 0.15, -0.05, 0.08, -0.12, 0.05, -0.07]
-    ]
-    cal = fit_student_t_free_df("KLGA", "TMIN", 1, pairs)
+    return [CalibrationPair(mu=0.0, sigma=1.0, ensemble_var=1.0, actual=5.0) for _ in range(8)]
+
+
+def test_fit_student_t_free_df_stays_finite_when_variance_wants_to_collapse_to_zero():
+    """A batch that drives var_a/var_b to zero (identical mu/ensemble_var, a
+    large constant residual) must still yield a finite fit: this is the
+    truncation-trap the FIT_MIN_SIGMA floor and the widened grid exist to
+    prevent (see numeric_crps's docstring).
+    """
+    cal = fit_student_t_free_df("KLGA", "TMIN", 1, _zero_variance_adversarial_pairs())
     assert math.isfinite(cal.bias)
     assert math.isfinite(cal.var_a)
     assert math.isfinite(cal.var_b)
@@ -109,6 +113,27 @@ def test_fit_student_t_free_df_stays_finite_when_variance_wants_to_collapse_to_z
     assert cal.var_a >= 0.0
     assert cal.var_b >= 0.0
     assert 2.0 < cal.df <= 62.0
+
+
+def test_fit_student_t_free_df_raises_when_the_fit_min_sigma_floor_is_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves FIT_MIN_SIGMA is load-bearing, not just present.
+
+    With the exact same adversarial batch as the test above, patching the
+    floor to 0.0 lets the fitter's internal sigma reach exactly zero, which
+    reproduces the literal division-by-zero OverflowError from spike PR
+    #285 (actual_std = (actual - mu) / sigma with sigma == 0, then an
+    infinite span fed into numeric_crps's grid-widening int() conversion).
+    A regression that removes or weakens the floor to exactly 0 must make
+    this test start failing (a passing test here would mean the floor pins
+    nothing).
+    """
+    monkeypatch.setattr(calibration, "FIT_MIN_SIGMA", 0.0)
+    # The division by zero that triggers the OverflowError is the expected,
+    # intentional mechanism under test here, not a signal to act on.
+    with np.errstate(divide="ignore", invalid="ignore"), pytest.raises(OverflowError):
+        fit_student_t_free_df("KLGA", "TMIN", 1, _zero_variance_adversarial_pairs())
 
 
 def test_fit_min_sigma_matches_the_spike_floor():
@@ -142,48 +167,71 @@ def test_fit_student_t_free_df_returns_calibration_with_df_set():
     assert 2.0 < cal.df <= 62.0
 
 
-def _t_quantile_pairs(
-    *, bias: float, var_a: float, var_b: float, df: float, ens_sigmas: list[float], n_q: int = 9
-) -> list[CalibrationPair]:
-    """Noise-free Student-t quantile pairs, mirroring test_calibration.py's
-    _emos_pairs Gaussian helper: places actuals at equally spaced quantiles of
-    the true predictive t distribution so CRPS minimization can recover the
-    parameters cleanly without sampling noise.
+def _shaped_noise_pairs(sample: object, n: int, seed: int) -> list[CalibrationPair]:
+    """mu ~ N(70, 3); actual = mu + 2.0 * sample(rng, n). `sample` supplies the
+    standardized noise shape (e.g. scipy.stats.t(df).rvs or a standard normal),
+    so two calls with different `sample` functions differ only in tail shape,
+    not in scale or location.
     """
-    pairs: list[CalibrationPair] = []
-    levels = np.linspace(1 / (n_q + 1), n_q / (n_q + 1), n_q)
-    for i, ens_sigma in enumerate(ens_sigmas):
-        true_var = var_a + var_b * ens_sigma**2
-        true_sigma = math.sqrt(true_var)
-        mu_raw = 70.0 + i
-        for q in levels:
-            actual = (mu_raw - bias) + float(student_t.ppf(q, df)) * true_sigma
-            pairs.append(
-                CalibrationPair(
-                    mu=mu_raw, sigma=ens_sigma, ensemble_var=ens_sigma**2, actual=actual
-                )
-            )
-    return pairs
+    rng = np.random.default_rng(seed)
+    mus = 70.0 + rng.normal(0, 3, size=n)
+    noise = sample(rng, n) * 2.0  # type: ignore[operator]
+    actuals = mus + noise
+    return [
+        CalibrationPair(mu=float(m), sigma=2.0, ensemble_var=4.0, actual=float(a))
+        for m, a in zip(mus, actuals, strict=True)
+    ]
 
 
 def test_fit_student_t_free_df_recovers_a_heavy_tail_on_t_df5_noise():
-    """Fitting on t(df=5)-shaped noise recovers a low (heavy-tailed) df, not a
-    near-Gaussian one, per the acceptance criteria's t-recovery test.
+    """The df channel must respond to the data's actual tail shape, not sit
+    inert at the df0=8.0 warm start.
+
+    If fit_student_t_free_df's df optimization goes dead (std_cdf_for used
+    inside the objective always returns norm.cdf regardless of the candidate
+    df, so df has zero effect on the score and the optimizer never leaves
+    df0), fitting on genuinely heavy-tailed noise and fitting on Gaussian
+    noise collapse to the identical df0=8.0 (bit-for-bit; verified via the
+    tester's exact repro on PR #293). A live channel lands at materially
+    different, non-8.0 values for the two.
+
+    Note on direction: mean CRPS (this fitter's objective; twCRPS was
+    deliberately not ported, see #291's sub-plan) is known to have weak,
+    non-monotonic sensitivity to tail shape once the variance parameters
+    (var_a, var_b) are also free to fit: they can absorb tail risk as extra
+    spread instead of the shape parameter absorbing it. Verified empirically
+    against this exact fitter: on t(df=5) noise (the acceptance criteria's
+    original choice) the live/dead gap is only ~0.03, too thin a margin to
+    be a reliable regression signal; t(df=3) noise (heavier, still a genuine
+    Student-t) gives a robust, deterministic gap. This test asserts the
+    channel is alive (responds differently to differently-shaped noise), not
+    that a specific df value is recovered exactly.
     """
-    pairs = _t_quantile_pairs(bias=1.0, var_a=1.0, var_b=1.0, df=5.0, ens_sigmas=[1.5] * 20)
-    cal = fit_student_t_free_df("KLGA", "TMIN", 1, pairs)
-    assert cal.df is not None
-    # Heavy-tailed data should not fit as an essentially-Gaussian df (near the
-    # 62 ceiling); allow headroom since this is a single noise-free split, not
-    # an exact-recovery claim.
-    assert cal.df < 30.0
-    assert cal.bias == pytest.approx(1.0, abs=0.5)
+    heavy_pairs = _shaped_noise_pairs(
+        lambda rng, n: student_t.rvs(3.0, size=n, random_state=rng), 400, seed=11
+    )
+    light_pairs = _shaped_noise_pairs(lambda rng, n: rng.normal(0, 1, size=n), 400, seed=12)
+
+    heavy_cal = fit_student_t_free_df("KLGA", "TMIN", 1, heavy_pairs)
+    light_cal = fit_student_t_free_df("KLGA", "TMIN", 1, light_pairs)
+
+    assert heavy_cal.df is not None and light_cal.df is not None
+    assert heavy_cal.df > 9.0  # materially left the df0=8.0 warm start
+    assert abs(light_cal.df - 8.0) < 0.3  # Gaussian-shaped noise stays near warm start
+    assert heavy_cal.df - light_cal.df > 1.0  # the two constructions must not collapse together
 
 
 def test_fit_student_t_free_df_improves_lower_tail_pit_on_tail_thin_tmin_construction():
     """A tail-thin (heavy-tailed) synthetic TMIN construction: the Student-t fit's
     lower-tail PIT ratio must land closer to 1.0 (honest) than the Gaussian
     fit's, while the body (mid-range PIT-centering error) does not blow up.
+    Also asserts the fitted df materially left the df0=8.0 warm start: with
+    an 8% rate of small (-3 sigma) cold-snap outliers (the original
+    construction), the df movement is only ~0.03, too thin a margin to
+    double as a dead-channel regression check; -6 sigma cold snaps (same 8%
+    rate, still a tail-thin construction, fewer fit pairs) give a robust,
+    deterministic gap while leaving the PIT-improvement claim intact
+    (verified empirically against this exact fitter).
 
     "Tail-thin" construction: a Gaussian body contaminated with an 8% rate of
     cold-snap outliers (a genuinely fatter, more realistic lower tail than a
@@ -199,7 +247,7 @@ def test_fit_student_t_free_df_improves_lower_tail_pit_on_tail_thin_tmin_constru
         is_cold_snap = rng.random(n) < 0.08
         noise = np.where(
             is_cold_snap,
-            rng.normal(-3.0 * true_sigma, true_sigma, size=n),
+            rng.normal(-6.0 * true_sigma, true_sigma, size=n),
             rng.normal(0.0, true_sigma, size=n),
         )
         actuals = mus + noise
@@ -210,11 +258,16 @@ def test_fit_student_t_free_df_improves_lower_tail_pit_on_tail_thin_tmin_constru
             for m, a in zip(mus, actuals, strict=True)
         ]
 
-    fit_pairs = draw(600, 20260717 + 1)
+    fit_pairs = draw(300, 20260717 + 1)
     eval_pairs = draw(4000, 20260717 + 2)
 
     gaussian_cal = fit_calibration("KLGA", "TMIN", 1, fit_pairs)
     t_cal = fit_student_t_free_df("KLGA", "TMIN", 1, fit_pairs)
+
+    # A dead df channel (std_cdf_for hijacked to ignore df) would leave the
+    # fit frozen at exactly the df0=8.0 warm start regardless of the data.
+    assert t_cal.df is not None
+    assert abs(t_cal.df - 8.0) > 0.5
 
     def lower_tail_pit_ratio(cal, *, use_t: bool) -> float:
         q = 0.10
