@@ -15,11 +15,14 @@ import numpy as np
 from scipy.stats import skewnorm, t as student_t
 
 from rainmaker.spikes.tmax_tail_diagnosis import (
+    ResidualRow,
     ResidualShape,
+    baseline_eval_residuals,
     classify_residual_shape,
     decile_skewness,
     excess_kurtosis,
     moment_skewness,
+    residual_shape_by_cell,
     se_kurt,
     se_skew,
     season_of,
@@ -144,3 +147,81 @@ def test_classify_shape_requires_kelly_sign_agreement() -> None:
     n = 635
     shape = ResidualShape(variable="TMAX", lead=1, n=n, g1=-0.6, g2=0.1, kelly=0.05)
     assert classify_residual_shape(shape, contrast_g2=1.0) != "skew, not kurtosis"
+
+
+# -----------------------------------------------------------------------------
+# Diagnostic A driver: baseline_eval_residuals + residual_shape_by_cell
+# -----------------------------------------------------------------------------
+
+
+def _synthetic_cell(
+    n: int, mu_true: float, sigma_true: float, seed: int
+) -> list[tuple[date, float, float, float]]:
+    rng = np.random.default_rng(seed)
+    base = date(2026, 1, 1)
+    mu_fc = mu_true + rng.normal(0, 0.5, size=n)
+    sigma_fc = np.full(n, sigma_true)
+    actual = mu_true + sigma_true * rng.standard_normal(n)
+    return [
+        (base + timedelta(days=i), float(mu_fc[i]), float(sigma_fc[i]), float(actual[i]))
+        for i in range(n)
+    ]
+
+
+def test_baseline_eval_residuals_covers_only_the_eval_window() -> None:
+    """The 60/40 chronological split must leave the newest 40% as eval rows;
+    baseline_eval_residuals returns exactly that many rows for one cell.
+    """
+    rows = _synthetic_cell(n=200, mu_true=60.0, sigma_true=4.0, seed=10)
+    cell_data = {("KTEST", "TMAX", 1): rows}
+    residuals = baseline_eval_residuals(cell_data)
+    expected_eval_n = 200 - int(200 * 0.60)
+    assert len(residuals) == expected_eval_n
+    assert all(r.icao == "KTEST" and r.variable == "TMAX" and r.lead == 1 for r in residuals)
+
+
+def test_baseline_eval_residuals_skips_thin_cells() -> None:
+    rows = _synthetic_cell(n=5, mu_true=50.0, sigma_true=3.0, seed=11)
+    cell_data = {("KTHIN", "TMAX", 0): rows}
+    assert baseline_eval_residuals(cell_data) == []
+
+
+def test_baseline_eval_residuals_z_is_well_scaled_on_gaussian_data() -> None:
+    """On genuinely Gaussian synthetic data, the baseline-fit standardized
+    residuals should land close to a standard normal (mean ~0, std ~1): this
+    is the sanity check that the fit/apply plumbing is wired correctly.
+    """
+    rows = _synthetic_cell(n=600, mu_true=55.0, sigma_true=5.0, seed=12)
+    cell_data = {("KTEST", "TMAX", 1): rows}
+    residuals = baseline_eval_residuals(cell_data)
+    z = np.array([r.z for r in residuals])
+    assert abs(z.mean()) < 0.3
+    assert 0.7 < z.std() < 1.3
+
+
+def test_residual_shape_by_cell_pools_across_stations() -> None:
+    rows_a = _synthetic_cell(n=200, mu_true=50.0, sigma_true=3.0, seed=20)
+    rows_b = _synthetic_cell(n=200, mu_true=70.0, sigma_true=4.0, seed=21)
+    cell_data = {
+        ("KAAA", "TMAX", 1): rows_a,
+        ("KBBB", "TMAX", 1): rows_b,
+    }
+    residuals = baseline_eval_residuals(cell_data)
+    shapes = residual_shape_by_cell(residuals)
+    assert set(shapes) == {("TMAX", 1)}
+    shape = shapes[("TMAX", 1)]
+    expected_n = len(residuals)
+    assert shape.n == expected_n
+
+
+def test_residual_shape_by_cell_from_hand_built_rows() -> None:
+    rows = [
+        ResidualRow(
+            icao="KA", variable="TMAX", lead=1, target_date=date(2026, 1, 1) + timedelta(days=i), z=z
+        )
+        for i, z in enumerate([-2.0, -1.0, 0.0, 1.0, 2.0] * 10)
+    ]
+    shapes = residual_shape_by_cell(rows)
+    shape = shapes[("TMAX", 1)]
+    assert shape.n == 50
+    assert abs(shape.g1) < 1e-9  # symmetric construction -> zero skew

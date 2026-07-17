@@ -195,3 +195,83 @@ def classify_residual_shape(shape: ResidualShape, contrast_g2: float | None) -> 
     if kurt_flag and not skew_flag:
         return "kurtosis, not skew"
     return "inconclusive"
+
+
+# -----------------------------------------------------------------------------
+# Diagnostic A driver: baseline eval-window standardized residuals
+# -----------------------------------------------------------------------------
+
+
+def _chronological_split(
+    rows: list[tuple[date, float, float, float]],
+) -> tuple[list[tuple[date, float, float, float]], list[tuple[date, float, float, float]]]:
+    """Same split as tail_objective._split (fit oldest FIT_FRACTION, eval the
+    rest); reimplemented locally rather than importing a private helper.
+    """
+    split_i = int(len(rows) * FIT_FRACTION)
+    return rows[:split_i], rows[split_i:]
+
+
+@dataclass(frozen=True)
+class ResidualRow:
+    icao: str
+    variable: str
+    lead: int
+    target_date: date
+    z: float  # standardized residual: (actual - loc) / scale, baseline Gaussian fit
+
+
+def baseline_eval_residuals(cell_data: CellData) -> list[ResidualRow]:
+    """One row per eval-window pair from the baseline (Gaussian EMOS) fit, on
+    the same 60/40 chronological split and per-station-then-pool design
+    `tail_objective.run_comparison` uses for its baseline candidate. This is
+    the same population the decision doc's PIT ratios come from; Diagnostics
+    A and B both read off these z-values rather than refitting per diagnostic.
+    """
+    out: list[ResidualRow] = []
+    for (icao, variable, lead), rows in sorted(cell_data.items()):
+        if len(rows) < MIN_CELL_PAIRS:
+            continue
+        fit_rows, eval_rows = _chronological_split(rows)
+        if not fit_rows or not eval_rows:
+            continue
+        cal_pairs = [
+            CalibrationPair(mu=mu, sigma=sigma, ensemble_var=sigma**2, actual=actual)
+            for _d, mu, sigma, actual in fit_rows
+        ]
+        cal = fit_calibration(icao, variable, lead, cal_pairs)
+        for d, mu, sigma_raw, actual in eval_rows:
+            loc, scale, _df = apply_emos_regime(
+                bias=cal.bias,
+                var_a=cal.var_a,
+                var_b=cal.var_b,
+                df=None,
+                n_samples=cal.n_samples,
+                mu=mu,
+                ensemble_var=sigma_raw**2,
+                min_sigma=MIN_SIGMA_F,
+                fallback_df=None,
+            )
+            z = (actual - loc) / scale
+            out.append(ResidualRow(icao=icao, variable=variable, lead=lead, target_date=d, z=z))
+    return out
+
+
+def residual_shape_by_cell(rows: list[ResidualRow]) -> dict[tuple[str, int], ResidualShape]:
+    """Pool ResidualRows per (variable, lead) across stations and compute the
+    Diagnostic A shape statistics for each cell.
+    """
+    by_cell: dict[tuple[str, int], list[float]] = {}
+    for r in rows:
+        by_cell.setdefault((r.variable, r.lead), []).append(r.z)
+    out: dict[tuple[str, int], ResidualShape] = {}
+    for (variable, lead), zs in by_cell.items():
+        out[(variable, lead)] = ResidualShape(
+            variable=variable,
+            lead=lead,
+            n=len(zs),
+            g1=moment_skewness(zs),
+            g2=excess_kurtosis(zs),
+            kelly=decile_skewness(zs),
+        )
+    return out
