@@ -275,3 +275,91 @@ def residual_shape_by_cell(rows: list[ResidualRow]) -> dict[tuple[str, int], Res
             kelly=decile_skewness(zs),
         )
     return out
+
+
+# -----------------------------------------------------------------------------
+# Diagnostic B: concentration of lower-tail hits, per station and per date
+# -----------------------------------------------------------------------------
+
+B_CELLS: tuple[tuple[str, int], ...] = (("TMAX", 1), ("TMAX", 2), ("TMIN", 0), ("TMIN", 1))
+# TMAX leads 1-2 are the diagnosis target; TMIN leads 0-1 are the #244-flagged
+# contrast cells the sub-plan asks for.
+
+
+@dataclass(frozen=True)
+class StationHitStat:
+    icao: str
+    n: int
+    hits_05: int
+    hits_10: int
+    expected_05: float
+    expected_10: float
+    binom_p_05: float  # descriptive only; not multiplicity-corrected (13-way)
+
+
+@dataclass(frozen=True)
+class DateHitStat:
+    target_date: date
+    n: int
+    hits_05: int
+
+
+def station_concentration(rows: list[ResidualRow], variable: str, lead: int) -> list[StationHitStat]:
+    """Per-station observed vs expected lower-tail hit counts for one
+    (variable, lead) cell, sorted by station.
+    """
+    q05 = float(norm.ppf(0.05))
+    q10 = float(norm.ppf(0.10))
+    by_station: dict[str, list[float]] = {}
+    for r in rows:
+        if r.variable == variable and r.lead == lead:
+            by_station.setdefault(r.icao, []).append(r.z)
+    out: list[StationHitStat] = []
+    for icao, zs in sorted(by_station.items()):
+        n = len(zs)
+        hits_05 = sum(1 for z in zs if z < q05)
+        hits_10 = sum(1 for z in zs if z < q10)
+        p_05 = float(binomtest(hits_05, n, 0.05, alternative="greater").pvalue) if n else 1.0
+        out.append(
+            StationHitStat(
+                icao=icao,
+                n=n,
+                hits_05=hits_05,
+                hits_10=hits_10,
+                expected_05=n * 0.05,
+                expected_10=n * 0.10,
+                binom_p_05=p_05,
+            )
+        )
+    return out
+
+
+def date_concentration(rows: list[ResidualRow], variable: str, lead: int) -> list[DateHitStat]:
+    """Per-target-date lower-.05 hit counts across stations, for one
+    (variable, lead) cell: a date where several stations bust low at once is
+    a synoptic-event signature, distinct from one station busting on several
+    different dates.
+    """
+    q05 = float(norm.ppf(0.05))
+    by_date: dict[date, list[float]] = {}
+    for r in rows:
+        if r.variable == variable and r.lead == lead:
+            by_date.setdefault(r.target_date, []).append(r.z)
+    return [
+        DateHitStat(target_date=d, n=len(zs), hits_05=sum(1 for z in zs if z < q05))
+        for d, zs in sorted(by_date.items())
+    ]
+
+
+def top2_station_share(stats: list[StationHitStat]) -> tuple[float, float]:
+    """(share of lower-.05 hits, share of n) held by the two stations with
+    the most hits: separates "a few bad stations" from a systemic miss.
+    """
+    total_hits = sum(s.hits_05 for s in stats)
+    total_n = sum(s.n for s in stats)
+    if total_hits == 0 or total_n == 0:
+        return 0.0, 0.0
+    top2 = sorted(stats, key=lambda s: -s.hits_05)[:2]
+    hit_share = sum(s.hits_05 for s in top2) / total_hits
+    n_share = sum(s.n for s in top2) / total_n
+    return hit_share, n_share

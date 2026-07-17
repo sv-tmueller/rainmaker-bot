@@ -15,10 +15,12 @@ import numpy as np
 from scipy.stats import skewnorm, t as student_t
 
 from rainmaker.spikes.tmax_tail_diagnosis import (
+    B_CELLS,
     ResidualRow,
     ResidualShape,
     baseline_eval_residuals,
     classify_residual_shape,
+    date_concentration,
     decile_skewness,
     excess_kurtosis,
     moment_skewness,
@@ -26,6 +28,8 @@ from rainmaker.spikes.tmax_tail_diagnosis import (
     se_kurt,
     se_skew,
     season_of,
+    station_concentration,
+    top2_station_share,
 )
 
 # -----------------------------------------------------------------------------
@@ -225,3 +229,85 @@ def test_residual_shape_by_cell_from_hand_built_rows() -> None:
     shape = shapes[("TMAX", 1)]
     assert shape.n == 50
     assert abs(shape.g1) < 1e-9  # symmetric construction -> zero skew
+
+
+# -----------------------------------------------------------------------------
+# Diagnostic B: concentration of lower-tail hits
+# -----------------------------------------------------------------------------
+
+
+def test_b_cells_is_tmax_leads_1_2_and_tmin_leads_0_1() -> None:
+    assert set(B_CELLS) == {("TMAX", 1), ("TMAX", 2), ("TMIN", 0), ("TMIN", 1)}
+
+
+def test_station_concentration_counts_hits_below_quantile_thresholds() -> None:
+    """Station KA has 3 of its 20 residuals below the q=0.05 standard-normal
+    threshold (an inflated rate); station KB has 0. The per-station table must
+    report that split exactly, plus the expected count under a fair q=0.05.
+    """
+    q05 = float(-1.6448536269514729)  # norm.ppf(0.05)
+    rows = [
+        ResidualRow(icao="KA", variable="TMAX", lead=1, target_date=date(2026, 1, 1), z=z)
+        for z in ([q05 - 1.0] * 3 + [0.0] * 17)
+    ] + [
+        ResidualRow(icao="KB", variable="TMAX", lead=1, target_date=date(2026, 1, 1), z=z)
+        for z in [0.0] * 20
+    ]
+    stats = station_concentration(rows, "TMAX", 1)
+    by_icao = {s.icao: s for s in stats}
+    assert by_icao["KA"].n == 20
+    assert by_icao["KA"].hits_05 == 3
+    assert by_icao["KA"].expected_05 == 1.0
+    assert by_icao["KB"].hits_05 == 0
+
+
+def test_station_concentration_ignores_other_cells() -> None:
+    rows = [
+        ResidualRow(icao="KA", variable="TMAX", lead=1, target_date=date(2026, 1, 1), z=-5.0),
+        ResidualRow(icao="KA", variable="TMIN", lead=1, target_date=date(2026, 1, 1), z=-5.0),
+    ]
+    stats = station_concentration(rows, "TMAX", 1)
+    assert len(stats) == 1
+    assert stats[0].hits_05 == 1
+
+
+def test_date_concentration_flags_a_shared_cold_snap_date() -> None:
+    """Three different stations all bust low on the same target date: a
+    synoptic-event signature, distinct from one bad station busting low on
+    three different dates.
+    """
+    d = date(2026, 1, 5)
+    rows = [
+        ResidualRow(icao=icao, variable="TMAX", lead=1, target_date=d, z=-5.0)
+        for icao in ("KA", "KB", "KC")
+    ] + [
+        ResidualRow(icao="KD", variable="TMAX", lead=1, target_date=date(2026, 1, 6), z=0.0)
+    ]
+    stats = date_concentration(rows, "TMAX", 1)
+    by_date = {s.target_date: s for s in stats}
+    assert by_date[d].hits_05 == 3
+    assert by_date[d].n == 3
+
+
+def test_top2_station_share_of_hits_vs_share_of_n() -> None:
+    stats = station_concentration(
+        [
+            ResidualRow(icao="KA", variable="TMAX", lead=1, target_date=date(2026, 1, 1), z=z)
+            for z in [-5.0] * 4 + [0.0] * 16
+        ]
+        + [
+            ResidualRow(icao="KB", variable="TMAX", lead=1, target_date=date(2026, 1, 1), z=z)
+            for z in [-5.0] * 2 + [0.0] * 18
+        ]
+        + [
+            ResidualRow(icao="KC", variable="TMAX", lead=1, target_date=date(2026, 1, 1), z=0.0)
+            for _ in range(20)
+        ],
+        "TMAX",
+        1,
+    )
+    hit_share, n_share = top2_station_share(stats)
+    # KA (4 hits) + KB (2 hits) = 6 of 6 total hits -> 100% of hits.
+    assert abs(hit_share - 1.0) < 1e-9
+    # KA + KB hold 40 of 60 total rows -> 2/3 of n.
+    assert abs(n_share - (2.0 / 3.0)) < 1e-9
