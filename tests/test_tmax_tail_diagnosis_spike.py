@@ -12,10 +12,13 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import numpy as np
-from scipy.stats import skewnorm, t as student_t
+from scipy.stats import skewnorm
+from scipy.stats import t as student_t
 
 from rainmaker.spikes.tmax_tail_diagnosis import (
     B_CELLS,
+    JJA_EVAL_DAYS,
+    MAM_FIT_DAYS,
     ResidualRow,
     ResidualShape,
     baseline_eval_residuals,
@@ -23,8 +26,11 @@ from rainmaker.spikes.tmax_tail_diagnosis import (
     date_concentration,
     decile_skewness,
     excess_kurtosis,
+    jja_arm_windows,
+    mam_arm_window_or_none,
     moment_skewness,
     residual_shape_by_cell,
+    run_diagnostic_c,
     se_kurt,
     se_skew,
     season_of,
@@ -219,10 +225,9 @@ def test_residual_shape_by_cell_pools_across_stations() -> None:
 
 
 def test_residual_shape_by_cell_from_hand_built_rows() -> None:
+    base = date(2026, 1, 1)
     rows = [
-        ResidualRow(
-            icao="KA", variable="TMAX", lead=1, target_date=date(2026, 1, 1) + timedelta(days=i), z=z
-        )
+        ResidualRow(icao="KA", variable="TMAX", lead=1, target_date=base + timedelta(days=i), z=z)
         for i, z in enumerate([-2.0, -1.0, 0.0, 1.0, 2.0] * 10)
     ]
     shapes = residual_shape_by_cell(rows)
@@ -245,7 +250,7 @@ def test_station_concentration_counts_hits_below_quantile_thresholds() -> None:
     threshold (an inflated rate); station KB has 0. The per-station table must
     report that split exactly, plus the expected count under a fair q=0.05.
     """
-    q05 = float(-1.6448536269514729)  # norm.ppf(0.05)
+    q05 = -1.6448536269514729  # norm.ppf(0.05)
     rows = [
         ResidualRow(icao="KA", variable="TMAX", lead=1, target_date=date(2026, 1, 1), z=z)
         for z in ([q05 - 1.0] * 3 + [0.0] * 17)
@@ -280,9 +285,7 @@ def test_date_concentration_flags_a_shared_cold_snap_date() -> None:
     rows = [
         ResidualRow(icao=icao, variable="TMAX", lead=1, target_date=d, z=-5.0)
         for icao in ("KA", "KB", "KC")
-    ] + [
-        ResidualRow(icao="KD", variable="TMAX", lead=1, target_date=date(2026, 1, 6), z=0.0)
-    ]
+    ] + [ResidualRow(icao="KD", variable="TMAX", lead=1, target_date=date(2026, 1, 6), z=0.0)]
     stats = date_concentration(rows, "TMAX", 1)
     by_date = {s.target_date: s for s in stats}
     assert by_date[d].hits_05 == 3
@@ -311,3 +314,158 @@ def test_top2_station_share_of_hits_vs_share_of_n() -> None:
     assert abs(hit_share - 1.0) < 1e-9
     # KA + KB hold 40 of 60 total rows -> 2/3 of n.
     assert abs(n_share - (2.0 / 3.0)) < 1e-9
+
+
+# -----------------------------------------------------------------------------
+# Diagnostic C: season A/B window arithmetic
+# -----------------------------------------------------------------------------
+
+
+def test_jja_arm_windows_share_the_same_eval_window() -> None:
+    data_start = date(2026, 3, 18)
+    window_end = date(2026, 7, 16)
+    mixed, season_pure = jja_arm_windows(data_start, window_end)
+    assert mixed.eval_start == season_pure.eval_start
+    assert mixed.eval_end == season_pure.eval_end == window_end
+    assert (mixed.eval_end - mixed.eval_start).days + 1 == JJA_EVAL_DAYS
+    assert mixed.fit_end == season_pure.fit_end == mixed.eval_start - timedelta(days=1)
+
+
+def test_jja_arm_windows_mixed_fit_starts_at_data_start() -> None:
+    data_start = date(2026, 3, 18)
+    window_end = date(2026, 7, 16)
+    mixed, season_pure = jja_arm_windows(data_start, window_end)
+    assert mixed.fit_start == data_start
+
+
+def test_jja_arm_windows_season_pure_fit_starts_at_jja_season_start() -> None:
+    data_start = date(2026, 3, 18)
+    window_end = date(2026, 7, 16)
+    _mixed, season_pure = jja_arm_windows(data_start, window_end)
+    assert season_pure.fit_start == date(2026, 6, 1)
+
+
+def test_jja_arm_windows_season_pure_fit_start_clamped_to_data_start() -> None:
+    """If the archive itself starts after the season boundary (a later
+    refetch, say), the season-pure fit cannot reach further back than the
+    data actually available.
+    """
+    data_start = date(2026, 6, 10)
+    window_end = date(2026, 7, 16)
+    _mixed, season_pure = jja_arm_windows(data_start, window_end)
+    assert season_pure.fit_start == data_start
+
+
+def test_mam_arm_window_or_none_when_data_start_in_mam() -> None:
+    data_start = date(2026, 3, 18)
+    window = mam_arm_window_or_none(data_start)
+    assert window is not None
+    assert window.fit_start == data_start
+    assert (window.fit_end - window.fit_start).days + 1 == MAM_FIT_DAYS
+    assert window.eval_start == window.fit_end + timedelta(days=1)
+    assert window.eval_end == date(2026, 5, 31)
+
+
+def test_mam_arm_window_or_none_returns_none_outside_mam() -> None:
+    """Trip-wire per the sub-plan: if a refetch pushes the archive's start
+    outside MAM, the MAM arm is dropped rather than forced onto a window that
+    is not actually in-season.
+    """
+    assert mam_arm_window_or_none(date(2026, 7, 1)) is None
+    assert mam_arm_window_or_none(date(2026, 1, 15)) is None
+
+
+# -----------------------------------------------------------------------------
+# Diagnostic C driver: run_diagnostic_c
+# -----------------------------------------------------------------------------
+
+
+def _daily_station_rows(
+    icao_seed: int, start: date, end: date, mu_true: float, sigma_true: float, skip_every: int = 0
+) -> list[tuple[date, float, float, float]]:
+    """One row per day in [start, end], optionally skipping every `skip_every`-th
+    day (0 = no gaps) to model missing archive coverage.
+    """
+    rng = np.random.default_rng(icao_seed)
+    n_days = (end - start).days + 1
+    rows = []
+    for i in range(n_days):
+        if skip_every and i % skip_every == 0:
+            continue
+        d = start + timedelta(days=i)
+        mu = mu_true + rng.normal(0, 0.5)
+        actual = mu_true + sigma_true * rng.standard_normal()
+        rows.append((d, float(mu), float(sigma_true), float(actual)))
+    return rows
+
+
+def test_run_diagnostic_c_produces_jja_and_mam_arms_with_full_coverage() -> None:
+    data_start = date(2026, 3, 18)
+    window_end = date(2026, 7, 16)
+    stations = ["KAAA", "KBBB", "KCCC"]
+    cell_data = {
+        (icao, "TMAX", 1): _daily_station_rows(seed, data_start, window_end, 60.0, 5.0)
+        for seed, icao in enumerate(stations)
+    }
+    results = run_diagnostic_c(cell_data, data_start, window_end, cells=(("TMAX", 1),))
+
+    jja_mixed_baseline = results[("jja_mixed", "TMAX", 1, "baseline")]
+    jja_pure_baseline = results[("jja_season_pure", "TMAX", 1, "baseline")]
+    mam_baseline = results[("mam", "TMAX", 1, "baseline")]
+
+    assert jja_mixed_baseline.n_stations == 3
+    assert jja_mixed_baseline.n_stations_gated == 0
+    assert jja_pure_baseline.n_stations_gated == 0
+    assert mam_baseline is not None and mam_baseline.n_stations_gated == 0
+
+    # Diagnostic C invariant: mixed and season-pure share the identical eval
+    # rows (same eval window, same stations, full daily coverage), so the
+    # pooled eval sample size must match exactly.
+    assert jja_mixed_baseline.cell_eval is not None
+    assert jja_pure_baseline.cell_eval is not None
+    assert jja_mixed_baseline.cell_eval.n == jja_pure_baseline.cell_eval.n
+
+    assert ("jja_mixed", "TMAX", 1, "t_free_df") in results
+    assert ("jja_season_pure", "TMAX", 1, "t_free_df") in results
+    assert ("mam", "TMAX", 1, "t_free_df") in results
+
+
+def test_run_diagnostic_c_gates_a_station_below_min_cal_samples_in_season_pure_fit() -> None:
+    """One station has heavy gaps inside the JJA season-pure fit window (Jun 1
+    to eval_start-1) but full coverage in the eval window: its season-pure fit
+    must be gated (excluded, counted), never silently scored with n < 30. The
+    mixed arm's fit window is much longer, so the same station clears the
+    floor there.
+    """
+    data_start = date(2026, 3, 18)
+    window_end = date(2026, 7, 16)
+    full_station = _daily_station_rows(0, data_start, window_end, 60.0, 5.0)
+    sparse_rows = []
+    for d, mu, sigma, actual in _daily_station_rows(1, data_start, window_end, 60.0, 5.0):
+        if date(2026, 6, 1) <= d <= date(2026, 7, 2) and d.day % 3 != 0:
+            continue  # thin the JJA season-pure fit window to well under 30
+        sparse_rows.append((d, mu, sigma, actual))
+    cell_data = {
+        ("KFULL", "TMAX", 1): full_station,
+        ("KSPARSE", "TMAX", 1): sparse_rows,
+    }
+    results = run_diagnostic_c(cell_data, data_start, window_end, cells=(("TMAX", 1),))
+
+    jja_pure = results[("jja_season_pure", "TMAX", 1, "baseline")]
+    jja_mixed = results[("jja_mixed", "TMAX", 1, "baseline")]
+    assert jja_pure.n_stations_gated == 1
+    assert jja_mixed.n_stations_gated == 0
+
+
+def test_run_diagnostic_c_returns_no_mam_key_when_arm_is_dropped() -> None:
+    """If the archive doesn't start in MAM, the MAM arm keys are absent
+    entirely rather than present with a None cell_eval buried inside.
+    """
+    data_start = date(2026, 6, 10)
+    window_end = date(2026, 7, 16)
+    cell_data = {
+        ("KAAA", "TMAX", 1): _daily_station_rows(0, data_start, window_end, 60.0, 5.0),
+    }
+    results = run_diagnostic_c(cell_data, data_start, window_end, cells=(("TMAX", 1),))
+    assert ("mam", "TMAX", 1, "baseline") not in results
+    assert ("jja_mixed", "TMAX", 1, "baseline") in results

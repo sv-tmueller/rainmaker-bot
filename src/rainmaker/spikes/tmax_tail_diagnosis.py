@@ -71,10 +71,10 @@ machinery scores every candidate here) plus n and the gated-station count.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from math import sqrt
-from typing import Sequence
 
 import numpy as np
 from scipy.stats import binomtest, norm
@@ -186,8 +186,8 @@ def classify_residual_shape(shape: ResidualShape, contrast_g2: float | None) -> 
     """
     skew_flag = shape.g1 < -3 * se_skew(shape.n) and shape.kelly < 0
     kurt_not_significant = abs(shape.g2) < 3 * se_kurt(shape.n)
-    kurt_clearly_below_contrast = (
-        contrast_g2 is not None and contrast_g2 - shape.g2 > 3 * se_kurt(shape.n)
+    kurt_clearly_below_contrast = contrast_g2 is not None and contrast_g2 - shape.g2 > 3 * se_kurt(
+        shape.n
     )
     if skew_flag and (kurt_not_significant or kurt_clearly_below_contrast):
         return "skew, not kurtosis"
@@ -304,7 +304,9 @@ class DateHitStat:
     hits_05: int
 
 
-def station_concentration(rows: list[ResidualRow], variable: str, lead: int) -> list[StationHitStat]:
+def station_concentration(
+    rows: list[ResidualRow], variable: str, lead: int
+) -> list[StationHitStat]:
     """Per-station observed vs expected lower-tail hit counts for one
     (variable, lead) cell, sorted by station.
     """
@@ -363,3 +365,249 @@ def top2_station_share(stats: list[StationHitStat]) -> tuple[float, float]:
     hit_share = sum(s.hits_05 for s in top2) / total_hits
     n_share = sum(s.n for s in top2) / total_n
     return hit_share, n_share
+
+
+# -----------------------------------------------------------------------------
+# Diagnostic C: season A/B on fit windows
+# -----------------------------------------------------------------------------
+
+JJA_EVAL_DAYS = 14  # newest slice of the archive scored as the JJA arm's eval window
+MAM_FIT_DAYS = 44  # in-season MAM fit window length; sub-plan's "fit n ~44 >= 30"
+C_CANDIDATES: tuple[str, ...] = ("baseline", "t_free_df")
+C_CELLS = B_CELLS  # the diagnosis target (TMAX 1-2) plus the TMIN 0-1 contrast
+
+
+@dataclass(frozen=True)
+class ArmWindow:
+    fit_start: date
+    fit_end: date
+    eval_start: date
+    eval_end: date
+
+
+def jja_arm_windows(data_start: date, window_end: date) -> tuple[ArmWindow, ArmWindow]:
+    """(mixed, season_pure) fit windows sharing one eval window: the newest
+    JJA_EVAL_DAYS of the archive. "mixed" fits on everything before the eval
+    window (the spike's own MAM-heavy design); "season-pure" fits only on
+    JJA pairs before the eval window, per config.season_start_month (mirrors
+    backfill.season_window's season-boundary discipline, not its day count).
+    The season-pure fit start clamps to data_start if the archive begins
+    after the season boundary.
+    """
+    eval_start = window_end - timedelta(days=JJA_EVAL_DAYS - 1)
+    fit_end = eval_start - timedelta(days=1)
+    season_year, season_month, _name = season_of(window_end)
+    season_start = date(season_year, season_month, 1)
+    mixed = ArmWindow(
+        fit_start=data_start, fit_end=fit_end, eval_start=eval_start, eval_end=window_end
+    )
+    season_pure = ArmWindow(
+        fit_start=max(season_start, data_start),
+        fit_end=fit_end,
+        eval_start=eval_start,
+        eval_end=window_end,
+    )
+    return mixed, season_pure
+
+
+def mam_arm_window_or_none(data_start: date, fit_days: int = MAM_FIT_DAYS) -> ArmWindow | None:
+    """In-season MAM fit (the archive's earliest `fit_days`) followed by an
+    in-season eval on the remainder of that meteorological spring. Returns
+    None if the archive does not itself start in MAM: forcing this arm onto
+    an out-of-season window would defeat its purpose (the pre-authorized
+    #287-pattern trip-wire the sub-plan calls out for a refetched window).
+    """
+    season_year, season_month, name = season_of(data_start)
+    if name != "MAM":
+        return None
+    fit_start = data_start
+    fit_end = fit_start + timedelta(days=fit_days - 1)
+    eval_start = fit_end + timedelta(days=1)
+    eval_end = date(season_year, 5, 31)
+    if eval_start > eval_end:
+        return None
+    return ArmWindow(fit_start=fit_start, fit_end=fit_end, eval_start=eval_start, eval_end=eval_end)
+
+
+def _rows_in_range(
+    rows: list[tuple[date, float, float, float]], start: date, end: date
+) -> list[tuple[date, float, float, float]]:
+    return [r for r in rows if start <= r[0] <= end]
+
+
+@dataclass(frozen=True)
+class SeasonArmResult:
+    arm: str
+    candidate: str
+    variable: str
+    lead: int
+    n_stations: int
+    n_stations_gated: int
+    cell_eval: CellEval | None  # None only if every station was gated
+
+
+def _fit_and_score_station(
+    icao: str,
+    variable: str,
+    lead: int,
+    fit_rows: list[tuple[date, float, float, float]],
+    eval_rows: list[tuple[date, float, float, float]],
+    candidate: str,
+) -> CellEval | None:
+    """Fit one candidate on `fit_rows` and score it on `eval_rows`. Returns
+    None (gated) if the fit window has fewer than MIN_CAL_SAMPLES pairs: below
+    that floor the live path itself falls back to a lesser regime
+    (bias_only/uncalibrated), and scoring a "full" candidate fit there would
+    silently mix regimes rather than honestly testing whether the full EMOS
+    engages. Diagnostic C's callers must never do that quietly.
+    """
+    if len(fit_rows) < MIN_CAL_SAMPLES or not eval_rows:
+        return None
+    fit_pairs = [(mu, sigma**2, actual) for _d, mu, sigma, actual in fit_rows]
+    bias: float
+    var_a: float
+    var_b: float
+    df: float | None
+    n_samples: int
+    fallback_df: float | None
+    if candidate == "baseline":
+        cal_pairs = [
+            CalibrationPair(mu=m, sigma=sqrt(e), ensemble_var=e, actual=a) for m, e, a in fit_pairs
+        ]
+        cal = fit_calibration(icao, variable, lead, cal_pairs)
+        bias, var_a, var_b, df, n_samples, fallback_df = (
+            cal.bias,
+            cal.var_a,
+            cal.var_b,
+            None,
+            cal.n_samples,
+            None,
+        )
+    else:
+        t_fit = fit_student_t_free_df(fit_pairs)
+        bias, var_a, var_b, df, n_samples, fallback_df = (
+            t_fit.bias,
+            t_fit.var_a,
+            t_fit.var_b,
+            t_fit.df,
+            t_fit.n_samples,
+            8.0,
+        )
+
+    def predict(
+        mu: float,
+        ensemble_var: float,
+        *,
+        bias: float = bias,
+        var_a: float = var_a,
+        var_b: float = var_b,
+        df: float | None = df,
+        n_samples: int = n_samples,
+        fallback_df: float | None = fallback_df,
+    ) -> tuple[float, float, float | None]:
+        return apply_emos_regime(
+            bias=bias,
+            var_a=var_a,
+            var_b=var_b,
+            df=df,
+            n_samples=n_samples,
+            mu=mu,
+            ensemble_var=ensemble_var,
+            min_sigma=MIN_SIGMA_F,
+            fallback_df=fallback_df,
+        )
+
+    return score_candidate_cell(candidate, variable, lead, eval_rows, predict)
+
+
+def _pool_arm_cell_evals(
+    cell_evals: list[CellEval], candidate: str, variable: str, lead: int
+) -> CellEval:
+    """n-weighted pool across stations, mirroring tail_objective's own
+    pooling (reimplemented locally: that helper is private to tail_objective).
+    """
+    n = sum(c.n for c in cell_evals)
+
+    def wavg(attr: str) -> float:
+        return float(sum(getattr(c, attr) * c.n for c in cell_evals)) / n
+
+    return CellEval(
+        candidate=candidate,
+        variable=variable,
+        lead=lead,
+        n=n,
+        upper_10=wavg("upper_10"),
+        lower_10=wavg("lower_10"),
+        upper_05=wavg("upper_05"),
+        lower_05=wavg("lower_05"),
+        brier=wavg("brier"),
+        mean_crps=wavg("mean_crps"),
+        body_max_dev=max(c.body_max_dev for c in cell_evals),
+        top_bin_yes=None,
+        top_bin_no=None,
+    )
+
+
+def _arm_cell_result(
+    cell_data: CellData,
+    variable: str,
+    lead: int,
+    arm_label: str,
+    candidate: str,
+    window: ArmWindow,
+) -> SeasonArmResult:
+    cell_evals: list[CellEval] = []
+    n_stations = 0
+    n_gated = 0
+    for (icao, cell_variable, cell_lead), rows in sorted(cell_data.items()):
+        if cell_variable != variable or cell_lead != lead:
+            continue
+        n_stations += 1
+        fit_rows = _rows_in_range(rows, window.fit_start, window.fit_end)
+        eval_rows = _rows_in_range(rows, window.eval_start, window.eval_end)
+        cell_eval = _fit_and_score_station(icao, variable, lead, fit_rows, eval_rows, candidate)
+        if cell_eval is None:
+            n_gated += 1
+            continue
+        cell_evals.append(cell_eval)
+    pooled = _pool_arm_cell_evals(cell_evals, candidate, variable, lead) if cell_evals else None
+    return SeasonArmResult(
+        arm=arm_label,
+        candidate=candidate,
+        variable=variable,
+        lead=lead,
+        n_stations=n_stations,
+        n_stations_gated=n_gated,
+        cell_eval=pooled,
+    )
+
+
+def run_diagnostic_c(
+    cell_data: CellData,
+    data_start: date,
+    window_end: date,
+    *,
+    cells: tuple[tuple[str, int], ...] = C_CELLS,
+) -> dict[tuple[str, str, int, str], SeasonArmResult]:
+    """Run the JJA mixed-vs-season-pure A/B and the MAM in-season check for
+    each (variable, lead) cell in `cells`, for both candidates. Key:
+    (arm, variable, lead, candidate) where arm is "jja_mixed",
+    "jja_season_pure", or "mam". MAM keys are absent entirely (not present
+    with a None result) when `mam_arm_window_or_none` drops the arm.
+    """
+    results: dict[tuple[str, str, int, str], SeasonArmResult] = {}
+    mixed_window, season_pure_window = jja_arm_windows(data_start, window_end)
+    mam_window = mam_arm_window_or_none(data_start)
+    for variable, lead in cells:
+        for candidate in C_CANDIDATES:
+            results[("jja_mixed", variable, lead, candidate)] = _arm_cell_result(
+                cell_data, variable, lead, "jja_mixed", candidate, mixed_window
+            )
+            results[("jja_season_pure", variable, lead, candidate)] = _arm_cell_result(
+                cell_data, variable, lead, "jja_season_pure", candidate, season_pure_window
+            )
+            if mam_window is not None:
+                results[("mam", variable, lead, candidate)] = _arm_cell_result(
+                    cell_data, variable, lead, "mam", candidate, mam_window
+                )
+    return results
