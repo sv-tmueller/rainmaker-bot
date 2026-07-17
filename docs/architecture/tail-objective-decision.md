@@ -287,7 +287,8 @@ uv run python -m rainmaker.spikes.tmax_tail_diagnosis
 **Provenance.** This reuses the exact cached archive from the comparison
 above (`fetch_or_load_cell_data`, same `DEFAULT_CACHE_PATH`; no refetch was
 needed), so the two write-ups share one data pull: 13 stations, TMAX and TMIN,
-leads 0-2, 2026-03-18 to 2026-07-16 (120 days). Meteorological-season
+leads 0-2, 2026-03-18 to 2026-07-16 (121 days inclusive; `FETCH_DAYS = 120`
+is the fetch-window parameter, not the inclusive span). Meteorological-season
 composition of that window: 75 days MAM (Mar 18 - May 31) and 46 days JJA
 (Jun 1 - Jul 16), confirming the sub-plan's observation that the comparison's
 60/40 chronological split (fit oldest 60%, eval newest 40%) fits on a
@@ -402,12 +403,16 @@ does not appear among TMIN's flagged stations at either contrast lead),
 consistent with San Francisco's marine-layer fog-burnoff timing being a
 known, physical daily-high forecasting difficulty that would not equally
 affect the overnight low. **KNYC** recurs across all four cells in this
-table and is the one station in this diagnosis that is not on the ASOS path:
-per `backfill.py`'s own routing (mirrored in `ICAO_TO_ASOS_STATION`), KNYC is
-a Kalshi-only station settled against NCEI GHCND daily-summaries, not ASOS
-like every other station here, so a systematic difference in siting,
-rounding, or day-boundary convention is a live candidate mechanism, not
-merely a coincidence.
+table and is one of two Kalshi-only, GHCND-settled stations in this
+diagnosis (the other is KMDW): per `backfill.py`'s own routing (mirrored in
+`ICAO_TO_ASOS_STATION`), both are settled against NCEI GHCND
+daily-summaries, not ASOS like every other station here, so a systematic
+difference in siting, rounding, or day-boundary convention is a candidate
+mechanism worth naming. It is a weaker candidate than it looks, though:
+KMDW shares the same settlement path and shows no lower-tail anomaly in any
+Diagnostic B cell (it does not appear in the per-station table above at any
+lead), so GHCND settlement alone does not explain KNYC's concentration.
+Whatever is specific to KNYC is not simply "not ASOS."
 
 ### Diagnostic C: season A/B on fit windows
 
@@ -489,9 +494,9 @@ conflicting readings:
   `BACKFILL_DAYS=45`) on every scheduled run, not once retrospectively. If a
   station's true bias or spread drifts, the live path tracks it far more
   closely than one static split does, which dilutes exactly the kind of
-  persistent per-station miss Diagnostic B found. The live population is
-  also much larger and spans more months and weather regimes, further
-  diluting any two stations' share of the pooled ratio.
+  persistent per-station miss Diagnostic B found. (The live population is a
+  similar size to the spike archive, n=675 vs n=635, so the refit cadence
+  carries this reconciliation, not population size.)
 - **2.90 (#244's post-fix week, n=124).** The smallest and most recent
   slice: about 9-10 predictions per station over one week. With that few
   observations per station, a single bad day at KSFO or KNYC swings the
@@ -510,14 +515,15 @@ season-window hypothesis (Diagnostic C: the fully in-season MAM arm is still
 comparison above, plus Diagnostic C's `t_free_df` arms, both show it helps in
 some arms and actively worsens others) is supported by this data. Diagnostic
 B's finding is specific and actionable instead: two stations, KSFO and KNYC,
-account for the majority of TMAX's broken lower tail, via two distinct and
-plausible mechanisms (KSFO: a physical San-Francisco-specific TMAX
-forecasting difficulty; KNYC: the one station in this diagnosis settled
-against a different actuals source, NCEI GHCND rather than ASOS). The
-next step is a **per-station investigation of KSFO and KNYC's TMAX
-forecast/actuals pipeline** (not filed as an issue by this diagnosis; a
-follow-up decision for the #280 umbrella), not a family or season-window
-change to the live calibration.
+account for the majority of TMAX's broken lower tail, via two distinct
+candidate mechanisms (KSFO: a physical San-Francisco-specific TMAX
+forecasting difficulty; KNYC: settled against a different actuals source,
+NCEI GHCND rather than ASOS, though KMDW shares that same settlement path
+and shows no lower-tail anomaly, which weakens settlement source as a
+sufficient explanation on its own). The next step is a **per-station
+investigation of KSFO and KNYC's TMAX forecast/actuals pipeline** (not
+filed as an issue by this diagnosis; a follow-up decision for the #280
+umbrella), not a family or season-window change to the live calibration.
 
 ### Caveats
 

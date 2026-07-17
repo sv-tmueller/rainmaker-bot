@@ -494,7 +494,7 @@ def _fit_and_score_station(
             t_fit.var_b,
             t_fit.df,
             t_fit.n_samples,
-            8.0,
+            5.0,  # matches tail_objective.run_comparison's fallback_df
         )
 
     def predict(
