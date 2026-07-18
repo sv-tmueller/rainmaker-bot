@@ -650,6 +650,75 @@ def test_compute_live_accuracy_skips_bad_rows():
     assert rows[0]["accuracy"].n == 1
 
 
+def test_compute_live_accuracy_skips_non_finite_and_bool_dist_params():
+    """NaN/Inf mu or sigma, and bool mu or sigma, must never score: NaN/Inf slip
+    past the sigma<=0-only guard (comparisons with them are always False), and a
+    JSON bool is a valid int for arithmetic, so it silently poisons accuracy.
+    """
+    from rainmaker.tracking import compute_live_accuracy
+
+    conn = connect(":memory:")
+    _setup_live(conn)  # m1: one good sample
+
+    bad_dists = {
+        "m_nan_sigma": {"mu": 70.0, "sigma": float("nan")},
+        "m_nan_mu": {"mu": float("nan"), "sigma": 2.0},
+        "m_inf_sigma": {"mu": 70.0, "sigma": float("inf")},
+        "m_inf_mu": {"mu": float("-inf"), "sigma": 2.0},
+        "m_bool_sigma": {"mu": 70.0, "sigma": True},
+        "m_bool_mu": {"mu": True, "sigma": 2.0},
+    }
+    for market_id, params in bad_dists.items():
+        conn.execute(
+            "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+            (market_id, "NYC", "TMAX", "2026-05-31"),
+        )
+        conn.execute(
+            "INSERT INTO predictions "
+            "(run_id, market_id, bucket, p_win, dist_params, edge, recommended, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("r1", market_id, "70-71°F", 0.5, json.dumps(params), 0.1, 1, "t"),
+        )
+        conn.execute(
+            "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+            (market_id, 73.0, "t"),
+        )
+    conn.commit()
+    rows = compute_live_accuracy(conn)
+    conn.close()
+    # every bad-dist market is skipped; only m1's good sample remains
+    assert len(rows) == 1
+    assert rows[0]["accuracy"].n == 1
+
+
+def test_parse_df_unit_cases():
+    from rainmaker.tracking import _parse_df
+
+    assert _parse_df({}) == (None, True)  # absent key: Gaussian
+    assert _parse_df({"df": None}) == (None, True)  # explicit null: Gaussian
+    assert _parse_df({"df": 5.5}) == (5.5, True)
+    assert _parse_df({"df": float("nan")}) == (None, False)
+    assert _parse_df({"df": float("inf")}) == (None, False)
+    assert _parse_df({"df": float("-inf")}) == (None, False)
+    assert _parse_df({"df": True}) == (None, False)  # bool must never coerce to df=1.0
+    assert _parse_df({"df": 0.0}) == (None, False)  # existing df<=0 guard, unchanged
+    assert _parse_df({"df": "5.5"}) == (None, False)  # disclosed tightening: numeric strings rejected
+
+
+def test_finite_number_rejects_bool_and_non_finite():
+    from rainmaker.tracking import _finite_number
+
+    assert _finite_number(5.5) == 5.5
+    assert _finite_number(5) == 5.0
+    assert _finite_number(True) is None
+    assert _finite_number(False) is None
+    assert _finite_number(float("nan")) is None
+    assert _finite_number(float("inf")) is None
+    assert _finite_number(float("-inf")) is None
+    assert _finite_number("5.5") is None
+    assert _finite_number(None) is None
+
+
 def test_write_snapshot_fetches_settled_rows_exactly_once(monkeypatch):
     """One full-history read shared by compute_pnl and compute_calibration (#277)."""
     import rainmaker.tracking as tracking_mod

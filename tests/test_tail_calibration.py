@@ -6,6 +6,7 @@ approximate. No RNG.
 """
 
 import json
+import math
 
 import pytest
 from scipy.stats import norm
@@ -714,6 +715,66 @@ def test_compute_tail_calibration_pit_skips_invalid_df():
     conn.close()
 
     assert _pit_row(result, "TMIN", 1) is None  # excluded, never scored as Gaussian
+
+
+# ---------------------------------------------------------------------------
+# Non-finite dist_params guard hardening (#304)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_tail_calibration_excludes_nan_df_row():
+    """A NaN df must not poison the PIT population: pre-fix, NaN slips past the
+    df<=0-only guard (NaN comparisons are always False), and json round-trips it
+    unchanged, so std_cdf_for(nan) corrupts the group with a NaN PIT.
+    """
+    conn = connect(":memory:")
+    init_schema(conn)
+    _insert_row_with_df(
+        conn,
+        market_id="m1",
+        run_id="r1",
+        started_at="2026-07-01T12:00:00+00:00",
+        settlement_date="2026-07-02",
+        p_win=0.70,
+        mu=70.0,
+        sigma=2.0,
+        df=5.0,
+        actual=70.5,
+        bucket_kind="range",
+        lo=70,
+        hi=71,
+        bucket_label="70-71°F",
+        variable="TMIN",
+    )
+    _insert_row_with_df(
+        conn,
+        market_id="m2",
+        run_id="r2",
+        started_at="2026-07-01T12:00:00+00:00",
+        settlement_date="2026-07-02",
+        p_win=0.55,
+        mu=71.0,
+        sigma=3.0,
+        df=float("nan"),
+        actual=74.0,
+        bucket_kind="range",
+        lo=72,
+        hi=73,
+        bucket_label="72-73°F",
+        variable="TMIN",
+    )
+    conn.commit()
+
+    result = compute_tail_calibration(conn)
+    conn.close()
+
+    pit = _pit_row(result, "TMIN", 1)
+    assert pit is not None
+    assert pit["n"] == 1  # only the df=5.0 row; the NaN-df row is excluded
+    assert math.isfinite(pit["upper_10"])
+    assert math.isfinite(pit["lower_10"])
+    assert math.isfinite(pit["upper_05"])
+    assert math.isfinite(pit["lower_05"])
 
 
 def test_cli_tail_check_smoke(tmp_path, capsys):

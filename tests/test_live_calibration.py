@@ -14,6 +14,7 @@ No per-city split -- pooled per (variable, lead).
 """
 
 import json
+import math
 
 import pytest
 from scipy.stats import norm
@@ -597,6 +598,130 @@ def test_compute_live_calibration_skips_bad_dist_params():
     _outcome(conn, "m1", 70.0)
     conn.commit()
 
+    rows = compute_live_calibration(conn)
+    conn.close()
+    assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# Non-finite / bool dist_params guard hardening (#304)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_live_calibration_nan_df_row_excluded_not_poisons_pooled_cell():
+    """Reviewer's poisoning repro: one NaN-df row pooled with two valid Gaussian
+    rows must not turn the whole cell's CRPS into NaN. Pre-fix, NaN slips past
+    the df<=0-only guard (NaN comparisons are always False), and std_cdf_for(nan)
+    then propagates NaN through the group's CRPS sum and coverage counts.
+    """
+    from rainmaker.tracking import compute_live_calibration
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    _run(conn, "rp1", "2026-07-01T12:00:00+00:00")
+    _market(conn, "p1", variable="TMAX", settlement_date="2026-07-02")
+    _pred(conn, "rp1", "p1", "70-71°F", p_win=0.72, mu=70.0, sigma=2.0)
+    _outcome(conn, "p1", 70.5)
+
+    _run(conn, "rp2", "2026-07-01T12:00:00+00:00")
+    _market(conn, "p2", variable="TMAX", settlement_date="2026-07-02")
+    _pred(conn, "rp2", "p2", "72-73°F", p_win=0.55, mu=71.0, sigma=3.0)
+    _outcome(conn, "p2", 74.0)
+
+    _run(conn, "rp3", "2026-07-01T12:00:00+00:00")
+    _market(conn, "p3", variable="TMAX", settlement_date="2026-07-02")
+    _pred_with_df(conn, "rp3", "p3", "60-61°F", p_win=0.5, mu=72.0, sigma=2.0, df=float("nan"))
+    _outcome(conn, "p3", 72.0)
+    conn.commit()
+
+    rows = compute_live_calibration(conn)
+    conn.close()
+
+    assert len(rows) == 1
+    row = rows[0]
+    # the NaN-df row is excluded: n and crps match the 2-row Gaussian-only
+    # regression pin's tmax lead-1 group exactly (same mu/sigma/actual there).
+    assert row["n_samples"] == 2
+    assert math.isfinite(row["crps"])
+    assert row["crps"] == pytest.approx(1.1621618493408286, abs=1e-12)
+    assert row["coverage_50"] == pytest.approx(0.5, abs=1e-12)
+    assert row["coverage_80"] == pytest.approx(1.0, abs=1e-12)
+    assert row["coverage_90"] == pytest.approx(1.0, abs=1e-12)
+
+
+def test_compute_live_calibration_excludes_nan_sigma_row():
+    from rainmaker.tracking import compute_live_calibration
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    _run(conn, "r1", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m1", variable="TMIN", settlement_date="2026-05-31")
+    _pred(conn, "r1", "m1", "70-71°F", p_win=0.70, mu=70.0, sigma=float("nan"))
+    _outcome(conn, "m1", 70.5)
+    conn.commit()
+
+    rows = compute_live_calibration(conn)
+    conn.close()
+    assert rows == []  # NaN sigma is never > 0: the row must be excluded, not crash
+
+
+def test_compute_live_calibration_excludes_nan_mu_row():
+    from rainmaker.tracking import compute_live_calibration
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    _run(conn, "r1", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m1", variable="TMIN", settlement_date="2026-05-31")
+    _pred(conn, "r1", "m1", "70-71°F", p_win=0.70, mu=float("nan"), sigma=2.0)
+    _outcome(conn, "m1", 70.5)
+    conn.commit()
+
+    rows = compute_live_calibration(conn)
+    conn.close()
+    assert rows == []
+
+
+def test_compute_live_calibration_excludes_bool_df_and_bool_sigma():
+    """df=True previously coerced to df=1.0 (Student-t with 1 degree of freedom
+    scores the row); sigma=True previously passed the sigma<=0 guard (True > 0
+    as an int). Both must now be rejected as corrupt, not silently scored.
+    """
+    from rainmaker.tracking import compute_live_calibration
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    _run(conn, "r1", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m1", variable="TMIN", settlement_date="2026-05-31")
+    _pred_with_df(conn, "r1", "m1", "70-71°F", p_win=0.70, mu=70.0, sigma=2.0, df=True)
+    _outcome(conn, "m1", 70.5)
+
+    _run(conn, "r2", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m2", variable="TMIN", settlement_date="2026-05-31")
+    _pred(conn, "r2", "m2", "60-61°F", p_win=0.60, mu=60.0, sigma=True)
+    _outcome(conn, "m2", 60.5)
+
+    conn.commit()
+    rows = compute_live_calibration(conn)
+    conn.close()
+    assert rows == []
+
+
+def test_compute_live_calibration_excludes_inf_mu_and_sigma():
+    from rainmaker.tracking import compute_live_calibration
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    _run(conn, "r1", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m1", variable="TMIN", settlement_date="2026-05-31")
+    _pred(conn, "r1", "m1", "70-71°F", p_win=0.70, mu=float("inf"), sigma=2.0)
+    _outcome(conn, "m1", 70.5)
+
+    _run(conn, "r2", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m2", variable="TMIN", settlement_date="2026-05-31")
+    _pred(conn, "r2", "m2", "60-61°F", p_win=0.60, mu=60.0, sigma=float("-inf"))
+    _outcome(conn, "m2", 60.5)
+
+    conn.commit()
     rows = compute_live_calibration(conn)
     conn.close()
     assert rows == []
