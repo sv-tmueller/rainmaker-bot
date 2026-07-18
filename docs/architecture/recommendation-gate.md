@@ -488,3 +488,42 @@ Discovery is non-deterministic, so the universe moved from 184-219 markets
 across runs and the window end shifted by 3 days. No regression, no material
 gain. Total P/L is higher on a slightly larger universe, but per-bet
 economics stay flat.
+
+## Update 2026-07-18: a per-station exclusion gate term, KNYC excluded (#302)
+
+The gate gains a fourth, per-station term alongside the confidence floor,
+min-sources, and min-edge gates already documented above: `station_policy`, a
+`STATION_POLICIES` map in `config.py` keyed by ICAO and consumed inside
+`evaluate_market`. It follows the same shape as the existing uncalibratable
+gate (intl markets, ghcnd_id is None): recommended is forced off on every
+outcome, both sides, while the forecast and advisory display stay intact
+(`outcomes` non-empty, `mu`/`sigma` set). `MarketReport.policy_exclusion`
+carries the reason string verbatim into the rendered report. Un-excluding a
+station is a one-line change: delete its `STATION_POLICIES` entry.
+
+`STATION_POLICIES["KNYC"]` implements the #296 addendum's verdict
+(`docs/architecture/tail-objective-decision.md`, "Addendum (#296):
+KSFO/KNYC per-station tail anatomy"): KNYC is a genuine forecast-skill
+problem, not a calibration one. 72% of its TMAX busts fall below every one
+of the five Open-Meteo models' own daily extreme (no model, individually,
+forecast the actual), and both leads clear the 4x-nominal severity cut by a
+wide margin (50%/25% observed lower-.05 hit rates vs a 20% cut, i.e. 10x and
+5x nominal). A forecast-skill gap this severe is not fixable by widening or
+shifting a Gaussian: no amount of scale/bias correction recovers information
+no input model ever had. The addendum's own verdict sentence scoped the
+exclusion to "the live path's TMAX ladder"; issue #302 resolved that in favor
+of a station-wide exclusion (also covering TMIN), since Diagnostic B flags
+KNYC in both TMIN cells too (13-14% hit rates vs the 5% nominal claim) and
+the addendum did not run a TMIN-specific anatomy to justify a narrower scope.
+
+Scope: KNYC is Kalshi-only (Polymarket has no Central Park market), so this
+only ever binds on Kalshi-discovered markets. Tracking is untouched by
+design: discovery, forecasting, settlement, tail-check, and P&L all keep
+recording KNYC exactly as before; only the `recommended` flag changes, the
+same continuity the uncalibratable gate already gives intl markets.
+
+Path back in: the station-metadata audit the addendum's own caveats name
+(Central Park's coordinates, canopy, and sensor siting were not checked
+against what the forecast models and settlement pipeline actually query).
+That audit is out of #302's scope; STATION_POLICIES is the one place to
+revisit once it lands.
