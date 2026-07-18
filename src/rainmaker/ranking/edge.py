@@ -57,6 +57,11 @@ class MarketReport(BaseModel):
     # The station-policy reason (#302) when this market's station is excluded from
     # recommendations; None otherwise. Additive: absent on every report before this.
     policy_exclusion: str | None = None
+    # The applied per-(station, variable) edge-floor delta (#303; 0.0 when none
+    # applies) and its human-readable reason, surfaced by both renderers. Additive:
+    # every report before this has edge_floor_delta=0.0, edge_floor_delta_reason=None.
+    edge_floor_delta: float = 0.0
+    edge_floor_delta_reason: str | None = None
 
 
 def evaluate_market(
@@ -71,6 +76,7 @@ def evaluate_market(
     calibration: Calibration | None = None,
     require_calibration: bool = True,
     station_policy: StationPolicy | None = None,
+    min_edge_delta: float = 0.0,
 ) -> MarketReport:
     """Edge-rank a temperature market.
 
@@ -89,8 +95,17 @@ def evaluate_market(
     off on every outcome and sets policy_exclusion to its reason, the same
     shape as the uncalibratable gate below: forecast and advisory display stay
     intact, only recommended is forced off.
+
+    min_edge_delta (#303, default 0.0) is a per-(station, variable) addition to
+    min_edge/floor_no's edge gate, looked up by the caller from
+    STATION_EDGE_DELTA and passed in (same pure-function shape as
+    station_policy). It raises the recommended bar on both YES and NO sides
+    without moving p_win, the display, or any other gate; see the #296
+    addendum and this file's dated 2026-07-18 update in
+    docs/architecture/recommendation-gate.md for the KSFO TMAX rationale.
     """
     no_floor = floor_no if floor_no is not None else floor
+    effective_min_edge = min_edge + min_edge_delta
     unit = market.target.station.unit
     n_sources = sum(1 for c in forecast_set.coverage if c.ok and c.n_samples > 0)
     # Markets with no GHCN-D id cannot be calibrated (no actuals history to fit against).
@@ -101,6 +116,14 @@ def evaluate_market(
     if station_policy is not None and station_policy.action == "exclude":
         policy_excluded = True
         policy_exclusion = station_policy.reason
+    edge_floor_delta_reason: str | None = None
+    if min_edge_delta > 0:
+        edge_floor_delta_reason = (
+            f"{market.target.station.icao} {market.target.variable}: recommendation edge "
+            f"floor raised by {min_edge_delta:.2f} (edge must clear "
+            f"{effective_min_edge:.2f}, not {min_edge:.2f}). See the #296 addendum, "
+            "docs/architecture/recommendation-gate.md."
+        )
     common: dict[str, Any] = dict(
         market_id=market.id,
         title=market.title,
@@ -113,6 +136,8 @@ def evaluate_market(
         coverage=forecast_set.coverage,
         venue=market.venue,
         policy_exclusion=policy_exclusion,
+        edge_floor_delta=min_edge_delta,
+        edge_floor_delta_reason=edge_floor_delta_reason,
     )
     if not forecast_set.samples:
         return MarketReport(
@@ -149,7 +174,7 @@ def evaluate_market(
                 and (not require_calibration or calibrated == "full")
                 and p_win >= floor
                 and n_sources >= min_sources
-                and edge >= min_edge
+                and edge >= effective_min_edge
             )
             outcomes.append(
                 RankedOutcome(
@@ -174,7 +199,7 @@ def evaluate_market(
                 and (not require_calibration or calibrated == "full")
                 and p_no >= no_floor
                 and n_sources >= min_sources
-                and edge_no >= min_edge
+                and edge_no >= effective_min_edge
             )
             outcomes.append(
                 RankedOutcome(

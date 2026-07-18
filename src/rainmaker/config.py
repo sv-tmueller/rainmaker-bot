@@ -419,6 +419,16 @@ STATION_POLICIES: dict[str, StationPolicy] = {
     ),
 }
 
+# Per-(station, variable) edge-floor delta (#303), keyed by (ICAO, variable) and
+# added to MIN_EDGE for the recommended gate on both YES and NO sides. See the
+# #296 addendum ("KSFO/KNYC per-station tail anatomy") and this file's dated
+# 2026-07-18 update in docs/architecture/recommendation-gate.md for the KSFO
+# tail-severity evidence and why a raised edge floor, not a probability haircut
+# or a widened sigma, is the mechanism. Revisit date: 2026-11-15.
+STATION_EDGE_DELTA: dict[tuple[str, str], float] = {
+    ("KSFO", "TMAX"): 0.05,
+}
+
 PRECIP_VAR_FLOOR = 0.01  # in^2: variance floor for the monthly-total gamma (~0.1in std)
 PRECIP_CLIMATOLOGY_YEARS = 20  # prior years of NCEI history for the climatology tail
 REPORTS_DIR = "reports"

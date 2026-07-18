@@ -12,6 +12,7 @@ from rainmaker.config import (
     MIN_SIGMA_F,
     MIN_SOURCES,
     PRECIP_VAR_FLOOR,
+    STATION_EDGE_DELTA,
     STATION_POLICIES,
     PrecipStation,
     Station,
@@ -1020,6 +1021,111 @@ def test_knyc_market_without_policy_is_recommendable() -> None:
         f"control market should have at least one recommended outcome; got {report.outcomes}"
     )
     assert report.policy_exclusion is None
+
+
+# ---------------------------------------------------------------------------
+# Per-(station, variable) edge-floor delta gate (#303, the #296 addendum)
+# ---------------------------------------------------------------------------
+
+
+def _delta_market(city: str, variable: str, *, best_ask: float) -> Market:
+    """A single-bucket market whose threshold sits far below the forecast mean,
+    so p_win is effectively 1.0 regardless of station or variable: the edge is
+    then controlled entirely by best_ask, isolating the edge-floor-delta gate
+    from every other gate (confidence floor, min sources, calibration)."""
+    target = build_target(city, variable, date(2026, 6, 15))
+    return Market(
+        id="delta-market",
+        slug="delta-market",
+        title=f"Highest temperature in {city} on Jun 15?",
+        target=target,
+        buckets=[_bucket("50°F or higher", "above", threshold=50, best_ask=best_ask)],
+    )
+
+
+def _two_source_75(target: Target) -> ForecastSet:
+    """Two live sources, forecast centered at 75F with a tight spread, far above
+    the 50F threshold in _delta_market."""
+    samples = [
+        ForecastSample(
+            source=src,
+            model="m",
+            member=None,
+            station=target.station.icao,
+            variable=target.variable,
+            target_date=target.local_date,
+            lead_time_days=1,
+            value_f=75.0 + offset,
+            issued_at=None,
+        )
+        for src in ("open-meteo", "nws")
+        for offset in (-2.0, -1.0, 0.0, 1.0, 2.0)
+    ]
+    return ForecastSet(
+        target=target,
+        samples=samples,
+        coverage=[
+            SourceCoverage(source="open-meteo", ok=True, n_samples=5),
+            SourceCoverage(source="nws", ok=True, n_samples=5),
+        ],
+    )
+
+
+def _evaluate_delta(city: str, variable: str, *, best_ask: float) -> MarketReport:
+    """Evaluate _delta_market/_two_source_75 through the live-run lookup pattern:
+    the caller (here, the test) looks up STATION_EDGE_DELTA by (icao, variable)
+    and passes it in, mirroring cli.py's STATION_EDGE_DELTA.get(...) call sites."""
+    market = _delta_market(city, variable, best_ask=best_ask)
+    fs = _two_source_75(market.target)
+    delta = STATION_EDGE_DELTA.get((market.target.station.icao, variable), 0.0)
+    return evaluate_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_F,
+        min_edge=MIN_EDGE,
+        calibration=_full_cal(),
+        min_edge_delta=delta,
+    )
+
+
+def test_ksfo_tmax_edge_below_delta_floor_not_recommended() -> None:
+    """KSFO TMAX, full calibration, floor and sources cleared, edge in
+    [0.05, 0.10): MIN_EDGE alone would recommend it, but the +0.05 KSFO TMAX
+    delta raises the bar to 0.10, so it must not be recommended."""
+    report = _evaluate_delta("San Francisco", "TMAX", best_ask=0.92)
+    outcome = report.outcomes[0]
+    assert 0.05 <= outcome.edge < 0.10, f"edge={outcome.edge} must land in [0.05, 0.10)"
+    assert outcome.recommended is False
+
+
+def test_klax_byte_equivalent_market_recommended() -> None:
+    """The byte-equivalent market at KLAX (no station-edge-delta entry) with the
+    same edge that KSFO TMAX suppressed must be recommended: the delta is
+    per-(station, variable), not a blanket edge-floor raise."""
+    ksfo = _evaluate_delta("San Francisco", "TMAX", best_ask=0.92)
+    klax = _evaluate_delta("Los Angeles", "TMAX", best_ask=0.92)
+    assert klax.outcomes[0].edge == pytest.approx(ksfo.outcomes[0].edge)
+    assert klax.outcomes[0].recommended is True
+
+
+def test_ksfo_tmin_same_edge_recommended() -> None:
+    """KSFO TMIN, same setup as the suppressed KSFO TMAX case: the delta key is
+    (icao, variable), so TMIN is untouched and clears the plain MIN_EDGE bar."""
+    report = _evaluate_delta("San Francisco", "TMIN", best_ask=0.92)
+    outcome = report.outcomes[0]
+    assert 0.05 <= outcome.edge < 0.10
+    assert outcome.recommended is True
+
+
+def test_ksfo_tmax_edge_at_delta_floor_recommended() -> None:
+    """KSFO TMAX with edge >= 0.10 clears the raised bar: this is a raised
+    floor, not a blanket exclusion."""
+    report = _evaluate_delta("San Francisco", "TMAX", best_ask=0.83)
+    outcome = report.outcomes[0]
+    assert outcome.edge >= 0.10, f"edge={outcome.edge} must clear the raised 0.10 bar"
+    assert outcome.recommended is True
 
 
 def test_us_market_single_source_blocked() -> None:
