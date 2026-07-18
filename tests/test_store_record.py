@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from rainmaker.config import CONFIDENCE_FLOOR, MIN_EDGE, MIN_SIGMA_F, MIN_SOURCES
+from rainmaker.config import CONFIDENCE_FLOOR, MIN_EDGE, MIN_SIGMA_F, MIN_SOURCES, STATION_POLICIES
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import parse_market
 from rainmaker.probability.calibration import Accuracy
@@ -171,6 +171,51 @@ def test_record_predictions_stores_bucket():
     rows = conn.execute("SELECT bucket FROM predictions WHERE run_id = ?", ("run-1",)).fetchall()
     conn.close()
     assert {r["bucket"] for r in rows} == {o.bucket_label for o in report.outcomes}
+
+
+def _evaluated_policy_excluded():
+    """The same fixture market as _evaluated(), but station-policy excluded
+    (#302): tracking (settlement, tail-check, P&L) keeps recording these
+    markets, only recommended stops."""
+    market = _nyc_market()
+    fs = _forecast_set(market.target)
+    report = evaluate_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_F,
+        min_edge=MIN_EDGE,
+        station_policy=STATION_POLICIES["KNYC"],
+    )
+    return market, fs, report
+
+
+def test_record_run_persists_policy_excluded_predictions_with_recommended_false():
+    """A policy-excluded report (#302) still persists a prediction row per
+    outcome; only recommended is forced to 0. Tracking keeps recording the
+    market, only recommendations stop, matching the gate's own contract."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    market, fs, report = _evaluated_policy_excluded()
+    assert report.outcomes, "the fixture market must still produce outcomes to persist"
+    assert all(not o.recommended for o in report.outcomes)
+    record_run(
+        conn,
+        run_id="run-1",
+        started_at="t0",
+        finished_at="t1",
+        status="ok",
+        evaluated=[(market, fs, report)],
+    )
+    assert count_rows(conn, "markets") == 1
+    assert count_rows(conn, "predictions") == len(report.outcomes)
+    rows = conn.execute(
+        "SELECT recommended FROM predictions WHERE run_id = ?", ("run-1",)
+    ).fetchall()
+    conn.close()
+    assert rows, "at least one prediction row was written"
+    assert all(r["recommended"] == 0 for r in rows)
 
 
 def test_record_predictions_writes_null_df_for_gaussian():
