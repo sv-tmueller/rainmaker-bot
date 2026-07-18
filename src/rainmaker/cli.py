@@ -24,6 +24,7 @@ from rainmaker.config import (
     PRECIP_CLIMATOLOGY_YEARS,
     PRECIP_VAR_FLOOR,
     REPORTS_DIR,
+    STATION_POLICIES,
     STATIONS,
     Station,
     Target,
@@ -167,6 +168,7 @@ def _run(reports_dir: str, db_path: str) -> None:
                 min_sigma=_sigma_floor(market),
                 min_edge=MIN_EDGE,
                 calibration=calibration,
+                station_policy=STATION_POLICIES.get(market.target.station.icao),
             )
             evaluated.append((market, forecast_set, report))
 
@@ -197,6 +199,7 @@ def _run(reports_dir: str, db_path: str) -> None:
                 min_sigma=_sigma_floor(market),
                 min_edge=MIN_EDGE,
                 calibration=calibration,
+                station_policy=STATION_POLICIES.get(market.target.station.icao),
             )
             evaluated.append((market, forecast_set, report))
 
