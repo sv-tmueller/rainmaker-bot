@@ -68,6 +68,35 @@ def test_render_markdown_shows_excluded_no_ask_note():
     assert "Excluded (no ask): 59°F or below" in md
 
 
+def test_render_terminal_shows_policy_exclusion():
+    """A policy-excluded market (#302) renders its exclusion reason in the
+    terminal report, next to the rest of the market block."""
+    excluded = _market_report().model_copy(update={"policy_exclusion": "KNYC: excluded because X"})
+    report = Report(run_date=date(2026, 5, 31), markets=[excluded])
+    text = render_terminal(report)
+    assert "EXCLUDED from recommendations: KNYC: excluded because X" in text
+
+
+def test_render_terminal_omits_policy_exclusion_line_when_unset():
+    report = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
+    text = render_terminal(report)
+    assert "EXCLUDED from recommendations" not in text
+
+
+def test_render_markdown_shows_policy_exclusion():
+    """The markdown report shows the same exclusion note as the terminal one."""
+    excluded = _market_report().model_copy(update={"policy_exclusion": "KNYC: excluded because X"})
+    report = Report(run_date=date(2026, 5, 31), markets=[excluded])
+    md = render_markdown(report)
+    assert "EXCLUDED from recommendations: KNYC: excluded because X" in md
+
+
+def test_render_markdown_omits_policy_exclusion_line_when_unset():
+    report = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
+    md = render_markdown(report)
+    assert "EXCLUDED from recommendations" not in md
+
+
 def test_render_shows_venue():
     poly = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
     assert "polymarket" in render_terminal(poly)
