@@ -702,7 +702,8 @@ def test_parse_df_unit_cases():
     assert _parse_df({"df": float("-inf")}) == (None, False)
     assert _parse_df({"df": True}) == (None, False)  # bool must never coerce to df=1.0
     assert _parse_df({"df": 0.0}) == (None, False)  # existing df<=0 guard, unchanged
-    assert _parse_df({"df": "5.5"}) == (None, False)  # disclosed tightening: numeric strings rejected
+    # disclosed tightening: numeric strings are now rejected as corrupt data
+    assert _parse_df({"df": "5.5"}) == (None, False)
 
 
 def test_finite_number_rejects_bool_and_non_finite():
