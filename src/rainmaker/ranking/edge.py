@@ -4,6 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from rainmaker.config import StationPolicy
 from rainmaker.domain import Market, PrecipMonthlyMarket
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.forecasts.precip import PrecipForecastSet
@@ -53,6 +54,9 @@ class MarketReport(BaseModel):
     outcomes: list[RankedOutcome]
     excluded_no_ask: list[str]
     venue: str = "polymarket"
+    # The station-policy reason (#302) when this market's station is excluded from
+    # recommendations; None otherwise. Additive: absent on every report before this.
+    policy_exclusion: str | None = None
 
 
 def evaluate_market(
@@ -66,6 +70,7 @@ def evaluate_market(
     floor_no: float | None = None,
     calibration: Calibration | None = None,
     require_calibration: bool = True,
+    station_policy: StationPolicy | None = None,
 ) -> MarketReport:
     """Edge-rank a temperature market.
 
@@ -77,6 +82,13 @@ def evaluate_market(
     uncalibrated fits keep the widened raw sigma, which live evidence shows is
     underdispersed in the high-confidence regime. Set False only for the
     pnl_backtest replay (#226 tracks removing that opt-out).
+
+    station_policy (#302) is a per-station recommendation-gate override, looked
+    up by the caller from STATION_POLICIES and passed in (evaluate_market stays
+    a pure function of its arguments). An "exclude" policy forces recommended
+    off on every outcome and sets policy_exclusion to its reason, the same
+    shape as the uncalibratable gate below: forecast and advisory display stay
+    intact, only recommended is forced off.
     """
     no_floor = floor_no if floor_no is not None else floor
     unit = market.target.station.unit
@@ -84,6 +96,11 @@ def evaluate_market(
     # Markets with no GHCN-D id cannot be calibrated (no actuals history to fit against).
     # Force recommended off while leaving the forecast and advisory display intact.
     uncalibratable = market.target.station.ghcnd_id is None
+    policy_excluded = False
+    policy_exclusion: str | None = None
+    if station_policy is not None and station_policy.action == "exclude":
+        policy_excluded = True
+        policy_exclusion = station_policy.reason
     common: dict[str, Any] = dict(
         market_id=market.id,
         title=market.title,
@@ -95,6 +112,7 @@ def evaluate_market(
         n_sources=n_sources,
         coverage=forecast_set.coverage,
         venue=market.venue,
+        policy_exclusion=policy_exclusion,
     )
     if not forecast_set.samples:
         return MarketReport(
@@ -127,6 +145,7 @@ def evaluate_market(
             edge = p_win - bucket.best_ask
             recommended = (
                 not uncalibratable
+                and not policy_excluded
                 and (not require_calibration or calibrated == "full")
                 and p_win >= floor
                 and n_sources >= min_sources
@@ -151,6 +170,7 @@ def evaluate_market(
             edge_no = p_no - bucket.no_ask
             recommended_no = (
                 not uncalibratable
+                and not policy_excluded
                 and (not require_calibration or calibrated == "full")
                 and p_no >= no_floor
                 and n_sources >= min_sources

@@ -12,6 +12,7 @@ from rainmaker.config import (
     MIN_SIGMA_F,
     MIN_SOURCES,
     PRECIP_VAR_FLOOR,
+    STATION_POLICIES,
     PrecipStation,
     Station,
     Target,
@@ -897,6 +898,128 @@ def test_intl_market_never_recommended() -> None:
     assert all(not o.recommended for o in report.outcomes), (
         f"intl market must not recommend any outcome; got {report.outcomes}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Station-policy gate: a per-station exclusion (#302, the #296 addendum)
+# ---------------------------------------------------------------------------
+
+_KNYC_STATION_FOR_GATE = Station(
+    city="NYC",
+    icao="KNYC",
+    name="Central Park, New York",
+    lat=40.7790,
+    lon=-73.9692,
+    timezone="America/New_York",
+    wunderground_url="https://forecast.weather.gov/product.php?site=OKX&product=CLI&issuedby=NYC",
+    ghcnd_id="USW00094728",
+)
+
+
+def _gate_market_knyc() -> Market:
+    """KNYC-shaped market with two buckets to exercise both YES and NO recommended
+    paths, mirroring _gate_market_intl's shape for the uncalibratable gate.
+
+    Forecast centered at 75F:
+    - "68F or higher": p_win ~ 1.0, best_ask=0.05 -> edge >> min_edge (YES side live)
+    - "90F or higher": no best_ask so YES excluded; no_ask=0.05 -> p_no ~ 1.0,
+      edge_no >> min_edge (NO side live).
+    Both sides would be recommended absent the station policy.
+    """
+    target = Target(station=_KNYC_STATION_FOR_GATE, variable="TMAX", local_date=date(2026, 6, 15))
+    return Market(
+        id="gate_knyc",
+        slug="gate-knyc",
+        title="Highest temperature in NYC on Jun 15?",
+        target=target,
+        buckets=[
+            _bucket("68°F or higher", "above", threshold=68, best_ask=0.05),
+            _bucket("90°F or higher", "above", threshold=90, no_ask=0.05),
+        ],
+    )
+
+
+def _two_source_knyc(target: Target) -> ForecastSet:
+    """Two live sources, forecast centered at 75F, comfortably between the 68F
+    and 90F thresholds so both sides of _gate_market_knyc clear every other
+    gate; only the station policy is left to isolate."""
+    samples = [
+        ForecastSample(
+            source=src,
+            model="m",
+            member=None,
+            station=target.station.icao,
+            variable="TMAX",
+            target_date=target.local_date,
+            lead_time_days=1,
+            value_f=75.0 + offset,
+            issued_at=None,
+        )
+        for src in ("open-meteo", "nws")
+        for offset in (-2.0, -1.0, 0.0, 1.0, 2.0)
+    ]
+    return ForecastSet(
+        target=target,
+        samples=samples,
+        coverage=[
+            SourceCoverage(source="open-meteo", ok=True, n_samples=5),
+            SourceCoverage(source="nws", ok=True, n_samples=5),
+        ],
+    )
+
+
+def test_knyc_excluded_from_recommendations() -> None:
+    """A KNYC-shaped market with full calibration and all other gates passing
+    must never produce recommended=True, on any side, when station_policy marks
+    it excluded (#302, the #296 addendum's KNYC forecast-skill verdict).
+
+    Mirrors test_intl_market_never_recommended's structure for the
+    uncalibratable gate: advisory display is unaffected (outcomes non-empty,
+    mu set), only recommended is forced off, and MarketReport.policy_exclusion
+    carries the policy's reason.
+    """
+    market = _gate_market_knyc()
+    fs = _two_source_knyc(market.target)
+    policy = STATION_POLICIES["KNYC"]
+
+    report = evaluate_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_F,
+        min_edge=MIN_EDGE,
+        calibration=_full_cal(),
+        station_policy=policy,
+    )
+    assert report.outcomes, "outcomes must be non-empty so advisory still renders"
+    assert report.mu is not None, "mu must be set so advisory still renders"
+    assert all(not o.recommended for o in report.outcomes), (
+        f"KNYC market must not recommend any outcome; got {report.outcomes}"
+    )
+    assert report.policy_exclusion == policy.reason
+
+
+def test_knyc_market_without_policy_is_recommendable() -> None:
+    """Control: the same KNYC-shaped market with no station_policy passed clears
+    every other gate, proving the exclusion above is what blocks it and not an
+    incidental gate failure."""
+    market = _gate_market_knyc()
+    fs = _two_source_knyc(market.target)
+
+    report = evaluate_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_F,
+        min_edge=MIN_EDGE,
+        calibration=_full_cal(),
+    )
+    assert any(o.recommended for o in report.outcomes), (
+        f"control market should have at least one recommended outcome; got {report.outcomes}"
+    )
+    assert report.policy_exclusion is None
 
 
 def test_us_market_single_source_blocked() -> None:

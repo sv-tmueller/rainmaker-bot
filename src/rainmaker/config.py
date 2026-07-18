@@ -40,6 +40,21 @@ class PrecipStation(BaseModel):
     ghcnd_id: str  # NOAA NCEI GHCND station id, for GSOM monthly actuals
 
 
+class StationPolicy(BaseModel):
+    """A per-station override consumed by the recommendation gate (#302).
+
+    Keyed by ICAO in STATION_POLICIES below, the same key `evaluate_market`
+    already has via market.target.station.icao; PrecipStation has no ICAO, so
+    the precip path is untouched by construction. Un-excluding a station is a
+    one-line change: delete its STATION_POLICIES entry.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    action: Literal["exclude"]
+    reason: str
+
+
 class Target(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -387,6 +402,23 @@ CONFIDENCE_FLOOR = 0.80
 CONFIDENCE_FLOOR_NO = 0.75
 MIN_SOURCES = 2
 MIN_EDGE = 0.05
+
+# Per-station recommendation-gate overrides (#302), keyed by ICAO. See
+# docs/architecture/recommendation-gate.md for the dated decision record.
+STATION_POLICIES: dict[str, StationPolicy] = {
+    "KNYC": StationPolicy(
+        action="exclude",
+        reason=(
+            "KNYC: excluded from recommendations. The #296 addendum found "
+            "forecast-dominant busts at exclusion grade (all five Open-Meteo "
+            "models too warm on 72% of TMAX busts; 50%/25% observed "
+            "lower-.05 hit rates vs the 20% severity cut at leads 1/2), a "
+            "forecast-skill gap no calibration refit can fix. Path back in: "
+            "the station-metadata audit named in that addendum's caveats."
+        ),
+    ),
+}
+
 PRECIP_VAR_FLOOR = 0.01  # in^2: variance floor for the monthly-total gamma (~0.1in std)
 PRECIP_CLIMATOLOGY_YEARS = 20  # prior years of NCEI history for the climatology tail
 REPORTS_DIR = "reports"
