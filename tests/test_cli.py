@@ -259,6 +259,53 @@ def test_backfill_fits_and_saves_calibration_and_accuracy(monkeypatch, tmp_path,
     assert row["n"] == 42
 
 
+def test_backfill_prints_df_for_student_t_cell(monkeypatch, tmp_path, capsys):
+    from rainmaker.probability.calibration import Accuracy
+
+    cal = Calibration(
+        station="KJFK",
+        variable="TMIN",
+        lead_time=1,
+        bias=-2.0,
+        var_a=1.0,
+        var_b=1.1,
+        n_samples=42,
+        df=8.5,
+    )
+    acc = Accuracy(n=42, mae_f=2.5, bias_f=-2.0)
+    monkeypatch.setattr(cli, "run_backfill", lambda *a, **k: {1: (cal, acc)})
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+    db = tmp_path / "t.db"
+
+    cli.main(["backfill", "--variable", "TMIN", "--leads", "1", "--db", str(db)])
+
+    out = capsys.readouterr().out
+    assert (
+        "calibrated KJFK TMIN lead=1: bias=-2.00F var_a=1.000 var_b=1.100 df=8.5 "
+        "mae=2.50F n=42 ->" in out
+    )
+
+
+def test_backfill_gaussian_cell_line_unchanged(monkeypatch, tmp_path, capsys):
+    from rainmaker.probability.calibration import Accuracy
+
+    cal = Calibration(
+        station="KLGA", variable="TMAX", lead_time=1, bias=-2.0, var_a=1.0, var_b=1.1, n_samples=42
+    )
+    acc = Accuracy(n=42, mae_f=2.5, bias_f=-2.0)
+    monkeypatch.setattr(cli, "run_backfill", lambda *a, **k: {1: (cal, acc)})
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+    db = tmp_path / "t.db"
+
+    cli.main(["backfill", "--variable", "TMAX", "--leads", "1", "--db", str(db)])
+
+    out = capsys.readouterr().out
+    assert (
+        "calibrated KLGA TMAX lead=1: bias=-2.00F var_a=1.000 var_b=1.100 mae=2.50F n=42 ->" in out
+    )
+    assert "df=" not in out
+
+
 def _fake_run_backfill(station, variable, leads, start, end, client):
     from rainmaker.probability.calibration import Accuracy
 

@@ -315,9 +315,11 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
                         accuracy=acc,
                         updated_at=now,
                     )
+                    df_segment = "" if cal.df is None else f" df={cal.df:.1f}"
                     print(
                         f"calibrated {cal.station} {cal.variable} lead={cal.lead_time}: "
-                        f"bias={cal.bias:+.2f}F var_a={cal.var_a:.3f} var_b={cal.var_b:.3f} "
+                        f"bias={cal.bias:+.2f}F var_a={cal.var_a:.3f} var_b={cal.var_b:.3f}"
+                        f"{df_segment} "
                         f"mae={acc.mae_f:.2f}F n={cal.n_samples} -> {label}"
                     )
                 succeeded += 1
