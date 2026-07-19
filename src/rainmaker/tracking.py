@@ -9,6 +9,7 @@ day (#63, #78). Tracking only covers rows with a bucket recorded.
 """
 
 import json
+import math
 from collections import defaultdict
 from datetime import UTC, date, datetime
 from typing import Any
@@ -39,26 +40,38 @@ from rainmaker.store.record import save_accuracy
 _CRPS_BATCH_SIZE = 1000
 
 
+def _finite_number(x: Any) -> float | None:
+    """Coerce x to a finite float, or None if it isn't one.
+
+    Rejects bool explicitly: JSON true/false decode to Python bool, which is an
+    int subclass, so isinstance(x, (int, float)) alone would silently accept it
+    as 1.0/0.0. Rejects NaN/Inf too, since comparisons against them (e.g. the
+    sigma<=0 guard) are always False and let a poisoned value slip through.
+    """
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return None
+    value = float(x)
+    return value if math.isfinite(value) else None
+
+
 def _parse_df(params: dict[str, Any]) -> tuple[float | None, bool]:
     """Read dist_params["df"]: (df, ok). df=None means Gaussian (absent key or
     explicit null); ok=False means the row must be skipped (present but
-    non-numeric or <= 0), mirroring the existing sigma<=0 guard -- a row never
-    silently scores as Gaussian just because its df was unusable.
+    non-numeric, non-finite, bool, or <= 0), mirroring the existing sigma<=0
+    guard -- a row never silently scores as Gaussian just because its df was
+    unusable.
     """
     df_raw = params.get("df")
     if df_raw is None:
         return None, True
-    try:
-        df = float(df_raw)
-    except (TypeError, ValueError):
-        return None, False
-    if df <= 0:
+    df = _finite_number(df_raw)
+    if df is None or df <= 0:
         return None, False
     return df, True
 
 
 def _cdf_at(mu: float, sigma: float, df: float | None, actual: float) -> float:
-    """Standardized predictive CDF at `actual`, dispatched by family (df)."""
+    """Predictive CDF at `actual`, dispatched by family (df)."""
     if df is None:
         return float(norm.cdf(actual, loc=mu, scale=sigma))
     z = np.array([(actual - mu) / sigma])
@@ -616,7 +629,7 @@ def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
             params = json.loads(r["dist_params"])
         except json.JSONDecodeError:
             continue  # unparsable dist_params: skip, never fail the snapshot
-        mu, sigma = params.get("mu"), params.get("sigma")
+        mu, sigma = _finite_number(params.get("mu")), _finite_number(params.get("sigma"))
         if mu is None or sigma is None or sigma <= 0:
             continue
         lead = (
@@ -684,7 +697,7 @@ def compute_live_calibration(conn: Conn) -> list[dict[str, Any]]:
             params = json.loads(r["dist_params"])
         except json.JSONDecodeError:
             continue
-        mu, sigma = params.get("mu"), params.get("sigma")
+        mu, sigma = _finite_number(params.get("mu")), _finite_number(params.get("sigma"))
         if mu is None or sigma is None or sigma <= 0:
             continue
         df, df_ok = _parse_df(params)
@@ -883,7 +896,7 @@ def compute_tail_calibration(
             params = json.loads(r["dist_params"])
         except json.JSONDecodeError:
             continue
-        mu, sigma = params.get("mu"), params.get("sigma")
+        mu, sigma = _finite_number(params.get("mu")), _finite_number(params.get("sigma"))
         if mu is None or sigma is None or sigma <= 0:
             continue
         df, df_ok = _parse_df(params)
