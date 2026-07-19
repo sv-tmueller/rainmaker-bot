@@ -115,7 +115,9 @@ uv run rainmaker backfill --city "Los Angeles"
 The next run applies it and labels the forecast `(calibrated)`. Cells are
 per-(station, variable, lead time); the default fits every cell the live run
 can bet (TMAX and TMIN, leads 0-3). The output line includes a `mae=...F`
-field showing the backtest mean absolute error.
+field showing the backtest mean absolute error. Student-t cells also print
+`df=...`, so a refit's fitted degrees of freedom is verifiable straight from
+the workflow log.
 
 To refresh the cloud database without handling the DSN locally, trigger the
 `backfill` workflow in the GitHub Actions tab (Run workflow). It runs
