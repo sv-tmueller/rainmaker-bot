@@ -421,7 +421,7 @@ STATION_POLICIES: dict[str, StationPolicy] = {
 
 # Per-(station, variable) edge-floor delta (#303), keyed by (ICAO, variable) and
 # added to MIN_EDGE for the recommended gate on both YES and NO sides. See the
-# #296 addendum ("KSFO/KNYC per-station tail anatomy") and this file's dated
+# #296 addendum ("KSFO/KNYC per-station tail anatomy") and the dated
 # 2026-07-18 update in docs/architecture/recommendation-gate.md for the KSFO
 # tail-severity evidence and why a raised edge floor, not a probability haircut
 # or a widened sigma, is the mechanism. Revisit date: 2026-11-15.

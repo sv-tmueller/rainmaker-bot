@@ -599,7 +599,7 @@ re-check, the same date the addendum's own KMDW/KSEA season-scoped rows use.
 **Rejected refinements**, narrower than the delta chosen:
 
 - *Raise the confidence floor instead*, for KSFO only: rejected because the
-  live P/L sweep behind `CONFIDENCE_FLOOR` (see the 2026-06-XX update above)
+  live P/L sweep behind `CONFIDENCE_FLOOR` (see the 2026-06-06 update above)
   found the opposite direction profitable - a higher floor suppresses the
   highest-edge bets, which is backwards for a station whose problem is
   overstated probability, not overstated confidence band width.

@@ -96,12 +96,12 @@ def evaluate_market(
     shape as the uncalibratable gate below: forecast and advisory display stay
     intact, only recommended is forced off.
 
-    min_edge_delta (#303, default 0.0) is a per-(station, variable) addition to
-    min_edge/floor_no's edge gate, looked up by the caller from
-    STATION_EDGE_DELTA and passed in (same pure-function shape as
+    min_edge_delta (#303, default 0.0) is a per-(station, variable) addition
+    to the min_edge gate on both YES and NO sides, looked up by the caller
+    from STATION_EDGE_DELTA and passed in (same pure-function shape as
     station_policy). It raises the recommended bar on both YES and NO sides
     without moving p_win, the display, or any other gate; see the #296
-    addendum and this file's dated 2026-07-18 update in
+    addendum and the dated 2026-07-18 update in
     docs/architecture/recommendation-gate.md for the KSFO TMAX rationale.
     """
     no_floor = floor_no if floor_no is not None else floor
