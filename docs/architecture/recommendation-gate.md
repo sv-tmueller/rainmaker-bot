@@ -489,9 +489,9 @@ across runs and the window end shifted by 3 days. No regression, no material
 gain. Total P/L is higher on a slightly larger universe, but per-bet
 economics stay flat.
 
-## Update 2026-07-18: a per-station exclusion gate term, KNYC excluded (#302)
+## Update 2026-07-18: station-policy gate terms - KNYC excluded (#302), KSFO TMAX edge-floor delta (#303)
 
-The gate gains a fourth, per-station term alongside the confidence floor,
+The gate gains a new per-station term alongside the confidence floor,
 min-sources, and min-edge gates already documented above: `station_policy`, a
 `STATION_POLICIES` map in `config.py` keyed by ICAO and consumed inside
 `evaluate_market`. It follows the same shape as the existing uncalibratable
@@ -527,3 +527,88 @@ Path back in: the station-metadata audit the addendum's own caveats name
 against what the forecast models and settlement pipeline actually query).
 That audit is out of #302's scope; STATION_POLICIES is the one place to
 revisit once it lands.
+
+### KSFO TMAX: a raised edge floor, not an exclusion (#303)
+
+The #296 addendum's other flagged station gets a different mechanism.
+`STATION_EDGE_DELTA`, a `dict[tuple[str, str], float]` in `config.py` keyed
+by `(icao, variable)`, adds a per-market delta to `MIN_EDGE`: the recommended
+gate on both YES and NO sides becomes `edge >= MIN_EDGE + delta` instead of
+`edge >= MIN_EDGE`. `STATION_EDGE_DELTA[("KSFO", "TMAX")] = 0.05` doubles
+KSFO TMAX's bar to 0.10; every other gate (confidence floor, min sources,
+the full-calibration requirement) and every other station or variable is
+untouched. `evaluate_market` takes the resolved delta as `min_edge_delta`
+(default 0.0, so every existing call site and the golden e2e fixture, which
+has no KSFO market, stay byte-identical); the caller looks it up from
+`STATION_EDGE_DELTA` by `(market.target.station.icao, market.target.variable)`,
+the same pure-function shape `station_policy` already has. `cli.py`'s two
+temperature call sites and `pnl_backtest.py`'s `replay_market` all make the
+same lookup, so the P/L backtest replays the identical live gate (#226).
+`MarketReport.edge_floor_delta` and `.edge_floor_delta_reason` carry the
+applied delta and a human-readable reason into both renderers, mirroring
+`policy_exclusion`'s placement.
+
+**Why KSFO is a penalty and KNYC is an exclusion.** The addendum classified
+KSFO spread-dominant (39/50 busts, 78%, land inside the 5-model envelope: a
+pooled-spread problem, not a forecast-skill one) and prescribed the frozen
+rule's evidence bar for that branch: a season-pure per-station refit (JJA-only
+fit, newest-14-day eval, one fit per lead) must move the station's lower-.05
+PIT ratio into [0.5, 1.5] at both TMAX leads to justify a calibration fix.
+KSFO's refit measured 4.29 (lead 1) and 2.86 (lead 2), both far outside the
+bar and both worse than the already-broken pooled baseline (2.71 at lead 1).
+The frozen rule's fallback for a failed refit in the spread-dominant branch is
+a confidence penalty, not exclusion (KSFO's severity was never checked
+against the exclusion cut; that cut belongs to the forecast-dominant branch
+KNYC took). The two stations are on record with opposite mechanisms and,
+correctly, opposite actions.
+
+**Mechanism: an edge-floor delta, not a probability haircut or a widened
+sigma.** Two alternatives were considered and rejected:
+
+- *Probability haircut* (shrink p_win toward the ask before ranking): this is
+  a raised edge floor at fixed `MIN_EDGE` by another name, except it also
+  corrupts the displayed and recorded p_win and leaks into the confidence-floor
+  gate, a second gate the penalty was never meant to touch. Its effect cannot
+  be isolated to the one gate the addendum's evidence actually supports.
+- *Widened sigma* (hand-pick a per-station scale multiplier): this is exactly
+  the sigma-scaling the season-pure refit already tried and measured, and it
+  failed the [0.5, 1.5] evidence bar decisively (4.29/2.86). The frozen rule's
+  fallback for a failed refit is a penalty, not a substitute calibration fix;
+  hand-picking a widening the fitted refit already showed does not work would
+  be strictly worse, and it would poison the recorded predictive parameters
+  the 2026-11-15 revisit needs to measure cleanly.
+
+An edge-floor delta stays entirely inside the ranking gate: p_win, sigma, and
+every recorded predictive parameter are untouched, so the 2026-11-15 revisit
+(the same accrual horizon the addendum's KMDW/KSEA rows use) can still ask
+"did the underlying calibration improve" without the penalty itself
+contaminating the answer.
+
+**Parameter: +0.05, double the plain bar.** Edge inherits p_win's
+overstatement one-for-one, so edge is the right unit for a penalty sized to
+that overstatement. At a claimed p_no near 0.95 (the confidence-floor
+neighborhood these bets live in), a 2x understatement of the lower tail's
+true spread corresponds to roughly 5 points of overstated probability at the
+claim level; +0.05 is sized to absorb that 2x case. The archive's ratios
+(4.29/2.86) do not translate directly into a live-run magnitude (the archive
+caveat above: archive sigma is multi-model disagreement, not the live pooled
+spread), so no finer-grained fit is possible from this evidence; 0.05 is the
+recorded judgment value, with the 2026-11-15 revisit as the scheduled
+re-check, the same date the addendum's own KMDW/KSEA season-scoped rows use.
+
+**Rejected refinements**, narrower than the delta chosen:
+
+- *Raise the confidence floor instead*, for KSFO only: rejected because the
+  live P/L sweep behind `CONFIDENCE_FLOOR` (see the 2026-06-XX update above)
+  found the opposite direction profitable - a higher floor suppresses the
+  highest-edge bets, which is backwards for a station whose problem is
+  overstated probability, not overstated confidence band width.
+- *A direction-aware penalty* (only the lower-tail side, since KSFO's busts
+  are all lower-tail): more surgical, but the frozen rule calls for a
+  penalty, not a bespoke per-tail rule, and the addendum did not test whether
+  KSFO's upper tail is clean enough to leave unpenalized. Out of scope for a
+  v1 the frozen rule wants simple; a candidate for the 2026-11-15 revisit if
+  the flat delta proves too blunt.
+
+Un-penalizing KSFO TMAX, or retuning the delta, is a one-line change:
+edit or delete its `STATION_EDGE_DELTA` entry.
