@@ -15,6 +15,8 @@ from datetime import date
 import pytest
 
 from rainmaker.spikes.station_tail_anatomy import (
+    FROZEN_WINDOW_END,
+    FROZEN_WINDOW_START,
     IN_SEASON_END,
     IN_SEASON_START,
     RAW_MISS_THRESHOLD_F,
@@ -30,6 +32,7 @@ from rainmaker.spikes.station_tail_anatomy import (
     recommend_for_station,
     season_pure_refit_lower05,
     select_asos_control,
+    verify_pooled_window,
 )
 from rainmaker.spikes.tmax_tail_diagnosis import ResidualRow, StationHitStat
 
@@ -231,6 +234,36 @@ def test_raw_miss_season_summary_returns_none_fraction_when_no_misses() -> None:
 def test_in_season_window_matches_the_sub_plans_frozen_dates() -> None:
     assert IN_SEASON_START == date(2026, 5, 1)
     assert IN_SEASON_END == date(2026, 7, 16)
+
+
+# -----------------------------------------------------------------------------
+# Trip-wire: the pooled cache must be the frozen window
+# -----------------------------------------------------------------------------
+
+
+def test_verify_pooled_window_passes_on_the_frozen_window() -> None:
+    # Pinned as literals, per the sibling in-season-window test's discipline,
+    # tied back to the source-of-truth constants below.
+    assert FROZEN_WINDOW_START == date(2026, 3, 18)
+    assert FROZEN_WINDOW_END == date(2026, 7, 16)
+    cell_data = {
+        ("KAAA", "TMAX", 1): [
+            (date(2026, 3, 18), 60.0, 3.0, 55.0),
+            (date(2026, 7, 16), 61.0, 3.0, 56.0),
+        ]
+    }
+    verify_pooled_window(cell_data)  # no raise
+
+
+def test_verify_pooled_window_raises_on_a_drifted_window() -> None:
+    cell_data = {
+        ("KAAA", "TMAX", 1): [
+            (date(2026, 3, 18), 60.0, 3.0, 55.0),
+            (date(2026, 7, 17), 61.0, 3.0, 56.0),  # end drifted one day
+        ]
+    }
+    with pytest.raises(ValueError, match="does not match the frozen window"):
+        verify_pooled_window(cell_data)
 
 
 # -----------------------------------------------------------------------------

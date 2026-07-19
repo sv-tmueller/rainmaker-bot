@@ -203,7 +203,8 @@ def test_fit_student_t_free_df_df_channel_responds_to_tail_shape():
     against this exact fitter with seed=11/12: t(df=5) noise (the acceptance
     criteria's original choice) gives a live/dead gap of only ~0.03, too thin
     a margin to be a reliable regression signal; t(df=3) noise (heavier,
-    still a genuine Student-t) gives a robust, deterministic gap. This test
+    still a genuine Student-t) gives a wide gap, deterministic under the
+    pinned seeds (11/12). This test
     asserts the channel is alive (responds differently to differently-shaped
     noise), not that a specific df value is recovered exactly.
     """
@@ -230,7 +231,8 @@ def test_fit_student_t_free_df_improves_lower_tail_pit_on_tail_thin_tmin_constru
     original construction, seed=20260717+1), the df movement is only ~0.03,
     too thin a margin to double as a dead-channel regression check; -6 sigma
     cold snaps at 300 fit pairs (same seed, same 8% rate, still a tail-thin
-    construction) give a robust, deterministic gap while leaving the
+    construction) give a wide gap, deterministic under this pinned seed
+    while leaving the
     PIT-improvement claim intact (verified empirically against this exact
     fitter).
 
