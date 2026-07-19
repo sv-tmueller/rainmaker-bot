@@ -88,6 +88,8 @@ def render_terminal(report: Report) -> str:
         elif (m.mu is None) != (m.sigma is None):
             lines.append("  forecast: partial data (only one of mu/sigma available)")
         lines.append(f"  coverage: {_coverage_str(m)}")
+        if m.policy_exclusion:
+            lines.append(f"  EXCLUDED from recommendations: {m.policy_exclusion}")
         if not m.outcomes:
             lines.append("  no tradeable outcomes (insufficient forecast data)")
         else:
@@ -150,6 +152,8 @@ def render_markdown(report: Report) -> str:
         elif (m.mu is None) != (m.sigma is None):
             lines.append("- forecast: partial data (only one of mu/sigma available)")
         lines.append(f"- coverage: {_coverage_str(m)}")
+        if m.policy_exclusion:
+            lines.append(f"- EXCLUDED from recommendations: {m.policy_exclusion}")
         lines.append("")
         if m.outcomes:
             lines.append("| bucket | side | P(win) | ask | edge | rec |")
