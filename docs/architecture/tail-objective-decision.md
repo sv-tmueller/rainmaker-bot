@@ -626,9 +626,13 @@ control is `select_asos_control`'s deterministic rule: minimize
 |hit rate - 0.05| summed over TMAX leads 1-2 among the 11 domestic
 ASOS-settled Polymarket stations, tie-break larger pooled n then
 alphabetical ICAO. **This run selected KSEA** (lead 1: 4/49 = 8% hit rate,
-lead 2: 2/49 = 4%, both close to the 5% nominal). KLGA is a free paired
-comparator for KNYC (already in the pooled cache, zero extra fetch), not a
-control: it is itself mildly flagged at TMAX lead 2 in #289's Diagnostic B.
+lead 2: 2/49 = 4%, both close to the 5% nominal). "Clean" here is scoped to
+the selection rule's TMAX-only leads; Diagnostic B flags KSEA at TMIN leads
+0-1 too (14%/18% hit rates against the 5% nominal claim, from the
+per-station table above), out of this addendum's TMAX scope. KLGA is a free
+paired comparator for KNYC (already in the pooled cache, zero extra fetch),
+not a control: it is itself mildly flagged at TMAX lead 2 in #289's
+Diagnostic B.
 
 ### Per-station bust tables (primary Diagnostic-B hit set, TMAX leads 1-2)
 
@@ -894,22 +898,38 @@ forecast-skill problem this severe is not something a calibration refit
 (scale/bias correction) can fix by construction: no amount of widening or
 shifting a Gaussian recovers information no input model ever had.
 
+The verdict is invariant to the siting-vs-metadata ambiguity noted in the
+caveats below: either cause means current forecasts do not predict what
+settles KNYC's markets, so the exclusion holds under both readings, and the
+station-metadata audit is the path back in under both. The exclusion is
+implemented as the gate's KNYC station policy (#302;
+`docs/architecture/recommendation-gate.md`, "Update 2026-07-18: a
+per-station exclusion gate term, KNYC excluded (#302)"), which cites this
+addendum.
+
 **KSFO: confidence penalty (not calibration-fixable by the frozen evidence
 bar, despite being a spread problem).** KSFO's 78% spread-type share makes it
 the "calibration should fix this" case the frozen rules anticipated, but the
 required season-pure per-station refit check failed decisively: lower-.05
 lands at 4.29 (lead 1) and 2.86 (lead 2), both far outside the [0.5, 1.5]
 evidence bar and both *worse* than the already-broken pooled baseline
-(2.71 at lead 1, from the comparison table above). A per-station EMOS refit,
-even season-pure, does not fix KSFO's lower tail; the pooled 5-model spread
-itself is too narrow on KSFO's worst marine-layer days regardless of how the
-station's own bias/scale parameters are set, which points toward a genuinely
-underdispersed ensemble on this station's hardest days rather than a fixable
-station-level bias or scale error. Per the frozen rule, a failed refit falls
-back to a confidence penalty, not exclusion (KSFO's own severity numbers were
-not computed against the exclusion cut, since the spread-dominant branch
-does not read them; the recommendation table's median depth, 3.0 F, is a
-descriptive attribute here, not part of this branch's decision).
+(2.71 at lead 1, from the comparison table above). The newest-14-day eval
+window quantizes the lower-.05 ratio into ~1.43 steps, so the only
+achievable value inside the [0.5, 1.5] evidence bar is exactly one hit;
+KSFO's 4.29 and 2.86 correspond to three and two hits. A per-station EMOS
+refit, even season-pure, does not fix KSFO's lower tail; the pooled 5-model
+spread itself is too narrow on KSFO's worst marine-layer days regardless of
+how the station's own bias/scale parameters are set, which points toward a
+genuinely underdispersed ensemble on this station's hardest days rather than
+a fixable station-level bias or scale error. Per the frozen rule, a failed
+refit falls back to a confidence penalty, not exclusion (KSFO's own severity
+numbers were not computed against the exclusion cut, since the
+spread-dominant branch does not read them; the recommendation table's median
+depth, 3.0 F, is a descriptive attribute here, not part of this branch's
+decision). The confidence penalty above rests on in-season evidence only
+(48/50 JJA busts, 100% in-season raw misses over the full window), so the
+2026-11-15 re-run named in the off-season-thinness caveat applies to KSFO as
+much as to the season-scoped controls.
 
 **KMDW and KSEA: no material action.** Both controls' recommendations
 ("season-scoped confidence penalty") are a mild, mechanical artifact of
@@ -945,7 +965,9 @@ Read these as "confirmed clean," matching #289, not as flagged stations.
   future forecast-dominant, season-concentrated station's exclusion verdict
   cannot be confirmed to persist off-season with only 44 days of pre-May
   archive; `REVISIT_DATE = 2026-11-15` is the named point to re-run this
-  module once SON data accrues.
+  module once SON data accrues. The same re-run covers KSFO too, since its
+  confidence penalty (above) also rests on in-season-only evidence, even
+  though the spread-dominant branch carries no revisit date of its own.
 - **KLGA paired-delta interpretation is suggestive, not conclusive.** The
   89%-of-dates, ~3 F systematic KNYC-colder-than-KLGA pattern is consistent
   with a KNYC-specific mechanism, but this addendum did not audit Central
