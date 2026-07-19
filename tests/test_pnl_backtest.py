@@ -378,6 +378,80 @@ def test_replay_market_floor_no_places_bet_between_075_and_080():
     assert bets_split[0].p_win == pytest.approx(target_p_no, abs=1e-3)
 
 
+# Phase H2 - per-(station, variable) edge-floor delta, the replay mirrors
+# production's STATION_EDGE_DELTA lookup (#226, #303)
+
+
+def _market_at(city: str, buckets: list[Bucket]) -> Market:
+    return Market(
+        id="m1",
+        slug="s",
+        title=f"Highest temperature in {city} on March 2?",
+        target=build_target(city, "TMAX", date(2026, 3, 2)),
+        buckets=buckets,
+    )
+
+
+def _tight_forecast_set_at(city: str) -> ForecastSet:
+    """Same shape as _tight_forecast_set (one source, tight spread at 70F), for
+    a station other than the fixed KLGA target that helper uses."""
+    target = build_target(city, "TMAX", date(2026, 3, 2))
+    samples = [
+        ForecastSample(
+            source="open-meteo",
+            model=m,
+            member=None,
+            station=target.station.icao,
+            variable="TMAX",
+            target_date=date(2026, 3, 2),
+            lead_time_days=1,
+            value_f=70.0,
+            issued_at=None,
+        )
+        for m in OPENMETEO_MODELS
+    ]
+    return ForecastSet(
+        target=target,
+        samples=samples,
+        coverage=[SourceCoverage(source="open-meteo", ok=True, n_samples=len(samples))],
+    )
+
+
+def _replay_edge_delta_market(city: str, ask: float) -> list[Bet]:
+    market = _market_at(city, [_bucket("50°F or higher", "above", threshold=50, yes_token_id="y1")])
+    settlement = datetime(2026, 3, 2, 12, tzinfo=UTC)
+    histories = {"y1": [PricePoint(t=int(settlement.timestamp()) - 3600, p=ask)]}
+    bets, _ = replay_market(
+        market,
+        _tight_forecast_set_at(city),
+        actual=70.0,
+        histories=histories,
+        settlement_dt=settlement,
+        leads=(0,),
+        floor=0.90,
+        min_sources=1,
+        min_sigma=1.5,
+        min_edge=0.05,
+        calibrations={0: _full_cal()},
+    )
+    return bets
+
+
+def test_replay_market_suppresses_ksfo_tmax_edge_below_delta_floor():
+    """An ask that produces edge in [0.05, 0.10) (below plain MIN_EDGE alone
+    would place it) is suppressed at KSFO TMAX: replay_market applies the same
+    STATION_EDGE_DELTA lookup the live run makes in cli.py (#226, #303)."""
+    assert _replay_edge_delta_market("San Francisco", ask=0.92) == []
+
+
+def test_replay_market_klax_byte_equivalent_not_suppressed():
+    """The byte-equivalent market at KLAX (no STATION_EDGE_DELTA entry) with
+    the same edge places a bet: the delta is per-(station, variable)."""
+    bets = _replay_edge_delta_market("Los Angeles", ask=0.92)
+    assert len(bets) == 1
+    assert bets[0].bucket_label == "50°F or higher"
+
+
 # Phase I - look-back-only pricing, no look-ahead (#227)
 
 
