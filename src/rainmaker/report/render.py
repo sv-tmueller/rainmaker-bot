@@ -90,6 +90,8 @@ def render_terminal(report: Report) -> str:
         lines.append(f"  coverage: {_coverage_str(m)}")
         if m.policy_exclusion:
             lines.append(f"  EXCLUDED from recommendations: {m.policy_exclusion}")
+        if m.edge_floor_delta_reason:
+            lines.append(f"  {m.edge_floor_delta_reason}")
         if not m.outcomes:
             lines.append("  no tradeable outcomes (insufficient forecast data)")
         else:
@@ -154,6 +156,8 @@ def render_markdown(report: Report) -> str:
         lines.append(f"- coverage: {_coverage_str(m)}")
         if m.policy_exclusion:
             lines.append(f"- EXCLUDED from recommendations: {m.policy_exclusion}")
+        if m.edge_floor_delta_reason:
+            lines.append(f"- {m.edge_floor_delta_reason}")
         lines.append("")
         if m.outcomes:
             lines.append("| bucket | side | P(win) | ask | edge | rec |")

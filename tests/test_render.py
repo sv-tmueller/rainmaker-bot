@@ -97,6 +97,46 @@ def test_render_markdown_omits_policy_exclusion_line_when_unset():
     assert "EXCLUDED from recommendations" not in md
 
 
+def test_render_terminal_shows_edge_floor_delta_note():
+    """A KSFO-TMAX-shaped penalized market (#303) renders its edge-floor-delta
+    reason in the terminal report; an unpenalized market shows nothing."""
+    penalized = _market_report().model_copy(
+        update={
+            "station": "KSFO",
+            "edge_floor_delta": 0.05,
+            "edge_floor_delta_reason": "KSFO TMAX: recommendation edge floor raised by 0.05",
+        }
+    )
+    report = Report(run_date=date(2026, 5, 31), markets=[penalized])
+    text = render_terminal(report)
+    assert "KSFO TMAX: recommendation edge floor raised by 0.05" in text
+
+
+def test_render_terminal_omits_edge_floor_delta_note_when_unset():
+    report = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
+    text = render_terminal(report)
+    assert "recommendation edge floor raised" not in text
+
+
+def test_render_markdown_shows_edge_floor_delta_note():
+    penalized = _market_report().model_copy(
+        update={
+            "station": "KSFO",
+            "edge_floor_delta": 0.05,
+            "edge_floor_delta_reason": "KSFO TMAX: recommendation edge floor raised by 0.05",
+        }
+    )
+    report = Report(run_date=date(2026, 5, 31), markets=[penalized])
+    md = render_markdown(report)
+    assert "KSFO TMAX: recommendation edge floor raised by 0.05" in md
+
+
+def test_render_markdown_omits_edge_floor_delta_note_when_unset():
+    report = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
+    md = render_markdown(report)
+    assert "recommendation edge floor raised" not in md
+
+
 def test_render_shows_venue():
     poly = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
     assert "polymarket" in render_terminal(poly)

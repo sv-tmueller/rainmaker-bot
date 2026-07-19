@@ -47,7 +47,14 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from rainmaker.backfill import fetch_historical_samples, venue_actuals
-from rainmaker.config import CONFIDENCE_FLOOR, MIN_CAL_SAMPLES, MIN_EDGE, MIN_SIGMA_F, Target
+from rainmaker.config import (
+    CONFIDENCE_FLOOR,
+    MIN_CAL_SAMPLES,
+    MIN_EDGE,
+    MIN_SIGMA_F,
+    STATION_EDGE_DELTA,
+    Target,
+)
 from rainmaker.domain import Market, parse_bucket_label
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.polymarket.markets import parse_market
@@ -302,6 +309,11 @@ def replay_market(
             min_sigma=min_sigma,
             min_edge=min_edge,
             calibration=calibrations.get(lead) if calibrations else None,
+            # Per-(station, variable) edge-floor delta (#303), the same lookup the
+            # live run makes in cli.py: the replay mirrors production (#226).
+            min_edge_delta=STATION_EDGE_DELTA.get(
+                (market.target.station.icao, market.target.variable), 0.0
+            ),
         )
         recommended = [o for o in report.outcomes if o.recommended]
         if not recommended:
