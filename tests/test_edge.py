@@ -1128,6 +1128,59 @@ def test_ksfo_tmax_edge_at_delta_floor_recommended() -> None:
     assert outcome.recommended is True
 
 
+def _gate_market_ksfo_delta(*, no_ask: float) -> Market:
+    """KSFO TMAX market with two buckets, mirroring _gate_market_knyc's shape:
+    one best_ask-only bucket (YES side, not asserted on here) and one
+    no_ask-only bucket (NO side, isolated from best_ask). Forecast centered at
+    75F:
+    - "50F or higher": best_ask=0.05, present only so the market has a normal
+      YES outcome too, not itself asserted on.
+    - "110F or higher": no best_ask so YES is excluded; p_win ~ 0, so
+      p_no ~ 1.0 and edge_no is controlled entirely by no_ask.
+    """
+    target = build_target("San Francisco", "TMAX", date(2026, 6, 15))
+    return Market(
+        id="gate-ksfo-delta",
+        slug="gate-ksfo-delta",
+        title="Highest temperature in San Francisco on Jun 15?",
+        target=target,
+        buckets=[
+            _bucket("50°F or higher", "above", threshold=50, best_ask=0.05),
+            _bucket("110°F or higher", "above", threshold=110, no_ask=no_ask),
+        ],
+    )
+
+
+def test_ksfo_tmax_no_side_edge_below_delta_floor_not_recommended() -> None:
+    """The NO-side gate (edge_no >= effective_min_edge) must respect the KSFO
+    TMAX delta too, not just the YES-side gate. Every other delta test above
+    builds a YES-only market (_delta_market has no no_ask bucket), so reverting
+    the NO-side line alone (edge_no >= min_edge instead of effective_min_edge)
+    would leave the rest of the suite green. This two-bucket market mirrors
+    _gate_market_knyc's shape to isolate the NO outcome: edge_no lands in
+    [0.05, 0.10), so plain MIN_EDGE would recommend it but the +0.05 KSFO TMAX
+    delta must suppress it."""
+    market = _gate_market_ksfo_delta(no_ask=0.92)
+    fs = _two_source_75(market.target)
+    delta = STATION_EDGE_DELTA.get((market.target.station.icao, "TMAX"), 0.0)
+
+    report = evaluate_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_F,
+        min_edge=MIN_EDGE,
+        calibration=_full_cal(),
+        min_edge_delta=delta,
+    )
+    no_outcomes = [o for o in report.outcomes if o.side == "NO"]
+    assert len(no_outcomes) == 1, f"expected exactly one NO outcome; got {report.outcomes}"
+    outcome = no_outcomes[0]
+    assert 0.05 <= outcome.edge < 0.10, f"edge={outcome.edge} must land in [0.05, 0.10)"
+    assert outcome.recommended is False
+
+
 def test_us_market_single_source_blocked() -> None:
     """A US market (ghcnd_id set) with n_sources=1 must remain blocked.
 
