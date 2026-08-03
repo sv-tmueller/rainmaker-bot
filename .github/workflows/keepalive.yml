@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
   issues: write
+  actions: read
 jobs:
   ping:
     runs-on: ubuntu-latest
@@ -35,4 +36,5 @@ jobs:
         run: |
           bash scripts/notify_failure.sh \
             "keepalive" \
-            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "${{ github.run_id }}"
