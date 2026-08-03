@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
   issues: write
+  actions: read
 jobs:
   metrics:
     runs-on: ubuntu-latest
@@ -72,4 +73,5 @@ jobs:
         run: |
           bash scripts/notify_failure.sh \
             "weekly-metrics" \
-            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            "${{ github.run_id }}"
