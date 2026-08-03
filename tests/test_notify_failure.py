@@ -17,8 +17,9 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_SCRIPT = str(REPO_ROOT / "scripts" / "notify_failure.sh")
 # Overridable so a manual check can point this at an older script revision.
-SCRIPT = Path(os.environ.get("NOTIFY_FAILURE_SCRIPT", str(REPO_ROOT / "scripts" / "notify_failure.sh")))
+SCRIPT = Path(os.environ.get("NOTIFY_FAILURE_SCRIPT", _DEFAULT_SCRIPT))
 
 DEFAULT_ARGS = ("scheduled-run", "https://github.com/o/r/actions/runs/1", "1")
 
@@ -101,7 +102,9 @@ def gh_stub(tmp_path: Path) -> tuple[dict[str, str], Path]:
     return env, call_log
 
 
-def _run(env: dict[str, str], args: tuple[str, ...] = DEFAULT_ARGS) -> subprocess.CompletedProcess[str]:
+def _run(
+    env: dict[str, str], args: tuple[str, ...] = DEFAULT_ARGS
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(SCRIPT), *args],
         env=env,
