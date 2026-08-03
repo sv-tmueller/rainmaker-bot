@@ -115,7 +115,8 @@ def test_retries_retryable_status_then_returns_success(status: int):
 
 
 def test_gives_up_after_attempts_and_returns_last_5xx_unraised():
-    stub = _StubTransport([httpx.Response(503), httpx.Response(503), httpx.Response(503)])
+    streams = [_TrackingStream([b"error body"]) for _ in range(3)]
+    stub = _StubTransport([httpx.Response(503, stream=stream) for stream in streams])
     sleeps: list[float] = []
     transport = RetryTransport(transport=stub, attempts=3, backoff=0.5, sleep=sleeps.append)
     request = _request()
@@ -125,6 +126,7 @@ def test_gives_up_after_attempts_and_returns_last_5xx_unraised():
     assert out.status_code == 503
     assert stub.calls == 3
     assert sleeps == [0.5, 1.0]  # exponential backoff before each retry, none after the last
+    assert out.stream.closed is False
     # Client.send normally attaches the request after the transport returns;
     # do the same here so raise_for_status() has what it needs.
     out.request = request
