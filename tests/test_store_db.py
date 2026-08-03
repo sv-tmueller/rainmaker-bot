@@ -1,14 +1,18 @@
 import sqlite3
 
+import psycopg
 import pytest
 
 from rainmaker.store.db import (
+    PG_CONNECT_ATTEMPTS,
     _backend_for,
     _schema_for,
     _translate,
     connect,
     init_schema,
 )
+
+FAKE_DSN = "postgresql://fake:fake@localhost/fake"
 
 EXPECTED_TABLES = {
     "runs",
@@ -118,3 +122,76 @@ def test_postgres_schema_uses_double_precision_not_real():
     assert " REAL," not in pg
     assert "DOUBLE PRECISION" in pg
     assert " REAL," in sl  # SQLite REAL is already 8-byte, left as-is
+
+
+def test_connect_retries_transient_operational_error_then_succeeds(monkeypatch):
+    stub = object()
+    calls = []
+
+    def fake_connect(dsn, row_factory=None):
+        calls.append(dsn)
+        if len(calls) == 1:
+            raise psycopg.OperationalError("connection timeout expired")
+        return stub
+
+    monkeypatch.setattr(psycopg, "connect", fake_connect)
+    sleeps = []
+    conn = connect(FAKE_DSN, sleep=sleeps.append)
+    assert conn.backend == "postgres"
+    assert conn._raw is stub
+    assert len(calls) == 2
+    assert sleeps == [1.0]
+
+
+def test_connect_exhausts_retries_and_reraises_original_error(monkeypatch):
+    calls = []
+
+    def fake_connect(dsn, row_factory=None):
+        calls.append(dsn)
+        raise psycopg.OperationalError("connection refused")
+
+    monkeypatch.setattr(psycopg, "connect", fake_connect)
+    sleeps = []
+    with pytest.raises(psycopg.OperationalError, match="connection refused"):
+        connect(FAKE_DSN, sleep=sleeps.append)
+    assert len(calls) == PG_CONNECT_ATTEMPTS
+    assert sleeps == [1.0, 2.0, 4.0]
+
+
+def test_connect_succeeds_first_try_is_not_retried(monkeypatch):
+    stub = object()
+    calls = []
+
+    def fake_connect(dsn, row_factory=None):
+        calls.append(dsn)
+        return stub
+
+    monkeypatch.setattr(psycopg, "connect", fake_connect)
+    sleeps = []
+    conn = connect(FAKE_DSN, sleep=sleeps.append)
+    assert conn._raw is stub
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+def test_connect_non_operational_error_propagates_without_retry(monkeypatch):
+    calls = []
+
+    def fake_connect(dsn, row_factory=None):
+        calls.append(dsn)
+        raise ValueError("not an OperationalError")
+
+    monkeypatch.setattr(psycopg, "connect", fake_connect)
+    sleeps = []
+    with pytest.raises(ValueError, match="not an OperationalError"):
+        connect(FAKE_DSN, sleep=sleeps.append)
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+def test_connect_sqlite_path_needs_no_sleep_argument():
+    # the sqlite branch takes no retry parameter at all; this pins that it
+    # keeps working with the default call shape every other caller uses.
+    conn = connect(":memory:")
+    assert conn.backend == "sqlite"
+    conn.close()

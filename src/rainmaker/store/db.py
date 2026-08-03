@@ -9,11 +9,19 @@ with name-keyed rows). Portability rules (see CLAUDE.md / spec data model):
   Postgres (its REAL is 4-byte float4 and underflows on tiny tail probabilities).
 - The three surrogate INTEGER PRIMARY KEY columns are SQLite rowids; in Postgres
   they are identity columns. The shared SQL uses no SQLite-only features.
+- Connecting to Postgres retries `psycopg.OperationalError` (the base class
+  covers a connect-time timeout, connection refused, and a DNS blip alike;
+  psycopg raises the bare class for all of these) with exponential backoff,
+  bounded, then re-raises the original error. SQLite is unaffected.
 """
 
 import sqlite3
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from typing import Any
+
+PG_CONNECT_ATTEMPTS = 4
+PG_CONNECT_BACKOFF_S = 1.0
 
 _SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -180,13 +188,26 @@ class Conn:
         self._raw.close()
 
 
-def connect(dsn: str) -> Conn:
-    """Open a datastore connection. A postgres DSN uses Postgres; else a SQLite file."""
+def connect(dsn: str, *, sleep: Callable[[float], object] = time.sleep) -> Conn:
+    """Open a datastore connection. A postgres DSN uses Postgres; else a SQLite file.
+
+    The Postgres path retries a bounded number of times on
+    `psycopg.OperationalError` (covers connect-time timeout, connection
+    refused, and DNS failure alike), with exponential backoff, then re-raises
+    the original error unchanged. The SQLite path is untouched.
+    """
     if _backend_for(dsn) == "postgres":
         import psycopg
         from psycopg.rows import dict_row
 
-        return Conn(psycopg.connect(dsn, row_factory=dict_row), "postgres")
+        for attempt in range(PG_CONNECT_ATTEMPTS):
+            try:
+                return Conn(psycopg.connect(dsn, row_factory=dict_row), "postgres")
+            except psycopg.OperationalError:
+                if attempt + 1 == PG_CONNECT_ATTEMPTS:
+                    raise
+                sleep(PG_CONNECT_BACKOFF_S * 2**attempt)
+        raise AssertionError("unreachable")  # pragma: no cover
     raw = sqlite3.connect(dsn)
     raw.row_factory = sqlite3.Row
     raw.execute("PRAGMA foreign_keys = ON")
