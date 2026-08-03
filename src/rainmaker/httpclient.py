@@ -1,10 +1,14 @@
-"""HTTP client with retries for transient transport errors.
+"""HTTP client with retries for transient transport errors and 5xx statuses.
 
 httpx's built-in HTTPTransport(retries=) only retries connection establishment,
 not read-side failures like a server that disconnects without answering
-(RemoteProtocolError). A free weather or market endpoint dropping one request
-should not abort a scheduled run, so wrap the transport and retry the broader
-TransportError class with backoff.
+(RemoteProtocolError), nor a request that completes but comes back with a
+transient server error. A free weather or market endpoint dropping one request
+or bouncing a 503 should not abort a scheduled run, so wrap the transport and
+retry both the broader TransportError class and a fixed set of retryable
+statuses, sharing one backoff budget. 429 is deliberately excluded: ASOS
+already owns rate-limit backoff via its own Retry-After loop, and retrying it
+here too would double every wait.
 """
 
 import time
@@ -16,10 +20,11 @@ from rainmaker.config import NWS_USER_AGENT
 
 RETRY_ATTEMPTS = 4
 RETRY_BACKOFF_S = 0.5
+RETRYABLE_STATUS_CODES = frozenset({500, 502, 503, 504})
 
 
 class RetryTransport(httpx.BaseTransport):
-    """Retry transient transport errors with exponential backoff, then re-raise."""
+    """Retry transient transport errors and 5xx statuses with exponential backoff."""
 
     def __init__(
         self,
@@ -36,11 +41,23 @@ class RetryTransport(httpx.BaseTransport):
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         for attempt in range(self._attempts):
             try:
-                return self._transport.handle_request(request)
+                response = self._transport.handle_request(request)
             except httpx.TransportError:
                 if attempt + 1 == self._attempts:
                     raise
                 self._sleep(self._backoff * 2**attempt)
+                continue
+            if response.status_code not in RETRYABLE_STATUS_CODES:
+                return response
+            if attempt + 1 == self._attempts:
+                # Exhausted: return the 5xx as-is, unclosed. Every call site
+                # already calls raise_for_status(), so it raises for free.
+                return response
+            # Discarding this response before the next attempt: close it so
+            # the unread body doesn't leave the connection checked out of
+            # httpcore's pool until GC gets around to it.
+            response.close()
+            self._sleep(self._backoff * 2**attempt)
         raise AssertionError("unreachable")  # pragma: no cover
 
     def close(self) -> None:
