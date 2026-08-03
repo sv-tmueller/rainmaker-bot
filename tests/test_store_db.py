@@ -131,7 +131,9 @@ def test_connect_retries_transient_operational_error_then_succeeds(monkeypatch):
     def fake_connect(dsn, row_factory=None):
         calls.append(dsn)
         if len(calls) == 1:
-            raise psycopg.OperationalError("connection timeout expired")
+            # the actual subclass from the 2026-07-26 incident (run 30198856442),
+            # not a generic stand-in, so this pins the exact exception being retried
+            raise psycopg.errors.ConnectionTimeout("connection timeout expired")
         return stub
 
     monkeypatch.setattr(psycopg, "connect", fake_connect)
@@ -145,15 +147,20 @@ def test_connect_retries_transient_operational_error_then_succeeds(monkeypatch):
 
 def test_connect_exhausts_retries_and_reraises_original_error(monkeypatch):
     calls = []
+    orig = psycopg.OperationalError("connection refused")
 
     def fake_connect(dsn, row_factory=None):
         calls.append(dsn)
-        raise psycopg.OperationalError("connection refused")
+        raise orig
 
     monkeypatch.setattr(psycopg, "connect", fake_connect)
     sleeps = []
-    with pytest.raises(psycopg.OperationalError, match="connection refused"):
+    with pytest.raises(psycopg.OperationalError, match="connection refused") as exc_info:
         connect(FAKE_DSN, sleep=sleeps.append)
+    # identity, not just type/message: pins the "re-raises the original error
+    # unchanged" contract against a future refactor that reconstructs a
+    # same-typed, same-message exception instead of a bare re-raise
+    assert exc_info.value is orig
     assert len(calls) == PG_CONNECT_ATTEMPTS
     assert sleeps == [1.0, 2.0, 4.0]
 
