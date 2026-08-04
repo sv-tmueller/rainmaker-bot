@@ -843,13 +843,145 @@ def test_cli_tail_check_smoke(tmp_path, capsys):
     assert "( 10/  1.00)" in out  # upper_05 obs/exp
     assert "(  0/  1.00)" in out  # lower_05 obs/exp
 
-    _tail_check(db, since="2026-05-01")  # before the fixture rows: keeps them all
+    _tail_check(db, since="2026-05-01")  # before the fixture rows: prints the filter line
 
     out_since = capsys.readouterr().out
     assert "since: 2026-05-01" in out_since
-    assert "( 10/  2.00)" in out_since  # counts survive --since too
+    # test_cli_tail_check_since_filters_rows below covers the case where
+    # --since actually excludes rows; this call only proves the printer
+    # doesn't crash on that branch and still shows the filter line.
+    assert "( 10/  2.00)" in out_since
 
     _tail_check(db, by_hour=True)
 
     out_hourly = capsys.readouterr().out
     assert "( 10/  2.00)" in out_hourly  # counts survive --by-hour too
+
+
+def test_cli_tail_check_since_filters_rows(tmp_path, capsys):
+    """--since excludes real rows, and the printed counts reflect only survivors.
+
+    Two PIT groups for the same (variable, lead) straddle a cutoff: an older
+    group of 10 miscalibrated rows (all hitting the upper tail) and a newer
+    group of 10 calibrated rows (none hitting it). Unfiltered, the ratios and
+    counts are the pooled 20; filtered to since=cutoff, the older group's 10
+    hits must disappear from the printed output, not just from a `pit["n"]`
+    check on the underlying function.
+    """
+    db = str(tmp_path / "tail.db")
+    conn = connect(db)
+    init_schema(conn)
+    for j in range(10):  # before the cutoff: every actual sits in the upper tail
+        _insert_row(
+            conn,
+            market_id=f"m10-before-{j}",
+            run_id=f"r10-before-{j}",
+            started_at="2026-05-31T12:00:00+00:00",
+            settlement_date="2026-06-01",
+            p_win=0.95,
+            mu=70.0,
+            sigma=2.0,
+            actual=76.0,
+            bucket_kind="range",
+            lo=72,
+            hi=73,
+        )
+    for j in range(10):  # after the cutoff: every actual sits well inside the bucket
+        _insert_row(
+            conn,
+            market_id=f"m10-after-{j}",
+            run_id=f"r10-after-{j}",
+            started_at="2026-07-10T12:00:00+00:00",
+            settlement_date="2026-07-11",
+            p_win=0.95,
+            mu=70.0,
+            sigma=2.0,
+            actual=72.5,
+            bucket_kind="range",
+            lo=72,
+            hi=73,
+        )
+    conn.commit()
+    conn.close()
+
+    _tail_check(db)
+    out_unfiltered = capsys.readouterr().out
+    # n=20 pooled, q=0.10 -> exp 2.00; the 10 pre-cutoff hits are visible.
+    assert "( 10/  2.00)" in out_unfiltered  # upper_10 obs/exp
+
+    _tail_check(db, since="2026-07-01")  # excludes the pre-cutoff group
+    out_filtered = capsys.readouterr().out
+    assert "since: 2026-07-01" in out_filtered
+    assert "( 10/" not in out_filtered  # the pre-cutoff hits must not survive
+    # n=10 survives (post-cutoff group only), q=0.10 -> exp 1.00, zero hits.
+    assert "(  0/  1.00)" in out_filtered  # upper_10 obs/exp
+
+
+def test_tail_check_pit_columns_stay_aligned_at_four_digit_counts(tmp_path, capsys, monkeypatch):
+    """A 4-digit obs count or a 4-digit exp value must not shift later columns.
+
+    A fixed-width obs/exp field overflows once a PIT group's n reaches four
+    figures (obs >= 1000, or exp = n*q >= 1000.00), which is no longer a
+    hypothetical: production history already sits at n=1005 for one cell. The
+    printer's PIT section must render every row and the header at the same
+    line length regardless of how wide any one row's counts get.
+    """
+    db = str(tmp_path / "tail.db")
+    conn = connect(db)
+    init_schema(conn)
+    conn.commit()
+    conn.close()
+
+    small_row = {
+        "variable": "TMAX",
+        "lead_time": 1,
+        "hour": None,
+        "n": 20,
+        "upper_10": 5.00,
+        "upper_10_obs": 10,
+        "upper_10_exp": 2.00,
+        "lower_10": 0.00,
+        "lower_10_obs": 0,
+        "lower_10_exp": 2.00,
+        "upper_05": 10.00,
+        "upper_05_obs": 10,
+        "upper_05_exp": 1.00,
+        "lower_05": 0.00,
+        "lower_05_obs": 0,
+        "lower_05_exp": 1.00,
+    }
+    # n is deliberately left small: n itself would need to reach 10_000 to
+    # produce a real exp of 1000.00 at q=0.10, which would also overflow the
+    # pre-existing 'n' column (out of scope for this fix, per the tester's
+    # finding). Faking obs/exp directly isolates the obs/exp fix from that
+    # separate, untouched fragility.
+    large_row = {
+        "variable": "TMAX",
+        "lead_time": 2,
+        "hour": None,
+        "n": 999,
+        "upper_10": 10.00,
+        "upper_10_obs": 10_000,
+        "upper_10_exp": 1000.00,
+        "lower_10": 0.00,
+        "lower_10_obs": 0,
+        "lower_10_exp": 1000.00,
+        "upper_05": 20.00,
+        "upper_05_obs": 10_000,
+        "upper_05_exp": 500.00,
+        "lower_05": 0.00,
+        "lower_05_obs": 0,
+        "lower_05_exp": 500.00,
+    }
+    fake_result = {"primary": [], "pit": [small_row, large_row]}
+    monkeypatch.setattr(
+        "rainmaker.cli.compute_tail_calibration",
+        lambda conn, by_hour=False, since=None: fake_result,
+    )
+
+    _tail_check(db)
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    pit_header_and_rows = lines[-3:]  # PIT header, small_row, large_row
+    widths = {len(line) for line in pit_header_and_rows}
+    assert len(widths) == 1, f"PIT lines are not equal width: {pit_header_and_rows}"
