@@ -5,6 +5,7 @@ import sys
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 from pydantic import ValidationError
@@ -601,6 +602,28 @@ def _clv(db_path: str) -> None:
             print(f"{s['segment']:<20} {s['n']:>5} {clv_val:>10}")
 
 
+_TAIL_KEYS = ("upper_10", "lower_10", "upper_05", "lower_05")
+
+
+def _fmt_tail_cell(row: dict[str, Any], key: str, obs_width: int, exp_width: int) -> str:
+    """Ratio annotated with its observed/expected hit count: '<ratio>(<obs>/<exp>)'."""
+    return (
+        f"{row[key]:>5.2f}({row[f'{key}_obs']:>{obs_width}d}/{row[f'{key}_exp']:>{exp_width}.2f})"
+    )
+
+
+def _tail_cell_widths(pit_rows: list[dict[str, Any]]) -> tuple[int, int]:
+    """Widest obs/exp field actually present, floored to the original widths.
+
+    obs and exp both grow with n, which climbs monotonically as history
+    accrues, so a fixed width eventually misaligns the column. Sizing to the
+    data keeps every row's cell the same width as the header, at any n.
+    """
+    obs_width = max([3] + [len(str(row[f"{k}_obs"])) for row in pit_rows for k in _TAIL_KEYS])
+    exp_width = max([6] + [len(f"{row[f'{k}_exp']:.2f}") for row in pit_rows for k in _TAIL_KEYS])
+    return obs_width, exp_width
+
+
 def _tail_check(db_path: str, by_hour: bool = False, since: str | None = None) -> None:
     if "://" not in db_path:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -634,17 +657,22 @@ def _tail_check(db_path: str, by_hour: bool = False, since: str | None = None) -
             f"{verdict}"
         )
 
-    print("\n--- PIT tail-occurrence ratios (P(PIT in tail)/q) ---")
+    obs_width, exp_width = _tail_cell_widths(result["pit"])
+    tail_col_width = 5 + 1 + obs_width + 1 + exp_width + 1  # "%5.2f(%*d/%*.2f)"
+    print("\n--- PIT tail-occurrence ratios (P(PIT in tail)/q), obs/exp hit counts ---")
     print(
         f"{'Variable':<9} {'Lead':>4} {hour_hdr}{'n':>4} "
-        f"{'Up.10':>6} {'Lo.10':>6} {'Up.05':>6} {'Lo.05':>6}"
+        f"{'Up.10':>{tail_col_width}} {'Lo.10':>{tail_col_width}} "
+        f"{'Up.05':>{tail_col_width}} {'Lo.05':>{tail_col_width}}"
     )
     for row in result["pit"]:
         hour_val = f"{row['hour']:>3} " if by_hour else ""
         print(
             f"{row['variable']:<9} {row['lead_time']:>4} {hour_val}{row['n']:>4} "
-            f"{row['upper_10']:>6.2f} {row['lower_10']:>6.2f} "
-            f"{row['upper_05']:>6.2f} {row['lower_05']:>6.2f}"
+            f"{_fmt_tail_cell(row, 'upper_10', obs_width, exp_width)} "
+            f"{_fmt_tail_cell(row, 'lower_10', obs_width, exp_width)} "
+            f"{_fmt_tail_cell(row, 'upper_05', obs_width, exp_width)} "
+            f"{_fmt_tail_cell(row, 'lower_05', obs_width, exp_width)}"
         )
 
 
