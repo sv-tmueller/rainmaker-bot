@@ -53,6 +53,9 @@ you mean to touch prod.
   forecasts) for every (variable, lead) cell the live run can bet: TMAX and
   TMIN at leads 0-3 by default. A `mae=...F` field appears in the output line
   per cell. Use `--city all` to cover every city in one pass.
+- `uv run rainmaker calibration-check`: print every stored calibration cell
+  (read-only; never fits or writes). Flags a Student-t fit clustered at the
+  df search bounds so it is visible without querying the table by hand.
 
 ## Daily report runbook
 

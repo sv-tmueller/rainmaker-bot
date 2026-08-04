@@ -5,10 +5,13 @@ import pytest
 from scipy.stats import norm
 
 from rainmaker.probability.calibration import (
+    DF_MAX,
+    DF_MIN,
     Calibration,
     CalibrationPair,
     apply_calibration,
     compute_accuracy,
+    df_near_bound,
     fit_calibration,
 )
 from rainmaker.probability.distribution import Gaussian
@@ -542,3 +545,36 @@ def test_compute_accuracy_bias_direction():
 def test_compute_accuracy_empty_raises():
     with pytest.raises(ValueError, match="no pairs"):
         compute_accuracy([])
+
+
+# ---------------------------------------------------------------------------
+# df_near_bound: flags a Student-t fit clustered at the fit's own df bounds
+# ---------------------------------------------------------------------------
+
+
+def test_df_near_bound_at_lower_bound():
+    assert df_near_bound(DF_MIN) is True
+
+
+def test_df_near_bound_at_upper_bound():
+    assert df_near_bound(DF_MAX) is True
+
+
+def test_df_near_bound_well_inside_range():
+    assert df_near_bound(20.0) is False
+
+
+def test_df_near_bound_just_inside_margin_low():
+    assert df_near_bound(5.5) is True
+
+
+def test_df_near_bound_just_outside_margin_low():
+    assert df_near_bound(5.6) is False
+
+
+def test_df_near_bound_just_inside_margin_high():
+    assert df_near_bound(59.0) is True
+
+
+def test_df_near_bound_just_outside_margin_high():
+    assert df_near_bound(58.9) is False
