@@ -35,18 +35,21 @@ jobs:
       - name: Print track and tail-check summaries
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # REGIME_SINCE is the active calibration regime's start (first full day
+          # after the 2026-07-17 TMIN Student-t refit, #292/#299); bump this
+          # value in the same change that records the next refit (see
+          # docs/operations/README.md). Single-sourced here for both --since
+          # calls below.
+          REGIME_SINCE: "2026-07-18"
         run: |
           case "$DATABASE_URL" in
             postgres://*|postgresql://*) ;;
             *) echo "DATABASE_URL is not a Postgres DSN; refusing to run"; exit 1 ;;
           esac
           uv run rainmaker track
+          uv run rainmaker track --since "$REGIME_SINCE"
           uv run rainmaker tail-check
-          # 2026-07-18 is the active calibration regime's start (first full day
-          # after the 2026-07-17 TMIN Student-t refit, #292/#299); bump this
-          # date in the same change that records the next refit (see
-          # docs/operations/README.md).
-          uv run rainmaker tail-check --since 2026-07-18
+          uv run rainmaker tail-check --since "$REGIME_SINCE"
           uv run rainmaker calibration-check
   notify:
     runs-on: ubuntu-latest

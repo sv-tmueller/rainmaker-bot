@@ -519,6 +519,107 @@ def test_track_command_fetches_settled_rows_exactly_once(monkeypatch, tmp_path, 
     assert fetch_count == 1
 
 
+def test_track_command_since_flag_fetches_settled_rows_exactly_once(monkeypatch, tmp_path, capsys):
+    """--since must not add a query: compute_calibration_by_cell takes rows= only."""
+    fetch_count = 0
+
+    def _settled_rows(conn):
+        nonlocal fetch_count
+        fetch_count += 1
+        return []
+
+    monkeypatch.setattr(cli, "settled_rows", _settled_rows)
+    monkeypatch.setattr(
+        cli,
+        "compute_pnl",
+        lambda conn, venue=None, *, rows=None: {
+            "n_bets": 0,
+            "wins": 0,
+            "losses": 0,
+            "total_pnl": 0.0,
+            "roi": 0.0,
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "compute_calibration",
+        lambda conn, *, rows=None: {"n": 0, "brier": None, "hit_rate": None},
+    )
+    cli.main(["track", "--db", str(tmp_path / "t.db"), "--since", "2026-07-18"])
+    capsys.readouterr()
+    assert fetch_count == 1
+
+
+def test_track_command_since_flag_prints_regime_filtered_breakdown(monkeypatch, tmp_path, capsys):
+    captured: dict[str, str | None] = {}
+
+    monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
+    monkeypatch.setattr(
+        cli,
+        "compute_pnl",
+        lambda conn, venue=None, *, rows=None: {
+            "n_bets": 0,
+            "wins": 0,
+            "losses": 0,
+            "total_pnl": 0.0,
+            "roi": 0.0,
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "compute_calibration",
+        lambda conn, *, rows=None: {"n": 0, "brier": None, "hit_rate": None},
+    )
+
+    def _by_cell(rows, since=None):
+        captured["since"] = since
+        return [{"variable": "TMIN", "lead_time": 1, "n": 5, "brier": 0.08, "hit_rate": 0.6}]
+
+    monkeypatch.setattr(cli, "compute_calibration_by_cell", _by_cell)
+
+    cli.main(["track", "--db", str(tmp_path / "t.db"), "--since", "2026-07-18"])
+    out = capsys.readouterr().out
+
+    assert captured["since"] == "2026-07-18"  # wired through as an ISO date string
+    assert "since: 2026-07-18" in out
+    assert "TMIN" in out and "1" in out and "0.080" in out
+
+
+def test_track_command_without_since_omits_since_line_but_shows_breakdown(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
+    monkeypatch.setattr(
+        cli,
+        "compute_pnl",
+        lambda conn, venue=None, *, rows=None: {
+            "n_bets": 0,
+            "wins": 0,
+            "losses": 0,
+            "total_pnl": 0.0,
+            "roi": 0.0,
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "compute_calibration",
+        lambda conn, *, rows=None: {"n": 0, "brier": None, "hit_rate": None},
+    )
+    monkeypatch.setattr(
+        cli,
+        "compute_calibration_by_cell",
+        lambda rows, since=None: [
+            {"variable": "TMAX", "lead_time": 0, "n": 3, "brier": 0.10, "hit_rate": 0.5}
+        ],
+    )
+
+    cli.main(["track", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+
+    assert "since:" not in out  # omitting --since prints no filter line
+    assert "TMAX" in out
+
+
 def test_prune_command_reports_rows_pruned(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "prune_settled", lambda conn: 5)
     cli.main(["prune", "--db", str(tmp_path / "t.db")])

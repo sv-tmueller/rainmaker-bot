@@ -280,17 +280,12 @@ def compute_pnl(
     }
 
 
-def compute_calibration(
-    conn: Conn, venue: str | None = None, *, rows: list[dict[str, Any]] | None = None
-) -> dict[str, Any]:
-    """Brier over the settled YES bucket-predictions, plus recommended hit rate.
+def _cell_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Brier over YES rows plus recommended hit rate, for an already-filtered row set.
 
-    With venue set, restrict to that venue's markets. Pass rows= a pre-fetched
-    settled_rows(conn) result to skip the query (#277); conn is then only used
-    if rows is None.
+    Shared by compute_calibration (pooled) and compute_calibration_by_cell (per
+    variable/lead), so the two can never silently drift apart on the arithmetic.
     """
-    all_rows = rows if rows is not None else settled_rows(conn)
-    rows = _filter_venue(all_rows, venue)
     if not rows:
         return {"n": 0, "brier": None, "hit_rate": None}
     # Brier measures forecast calibration over the YES bucket-predictions; each NO
@@ -317,6 +312,61 @@ def compute_calibration(
     bets = _best_per_market_run(rows)
     hit_rate = sum(1 for r in bets if _bet_won(r)) / len(bets) if bets else None
     return {"n": len(yes_rows), "brier": brier, "hit_rate": hit_rate}
+
+
+def compute_calibration(
+    conn: Conn, venue: str | None = None, *, rows: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Brier over the settled YES bucket-predictions, plus recommended hit rate.
+
+    With venue set, restrict to that venue's markets. Pass rows= a pre-fetched
+    settled_rows(conn) result to skip the query (#277); conn is then only used
+    if rows is None.
+    """
+    all_rows = rows if rows is not None else settled_rows(conn)
+    return _cell_stats(_filter_venue(all_rows, venue))
+
+
+def compute_calibration_by_cell(
+    rows: list[dict[str, Any]], since: str | None = None
+) -> list[dict[str, Any]]:
+    """Brier and hit rate per (variable, lead), computed from an already-fetched rows list.
+
+    Takes rows= only, never a conn: the caller passes the same settled_rows()
+    result it already shares with compute_pnl/compute_calibration (#277), so this
+    adds no additional database query.
+
+    since (an ISO "YYYY-MM-DD" string) restricts to runs.started_at on or after
+    that date. It is applied here in Python, against the rows settled_rows() has
+    already deduped to the latest run per (market, UTC day). That is safe because
+    _latest_run_per_market_day picks the per-group argmax of (started_at, run_id)
+    and since is a monotone on-or-after threshold: filtering the argmax-selected
+    rows gives the same surviving winners as filtering before the dedup would
+    have (see the #323 sub-plan for the full argument). started_at and since are
+    both "YYYY-MM-DD[...]" text, so Python's >= matches since_clause's SQL >=.
+
+    Lead is the raw integer (settlement_date - started_at date).days, the same
+    formula compute_tail_calibration uses (not the bucketed _lead_bucket), so a
+    cell here is directly comparable to a tail-check lead. Rows with lead < 0
+    (a run after settlement, a catch-up rather than a forecast) are dropped.
+    """
+    if since is not None:
+        rows = [r for r in rows if r["started_at"] >= since]
+    groups: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    for r in rows:
+        try:
+            lead = (
+                date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
+            ).days
+        except ValueError:
+            continue  # unparsable date (e.g. test sentinel "t"): skip
+        if lead < 0:
+            continue
+        groups[(r["variable"], lead)].append(r)
+    return [
+        {"variable": variable, "lead_time": lead, **_cell_stats(cell_rows)}
+        for (variable, lead), cell_rows in sorted(groups.items())
+    ]
 
 
 def _wilson_interval(wins: int, n: int) -> tuple[float, float]:
