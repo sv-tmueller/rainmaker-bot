@@ -13,7 +13,7 @@ from scipy.stats import norm
 
 from rainmaker.cli import _tail_check
 from rainmaker.store.db import connect, init_schema
-from rainmaker.tracking import MIN_TAIL_N, compute_tail_calibration
+from rainmaker.tracking import MIN_TAIL_N, _pit_tail_ratios, compute_tail_calibration
 
 
 def _insert_row(
@@ -81,6 +81,34 @@ def _pit_row(result, variable, lead, hour=None):
         if row["variable"] == variable and row["lead_time"] == lead and row["hour"] == hour:
             return row
     return None
+
+
+def test_pit_tail_ratios_reports_observed_and_expected_counts():
+    """obs/exp counts sit alongside each ratio, additive to the returned dict.
+
+    20 PITs, hand-counted: below 0.10 are 0.01 and 0.07 (2); above 0.90 are
+    0.91, 0.93, 0.99 (3); below 0.05 is 0.01 alone (1); above 0.95 is 0.99
+    alone (1). Expected count is n * q, unaffected by how many actually
+    landed in the tail, so it differs from obs in every cell here.
+    """
+    pits = [0.01, 0.07] + [0.5] * 15 + [0.91, 0.93, 0.99]
+    ratios = _pit_tail_ratios(pits)
+
+    assert ratios["n"] == 20
+    assert ratios["lower_10_obs"] == 2
+    assert ratios["lower_10_exp"] == pytest.approx(2.0, abs=1e-12)
+    assert ratios["upper_10_obs"] == 3
+    assert ratios["upper_10_exp"] == pytest.approx(2.0, abs=1e-12)
+    assert ratios["lower_05_obs"] == 1
+    assert ratios["lower_05_exp"] == pytest.approx(1.0, abs=1e-12)
+    assert ratios["upper_05_obs"] == 1
+    assert ratios["upper_05_exp"] == pytest.approx(1.0, abs=1e-12)
+
+    # ratios themselves are unchanged by the new keys
+    assert ratios["lower_10"] == pytest.approx(1.0, abs=1e-12)
+    assert ratios["upper_10"] == pytest.approx(1.5, abs=1e-12)
+    assert ratios["lower_05"] == pytest.approx(1.0, abs=1e-12)
+    assert ratios["upper_05"] == pytest.approx(1.0, abs=1e-12)
 
 
 def test_overconfident_book_flags_over_and_pit_upper_ratio_above_one():
@@ -808,8 +836,20 @@ def test_cli_tail_check_smoke(tmp_path, capsys):
     assert "TMAX" in out
     assert "OVER" in out
     assert "since:" not in out  # omitting --since prints no filter line
+    # n=20, q=0.10 -> exp 2.00; q=0.05 -> exp 1.00; 10 of 20 PITs sit above
+    # both cutoffs (upper tail), none below (lower tail).
+    assert "( 10/  2.00)" in out  # upper_10 obs/exp
+    assert "(  0/  2.00)" in out  # lower_10 obs/exp
+    assert "( 10/  1.00)" in out  # upper_05 obs/exp
+    assert "(  0/  1.00)" in out  # lower_05 obs/exp
 
-    _tail_check(db, since="2026-07-06")
+    _tail_check(db, since="2026-05-01")  # before the fixture rows: keeps them all
 
     out_since = capsys.readouterr().out
-    assert "since: 2026-07-06" in out_since
+    assert "since: 2026-05-01" in out_since
+    assert "( 10/  2.00)" in out_since  # counts survive --since too
+
+    _tail_check(db, by_hour=True)
+
+    out_hourly = capsys.readouterr().out
+    assert "( 10/  2.00)" in out_hourly  # counts survive --by-hour too

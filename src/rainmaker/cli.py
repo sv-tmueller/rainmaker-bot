@@ -5,6 +5,7 @@ import sys
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 from pydantic import ValidationError
@@ -601,6 +602,11 @@ def _clv(db_path: str) -> None:
             print(f"{s['segment']:<20} {s['n']:>5} {clv_val:>10}")
 
 
+def _fmt_tail_cell(row: dict[str, Any], key: str) -> str:
+    """Ratio annotated with its observed/expected hit count: '<ratio>(<obs>/<exp>)'."""
+    return f"{row[key]:>5.2f}({row[f'{key}_obs']:>3d}/{row[f'{key}_exp']:>6.2f})"
+
+
 def _tail_check(db_path: str, by_hour: bool = False, since: str | None = None) -> None:
     if "://" not in db_path:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -634,17 +640,21 @@ def _tail_check(db_path: str, by_hour: bool = False, since: str | None = None) -
             f"{verdict}"
         )
 
-    print("\n--- PIT tail-occurrence ratios (P(PIT in tail)/q) ---")
+    # Width matches _fmt_tail_cell's output ("%5.2f(%3d/%6.2f)" = 17 chars) so
+    # the header labels stay aligned over annotated cells of varying digit count.
+    tail_col_width = 17
+    print("\n--- PIT tail-occurrence ratios (P(PIT in tail)/q), obs/exp hit counts ---")
     print(
         f"{'Variable':<9} {'Lead':>4} {hour_hdr}{'n':>4} "
-        f"{'Up.10':>6} {'Lo.10':>6} {'Up.05':>6} {'Lo.05':>6}"
+        f"{'Up.10':>{tail_col_width}} {'Lo.10':>{tail_col_width}} "
+        f"{'Up.05':>{tail_col_width}} {'Lo.05':>{tail_col_width}}"
     )
     for row in result["pit"]:
         hour_val = f"{row['hour']:>3} " if by_hour else ""
         print(
             f"{row['variable']:<9} {row['lead_time']:>4} {hour_val}{row['n']:>4} "
-            f"{row['upper_10']:>6.2f} {row['lower_10']:>6.2f} "
-            f"{row['upper_05']:>6.2f} {row['lower_05']:>6.2f}"
+            f"{_fmt_tail_cell(row, 'upper_10')} {_fmt_tail_cell(row, 'lower_10')} "
+            f"{_fmt_tail_cell(row, 'upper_05')} {_fmt_tail_cell(row, 'lower_05')}"
         )
 
 

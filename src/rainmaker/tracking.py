@@ -795,23 +795,30 @@ def _pit_tail_ratios(pits: list[float]) -> dict[str, float | int]:
     bucket-geometry-free and family-agnostic: it isolates distribution-tail
     miscalibration from the bucket-width artifact the claimed-vs-realized table
     can show (a narrow bucket inflates p_win regardless of tail thickness).
+
+    Alongside each ratio, also returns the observed hit count and the expected
+    count (n * q) it was computed from, keyed "<cell>_obs" / "<cell>_exp": a
+    printed ratio alone forces the reader to re-derive the counts from n and q.
     """
     n = len(pits)
 
-    def ratio(q: float, upper: bool) -> float:
+    def tail_count(q: float, upper: bool) -> int:
         if upper:
-            count = sum(1 for p in pits if p > 1 - q)
-        else:
-            count = sum(1 for p in pits if p < q)
-        return (count / n) / q
+            return sum(1 for p in pits if p > 1 - q)
+        return sum(1 for p in pits if p < q)
 
-    return {
-        "n": n,
-        "upper_10": ratio(0.10, True),
-        "lower_10": ratio(0.10, False),
-        "upper_05": ratio(0.05, True),
-        "lower_05": ratio(0.05, False),
-    }
+    out: dict[str, float | int] = {"n": n}
+    for label, q, upper in (
+        ("upper_10", 0.10, True),
+        ("lower_10", 0.10, False),
+        ("upper_05", 0.05, True),
+        ("lower_05", 0.05, False),
+    ):
+        count = tail_count(q, upper)
+        out[label] = (count / n) / q
+        out[f"{label}_obs"] = count
+        out[f"{label}_exp"] = n * q
+    return out
 
 
 def _latest_run_per_market_day_hour(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
