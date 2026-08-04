@@ -288,6 +288,8 @@ def fit_student_t_free_df(
         objective,
         x0=np.array([bias0, var_a0, var_b0, log_df0]),
         method="L-BFGS-B",
+        # DF_MIN/DF_MAX (below) mirror this bound in raw df space (2+exp(log(0.5))
+        # and 2+exp(log(60.0))); keep both in sync if this bound ever changes.
         bounds=[(None, None), (0.0, None), (0.0, None), (np.log(0.5), np.log(60.0))],
     )
     b, va, vb, log_df = result.x
@@ -302,6 +304,32 @@ def fit_student_t_free_df(
         df=df_fit,
         n_samples=len(pairs),
     )
+
+
+# Raw-df mirrors of fit_student_t_free_df's bounds (2+exp(log(0.5)), 2+exp(log(60.0))).
+# calibration-check reads these to flag a fit clustered at the edge of the search
+# space, not the fit itself: reported for a human to sanity-check, no code path
+# changes on this alone.
+DF_MIN = 2.5
+DF_MAX = 62.0
+
+# A margin of 3.0 (about 5% of the DF_MIN..DF_MAX range) rounded to a whole
+# number, not a tighter mathematically-derived threshold: df is weakly identified
+# (see fit_student_t_free_df's docstring), so a fitted value is "materially
+# non-Gaussian or not", never a precise number. A coarse, round margin in raw df
+# space is more honest than a precise-looking one that implies more confidence
+# in the third decimal than the fit itself has.
+_DF_BOUND_MARGIN = 3.0
+
+
+def df_near_bound(df: float) -> bool:
+    """True if a fitted df sits within _DF_BOUND_MARGIN of DF_MIN or DF_MAX.
+
+    A cell parked at the fit's search-space edge is a signal the optimizer ran
+    out of room, not necessarily a good fit; calibration-check surfaces this
+    for a human to look at, it does not itself judge or refit.
+    """
+    return df <= DF_MIN + _DF_BOUND_MARGIN or df >= DF_MAX - _DF_BOUND_MARGIN
 
 
 def apply_calibration(

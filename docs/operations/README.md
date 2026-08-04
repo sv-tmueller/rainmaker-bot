@@ -22,15 +22,16 @@ upserts one row per day regardless of cadence.
 
 `tail-check` and `track` each run twice: once over the full settled history,
 and once with `--since` restricted to the active calibration regime's start
-date (currently 2026-07-06, hardcoded in the workflow). The full-history run
-is the cross-regime baseline; the since-filtered run isolates calibration
-under the current fit, since a prior refit can make older runs a poor guide
-to current performance. `track --since` prints the same pooled P&L/Brier
-aggregate as a plain `track`, plus a per-(variable, lead) Brier/hit-rate
-breakdown restricted to that population, so a per-cell cost prediction (for
-example one recorded in a refit's decision doc) is directly comparable to
-live numbers. When a refit lands (a prod `backfill` re-run), update the
-`--since` date in `daily-diagnostics.yml` in the same change that records
+date (the value passed to `--since` in the `diagnostics` job of
+`daily-diagnostics.yml`). The full-history run is the cross-regime baseline;
+the since-filtered run isolates calibration under the current fit, since a
+prior refit can make older runs a poor guide to current performance.
+`track --since` prints the same pooled P&L/Brier aggregate as a plain
+`track`, plus a per-(variable, lead) Brier/hit-rate breakdown restricted to
+that population, so a per-cell cost prediction (for example one recorded in a
+refit's decision doc) is directly comparable to live numbers. When a refit
+lands (a prod `backfill` re-run), update the `--since` value passed in the
+`diagnostics` job of `daily-diagnostics.yml` in the same change that records
 the refit.
 
 Every CLI command targets local SQLite (default `rainmaker.db`) unless
@@ -60,6 +61,9 @@ you mean to touch prod.
   forecasts) for every (variable, lead) cell the live run can bet: TMAX and
   TMIN at leads 0-3 by default. A `mae=...F` field appears in the output line
   per cell. Use `--city all` to cover every city in one pass.
+- `uv run rainmaker calibration-check`: print every stored calibration cell
+  (read-only; never fits or writes). Flags a Student-t fit clustered at the
+  df search bounds so it is visible without querying the table by hand.
 
 ## Daily report runbook
 

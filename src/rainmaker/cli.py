@@ -5,6 +5,7 @@ import sys
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 from pydantic import ValidationError
@@ -45,6 +46,7 @@ from rainmaker.polymarket.client import (
     fetch_closed_weather_events,
     fetch_weather_events,
 )
+from rainmaker.probability.calibration import df_near_bound
 from rainmaker.ranking.edge import evaluate_market, evaluate_precip_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
 from rainmaker.settle import regrade_polymarket_settlements, run_settlement
@@ -56,7 +58,7 @@ from rainmaker.settlement_divergence import (
 )
 from rainmaker.store.db import connect, init_schema
 from rainmaker.store.prune import prune_settled
-from rainmaker.store.query import load_calibration
+from rainmaker.store.query import list_calibration_cells, load_calibration
 from rainmaker.store.record import (
     EvaluatedMarket,
     PrecipEvaluatedMarket,
@@ -617,6 +619,28 @@ def _clv(db_path: str) -> None:
             print(f"{s['segment']:<20} {s['n']:>5} {clv_val:>10}")
 
 
+_TAIL_KEYS = ("upper_10", "lower_10", "upper_05", "lower_05")
+
+
+def _fmt_tail_cell(row: dict[str, Any], key: str, obs_width: int, exp_width: int) -> str:
+    """Ratio annotated with its observed/expected hit count: '<ratio>(<obs>/<exp>)'."""
+    return (
+        f"{row[key]:>5.2f}({row[f'{key}_obs']:>{obs_width}d}/{row[f'{key}_exp']:>{exp_width}.2f})"
+    )
+
+
+def _tail_cell_widths(pit_rows: list[dict[str, Any]]) -> tuple[int, int]:
+    """Widest obs/exp field actually present, floored to the original widths.
+
+    obs and exp both grow with n, which climbs monotonically as history
+    accrues, so a fixed width eventually misaligns the column. Sizing to the
+    data keeps every row's cell the same width as the header, at any n.
+    """
+    obs_width = max([3] + [len(str(row[f"{k}_obs"])) for row in pit_rows for k in _TAIL_KEYS])
+    exp_width = max([6] + [len(f"{row[f'{k}_exp']:.2f}") for row in pit_rows for k in _TAIL_KEYS])
+    return obs_width, exp_width
+
+
 def _tail_check(db_path: str, by_hour: bool = False, since: str | None = None) -> None:
     if "://" not in db_path:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -650,18 +674,57 @@ def _tail_check(db_path: str, by_hour: bool = False, since: str | None = None) -
             f"{verdict}"
         )
 
-    print("\n--- PIT tail-occurrence ratios (P(PIT in tail)/q) ---")
+    obs_width, exp_width = _tail_cell_widths(result["pit"])
+    tail_col_width = 5 + 1 + obs_width + 1 + exp_width + 1  # "%5.2f(%*d/%*.2f)"
+    print("\n--- PIT tail-occurrence ratios (P(PIT in tail)/q), obs/exp hit counts ---")
     print(
         f"{'Variable':<9} {'Lead':>4} {hour_hdr}{'n':>4} "
-        f"{'Up.10':>6} {'Lo.10':>6} {'Up.05':>6} {'Lo.05':>6}"
+        f"{'Up.10':>{tail_col_width}} {'Lo.10':>{tail_col_width}} "
+        f"{'Up.05':>{tail_col_width}} {'Lo.05':>{tail_col_width}}"
     )
     for row in result["pit"]:
         hour_val = f"{row['hour']:>3} " if by_hour else ""
         print(
             f"{row['variable']:<9} {row['lead_time']:>4} {hour_val}{row['n']:>4} "
-            f"{row['upper_10']:>6.2f} {row['lower_10']:>6.2f} "
-            f"{row['upper_05']:>6.2f} {row['lower_05']:>6.2f}"
+            f"{_fmt_tail_cell(row, 'upper_10', obs_width, exp_width)} "
+            f"{_fmt_tail_cell(row, 'lower_10', obs_width, exp_width)} "
+            f"{_fmt_tail_cell(row, 'upper_05', obs_width, exp_width)} "
+            f"{_fmt_tail_cell(row, 'lower_05', obs_width, exp_width)}"
         )
+
+
+def _calibration_check(db_path: str) -> None:
+    """Print every stored calibration cell. Read-only: never fits or writes."""
+    if "://" not in db_path:
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        cells = list_calibration_cells(conn)
+    finally:
+        conn.close()
+
+    print("--- Calibration cells ---")
+    print(
+        f"{'Station':<8} {'Variable':<9} {'Lead':>4} {'Bias':>7} {'Var_a':>7} {'Var_b':>7} "
+        f"{'Df':>6} {'N':>5} {'Updated':<20}  Flag"
+    )
+    for row in cells:
+        bias = "n/a" if row["bias"] is None else f"{row['bias']:+.2f}"
+        var_a = "n/a" if row["var_a"] is None else f"{row['var_a']:.3f}"
+        var_b = "n/a" if row["var_b"] is None else f"{row['var_b']:.3f}"
+        # df is None means Gaussian, matching apply_calibration's dispatch idiom
+        # (Calibration.df's field comment); not derived from CALIBRATION_FAMILY.
+        df_str = "n/a" if row["df"] is None else f"{row['df']:.1f}"
+        flag = "** near bound **" if row["df"] is not None and df_near_bound(row["df"]) else "-"
+        n_samples = "n/a" if row["n_samples"] is None else str(row["n_samples"])
+        updated = row["updated_at"] or "-"
+        print(
+            f"{row['station']:<8} {row['variable']:<9} {row['lead_time']:>4} {bias:>7} "
+            f"{var_a:>7} {var_b:>7} {df_str:>6} {n_samples:>5} {updated:<20}  {flag}"
+        )
+    if not cells:
+        print("(no calibration cells stored)")
 
 
 def _snapshot(db_path: str) -> None:
@@ -870,6 +933,12 @@ def main(argv: list[str] | None = None) -> None:
         help="restrict to predictions whose run started on or after this date (YYYY-MM-DD)",
     )
 
+    calibration_check = sub.add_parser(
+        "calibration-check",
+        help="print every stored calibration cell and flag fits clustered at the df bounds",
+    )
+    calibration_check.add_argument("--db", default=DB_PATH, help="SQLite database path")
+
     args = parser.parse_args(argv)
 
     if args.command == "backtest":
@@ -916,3 +985,5 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "tail-check":
         since = args.since.isoformat() if args.since is not None else None
         _tail_check(db, args.by_hour, since)
+    elif args.command == "calibration-check":
+        _calibration_check(db)

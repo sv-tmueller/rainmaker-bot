@@ -47,6 +47,20 @@ def load_calibration(conn: Conn, station: str, variable: str, lead_time: int) ->
     return Calibration(**d)
 
 
+def list_calibration_cells(conn: Conn) -> list[dict[str, Any]]:
+    """Every stored calibration cell, unfiltered, for calibration-check.
+
+    Deliberately not built from load_calibration: that helper returns None for
+    legacy pre-EMOS rows with NULL var_a/var_b (a correct choice for the live
+    apply path), which would silently drop those cells here.
+    """
+    rows = conn.execute(
+        "SELECT station, variable, lead_time, bias, var_a, var_b, df, n_samples, updated_at "
+        "FROM calibration ORDER BY station, variable, lead_time"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def unsettled_markets(conn: Conn, before: date) -> list[dict[str, Any]]:
     """Recorded markets with a past settlement date and no outcome yet."""
     rows = conn.execute(

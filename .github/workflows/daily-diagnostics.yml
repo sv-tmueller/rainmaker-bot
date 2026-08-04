@@ -50,6 +50,7 @@ jobs:
           uv run rainmaker track --since "$REGIME_SINCE"
           uv run rainmaker tail-check
           uv run rainmaker tail-check --since "$REGIME_SINCE"
+          uv run rainmaker calibration-check
   notify:
     runs-on: ubuntu-latest
     needs: [diagnostics]
