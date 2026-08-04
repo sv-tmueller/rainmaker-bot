@@ -67,6 +67,7 @@ from rainmaker.store.record import (
 from rainmaker.tracking import (
     compute_attribution,
     compute_calibration,
+    compute_calibration_by_cell,
     compute_clv,
     compute_pnl,
     compute_tail_calibration,
@@ -497,18 +498,21 @@ def _prune(db_path: str) -> None:
     print(f"pruned {deleted} redundant intraday row(s) -> {_db_label(db_path)}")
 
 
-def _track(db_path: str) -> None:
+def _track(db_path: str, since: str | None = None) -> None:
     if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
     try:
         init_schema(conn)
-        # Fetch the full settled history once and share it across all four calls
-        # below (#277: the cron ran this query 4x per `track` invocation).
+        # Fetch the full settled history once and share it across all calls below
+        # (#277: the cron ran this query 4x per `track` invocation). since only
+        # narrows compute_calibration_by_cell's own population; the pooled pnl/cal
+        # aggregate below stays over the full history either way.
         rows = settled_rows(conn)
         pnl = compute_pnl(conn, rows=rows)
         cal = compute_calibration(conn, rows=rows)
         by_venue = {v: compute_pnl(conn, venue=v, rows=rows) for v in ("polymarket", "kalshi")}
+        by_cell = compute_calibration_by_cell(rows, since=since)
     finally:
         conn.close()
     print(
@@ -525,6 +529,18 @@ def _track(db_path: str) -> None:
     brier = "n/a" if cal["brier"] is None else f"{cal['brier']:.3f}"
     hit = "n/a" if cal["hit_rate"] is None else f"{cal['hit_rate']:.0%}"
     print(f"calibration: Brier {brier}, recommended hit rate {hit} (n={cal['n']})")
+
+    if since is not None:
+        print(f"since: {since}")
+    print("--- Calibration by (variable, lead) ---")
+    print(f"{'Variable':<9} {'Lead':>4} {'n':>5} {'Brier':>6} {'HitRate':>8}")
+    for row in by_cell:
+        cell_brier = "n/a" if row["brier"] is None else f"{row['brier']:.3f}"
+        cell_hit = "n/a" if row["hit_rate"] is None else f"{row['hit_rate']:.0%}"
+        print(
+            f"{row['variable']:<9} {row['lead_time']:>4} {row['n']:>5} "
+            f"{cell_brier:>6} {cell_hit:>8}"
+        )
 
 
 def _attribution(db_path: str) -> None:
@@ -815,6 +831,13 @@ def main(argv: list[str] | None = None) -> None:
 
     track = sub.add_parser("track", help="report P&L and calibration over settled markets")
     track.add_argument("--db", default=DB_PATH, help="SQLite database path")
+    track.add_argument(
+        "--since",
+        type=date.fromisoformat,
+        default=None,
+        help="restrict the per-(variable, lead) breakdown to runs started on or "
+        "after this date (YYYY-MM-DD)",
+    )
 
     attr = sub.add_parser(
         "attribution", help="per-segment P&L breakdown by city/venue/variable/lead/edge/p_win"
@@ -882,7 +905,8 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "prune":
         _prune(db)
     elif args.command == "track":
-        _track(db)
+        since = args.since.isoformat() if args.since is not None else None
+        _track(db, since)
     elif args.command == "attribution":
         _attribution(db)
     elif args.command == "clv":
