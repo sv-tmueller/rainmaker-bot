@@ -13,7 +13,12 @@ from scipy.stats import norm
 
 from rainmaker.cli import _tail_check
 from rainmaker.store.db import connect, init_schema
-from rainmaker.tracking import MIN_TAIL_N, compute_tail_calibration
+from rainmaker.tracking import (
+    MIN_TAIL_N,
+    compute_calibration_by_cell,
+    compute_tail_calibration,
+    settled_rows,
+)
 
 
 def _insert_row(
@@ -440,6 +445,64 @@ def test_since_filter_restricts_to_runs_on_or_after_the_cutoff():
     pit_filtered = _pit_row(filtered, "TMAX", 1)
     assert pit_filtered is not None
     assert pit_filtered["n"] == 1
+
+
+def test_compute_calibration_by_cell_agrees_with_tail_calibration_on_n_at_since_boundary():
+    """The two commands' populations differ (settled_rows() requires a price join,
+    compute_tail_calibration's own queries do not, #323's sub-plan), but when a row
+    is visible to both, both must count it the same way. Same fixture shape as
+    test_since_filter_restricts_to_runs_on_or_after_the_cutoff, with a price row
+    added so settled_rows() also sees it, and the second run's started_at set to
+    exactly the since cutoff (the boundary-exact case: on-or-after in both).
+    """
+    conn = connect(":memory:")
+    init_schema(conn)
+    for market_id, run_id, started_at, settlement_date in (
+        ("m10-before", "r10-before", "2026-07-05T12:00:00+00:00", "2026-07-06"),
+        ("m10-after", "r10-after", "2026-07-06T00:00:00+00:00", "2026-07-07"),
+    ):
+        _insert_row(
+            conn,
+            market_id=market_id,
+            run_id=run_id,
+            started_at=started_at,
+            settlement_date=settlement_date,
+            p_win=0.90,
+            mu=70.0,
+            sigma=10.0,
+            actual=70.0,
+            bucket_kind="below",
+            threshold=75,
+        )
+        conn.execute(
+            "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, market_id, "B", 0.5, 0.5, "t"),
+        )
+    conn.commit()
+
+    tail_unfiltered = compute_tail_calibration(conn)
+    tail_filtered = compute_tail_calibration(conn, since="2026-07-06")
+    rows = settled_rows(conn)
+    conn.close()
+
+    cell_unfiltered = compute_calibration_by_cell(rows)
+    cell_filtered = compute_calibration_by_cell(rows, since="2026-07-06")
+
+    tail_row_unfiltered = _primary_row(tail_unfiltered, "TMAX", 1, "YES", "[0.90,0.95)")
+    tail_row_filtered = _primary_row(tail_filtered, "TMAX", 1, "YES", "[0.90,0.95)")
+    assert tail_row_unfiltered is not None and tail_row_unfiltered["n"] == 2
+    # boundary-exact: m10-after started at 00:00:00 on the cutoff date, still on-or-after
+    assert tail_row_filtered is not None and tail_row_filtered["n"] == 1
+
+    cell_row_unfiltered = next(
+        r for r in cell_unfiltered if r["variable"] == "TMAX" and r["lead_time"] == 1
+    )
+    cell_row_filtered = next(
+        r for r in cell_filtered if r["variable"] == "TMAX" and r["lead_time"] == 1
+    )
+    assert cell_row_unfiltered["n"] == tail_row_unfiltered["n"] == 2
+    assert cell_row_filtered["n"] == tail_row_filtered["n"] == 1
 
 
 # ---------------------------------------------------------------------------

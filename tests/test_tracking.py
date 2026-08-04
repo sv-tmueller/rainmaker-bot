@@ -624,6 +624,9 @@ def test_write_snapshot_persists_metrics():
     assert row["n_bets"] == 1
     assert row["total_pnl"] == pytest.approx(0.60)
     assert row["n_scored"] == 2
+    # Pins the snapshot's stored Brier to the pooled value: write_snapshot must
+    # never thread `since` or per-cell filtering into what it persists (#323).
+    assert row["brier"] == pytest.approx(((0.93 - 1) ** 2 + (0.50 - 0) ** 2) / 2)
 
 
 def test_write_snapshot_is_idempotent_per_day():
