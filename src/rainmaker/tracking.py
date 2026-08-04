@@ -356,8 +356,7 @@ def compute_calibration_by_cell(
     for r in rows:
         try:
             lead = (
-                date.fromisoformat(r["settlement_date"])
-                - date.fromisoformat(r["started_at"][:10])
+                date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
             ).days
         except ValueError:
             continue  # unparsable date (e.g. test sentinel "t"): skip
