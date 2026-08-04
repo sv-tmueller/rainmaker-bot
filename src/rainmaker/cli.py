@@ -45,6 +45,7 @@ from rainmaker.polymarket.client import (
     fetch_closed_weather_events,
     fetch_weather_events,
 )
+from rainmaker.probability.calibration import df_near_bound
 from rainmaker.ranking.edge import evaluate_market, evaluate_precip_market
 from rainmaker.report.render import Report, render_markdown, render_terminal
 from rainmaker.settle import regrade_polymarket_settlements, run_settlement
@@ -56,7 +57,7 @@ from rainmaker.settlement_divergence import (
 )
 from rainmaker.store.db import connect, init_schema
 from rainmaker.store.prune import prune_settled
-from rainmaker.store.query import load_calibration
+from rainmaker.store.query import list_calibration_cells, load_calibration
 from rainmaker.store.record import (
     EvaluatedMarket,
     PrecipEvaluatedMarket,
@@ -648,6 +649,40 @@ def _tail_check(db_path: str, by_hour: bool = False, since: str | None = None) -
         )
 
 
+def _calibration_check(db_path: str) -> None:
+    """Print every stored calibration cell. Read-only: never fits or writes."""
+    if "://" not in db_path:
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        cells = list_calibration_cells(conn)
+    finally:
+        conn.close()
+
+    print("--- Calibration cells ---")
+    print(
+        f"{'Station':<8} {'Variable':<9} {'Lead':>4} {'Bias':>7} {'Var_a':>7} {'Var_b':>7} "
+        f"{'Df':>6} {'N':>5} {'Updated':<20}  Flag"
+    )
+    for row in cells:
+        bias = "n/a" if row["bias"] is None else f"{row['bias']:+.2f}"
+        var_a = "n/a" if row["var_a"] is None else f"{row['var_a']:.3f}"
+        var_b = "n/a" if row["var_b"] is None else f"{row['var_b']:.3f}"
+        # df is None means Gaussian, matching apply_calibration's dispatch idiom
+        # (Calibration.df's field comment); not derived from CALIBRATION_FAMILY.
+        df_str = "n/a" if row["df"] is None else f"{row['df']:.1f}"
+        flag = "** near bound **" if row["df"] is not None and df_near_bound(row["df"]) else "-"
+        n_samples = "n/a" if row["n_samples"] is None else str(row["n_samples"])
+        updated = row["updated_at"] or "-"
+        print(
+            f"{row['station']:<8} {row['variable']:<9} {row['lead_time']:>4} {bias:>7} "
+            f"{var_a:>7} {var_b:>7} {df_str:>6} {n_samples:>5} {updated:<20}  {flag}"
+        )
+    if not cells:
+        print("(no calibration cells stored)")
+
+
 def _snapshot(db_path: str) -> None:
     on_date = _today().isoformat()
     if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
@@ -847,6 +882,12 @@ def main(argv: list[str] | None = None) -> None:
         help="restrict to predictions whose run started on or after this date (YYYY-MM-DD)",
     )
 
+    calibration_check = sub.add_parser(
+        "calibration-check",
+        help="print every stored calibration cell and flag fits clustered at the df bounds",
+    )
+    calibration_check.add_argument("--db", default=DB_PATH, help="SQLite database path")
+
     args = parser.parse_args(argv)
 
     if args.command == "backtest":
@@ -892,3 +933,5 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "tail-check":
         since = args.since.isoformat() if args.since is not None else None
         _tail_check(db, args.by_hour, since)
+    elif args.command == "calibration-check":
+        _calibration_check(db)

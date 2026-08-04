@@ -1,4 +1,5 @@
 # tests/test_cli.py
+import sqlite3
 from datetime import date
 
 import httpx
@@ -9,8 +10,8 @@ from rainmaker.config import build_target
 from rainmaker.domain import Bucket, Market
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.probability.calibration import Calibration
-from rainmaker.store.db import connect
-from rainmaker.store.query import count_rows, load_calibration
+from rainmaker.store.db import Conn, connect, init_schema
+from rainmaker.store.query import count_rows, list_calibration_cells, load_calibration
 
 
 def _market(variable: str) -> Market:
@@ -1067,3 +1068,145 @@ def test_clv_command_prints_summary(httpx_mock, tmp_path, capsys):
     assert "coincident" in out.lower()
     # 1/1 bets have a closing price
     assert "1/1" in out
+
+
+# ---------------------------------------------------------------------------
+# calibration-check: list_calibration_cells (store/query.py) + CLI rendering
+# ---------------------------------------------------------------------------
+
+
+def test_list_calibration_cells_sorted_and_includes_legacy_null_rows(tmp_path):
+    db = str(tmp_path / "cal.db")
+    conn = connect(db)
+    init_schema(conn)
+    # A row with a full EMOS fit.
+    conn.execute(
+        "INSERT INTO calibration (station, variable, lead_time, bias, var_a, var_b, df, "
+        "n_samples, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("KJFK", "TMAX", 2, -1.0, 1.0, 1.1, None, 40, "t1"),
+    )
+    # A legacy pre-EMOS row: var_a/var_b are NULL. load_calibration would drop
+    # this cell entirely; list_calibration_cells must still surface it.
+    conn.execute(
+        "INSERT INTO calibration (station, variable, lead_time, bias, var_a, var_b, df, "
+        "n_samples, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("KJFK", "TMAX", 1, -0.5, None, None, None, 12, "t0"),
+    )
+    conn.execute(
+        "INSERT INTO calibration (station, variable, lead_time, bias, var_a, var_b, df, "
+        "n_samples, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("KLGA", "TMIN", 1, -2.0, 0.5, 1.0, 8.5, 42, "t2"),
+    )
+    conn.commit()
+
+    cells = list_calibration_cells(conn)
+    conn.close()
+
+    assert len(cells) == 3
+    # station, then variable, then lead_time.
+    assert [(c["station"], c["variable"], c["lead_time"]) for c in cells] == [
+        ("KJFK", "TMAX", 1),
+        ("KJFK", "TMAX", 2),
+        ("KLGA", "TMIN", 1),
+    ]
+    legacy = cells[0]
+    assert legacy["var_a"] is None
+    assert legacy["var_b"] is None
+
+
+def test_list_calibration_cells_is_read_only(tmp_path):
+    """External-oracle check: SQLite's own read-only mode must not reject the query.
+
+    Seed via a normal writable connection, close it, then reopen read-only and
+    call the helper directly. If it contained any write statement, SQLite would
+    raise OperationalError here.
+    """
+    db_path = tmp_path / "ro.db"
+    conn = connect(str(db_path))
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO calibration (station, variable, lead_time, bias, var_a, var_b, df, "
+        "n_samples, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("KJFK", "TMAX", 1, -1.0, 1.0, 1.1, None, 40, "t1"),
+    )
+    conn.commit()
+    conn.close()
+
+    ro_raw = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    ro_raw.row_factory = sqlite3.Row
+    ro_conn = Conn(ro_raw, "sqlite")
+    try:
+        cells = list_calibration_cells(ro_conn)
+    finally:
+        ro_raw.close()
+
+    assert len(cells) == 1
+    assert cells[0]["station"] == "KJFK"
+
+
+def test_calibration_check_renders_every_cell(tmp_path, capsys):
+    db = str(tmp_path / "cal.db")
+    conn = connect(db)
+    init_schema(conn)
+    # Genuinely Gaussian cell: df is None.
+    conn.execute(
+        "INSERT INTO calibration (station, variable, lead_time, bias, var_a, var_b, df, "
+        "n_samples, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("KJFK", "TMAX", 1, -1.0, 1.0, 1.1, None, 40, "t1"),
+    )
+    # Student-t cell whose fitted df is comfortably inside DF_MIN..DF_MAX.
+    conn.execute(
+        "INSERT INTO calibration (station, variable, lead_time, bias, var_a, var_b, df, "
+        "n_samples, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("KLGA", "TMIN", 1, -2.0, 0.5, 1.0, 20.0, 42, "t2"),
+    )
+    # Student-t cell parked at the fit's df bound: must be flagged.
+    conn.execute(
+        "INSERT INTO calibration (station, variable, lead_time, bias, var_a, var_b, df, "
+        "n_samples, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("KMDW", "TMIN", 3, -0.2, 0.3, 0.9, 61.0, 55, "t3"),
+    )
+    conn.commit()
+    conn.close()
+
+    cli._calibration_check(db)
+
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    gaussian_line = next(line for line in lines if "KJFK" in line)
+    inside_line = next(line for line in lines if "KLGA" in line)
+    bound_line = next(line for line in lines if "KMDW" in line)
+
+    assert "n/a" in gaussian_line  # df absent -> rendered as n/a, not a number
+    assert "20.0" in inside_line
+    assert "61.0" in bound_line
+    assert "near bound" not in inside_line.lower()
+    assert "near bound" in bound_line.lower()
+
+
+def test_calibration_check_wired_through_main(tmp_path, capsys):
+    db = str(tmp_path / "cal.db")
+    conn = connect(db)
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO calibration (station, variable, lead_time, bias, var_a, var_b, df, "
+        "n_samples, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("KJFK", "TMAX", 1, -1.0, 1.0, 1.1, None, 40, "t1"),
+    )
+    conn.commit()
+    conn.close()
+
+    cli.main(["calibration-check", "--db", db])
+
+    out = capsys.readouterr().out
+    assert "Calibration cells" in out
+    assert "KJFK" in out
+
+
+def test_calibration_check_empty_store_prints_no_rows(tmp_path, capsys):
+    db = str(tmp_path / "empty.db")
+
+    cli.main(["calibration-check", "--db", db])
+
+    out = capsys.readouterr().out
+    assert "no calibration cells stored" in out

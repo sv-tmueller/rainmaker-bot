@@ -47,6 +47,7 @@ jobs:
           # date in the same change that records the next refit (see
           # docs/operations/README.md).
           uv run rainmaker tail-check --since 2026-07-18
+          uv run rainmaker calibration-check
   notify:
     runs-on: ubuntu-latest
     needs: [diagnostics]
