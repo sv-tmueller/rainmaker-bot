@@ -20,14 +20,18 @@ These are read-only diagnostics; running them every 3 hours instead of daily
 was most of the Supabase egress this bot generates (#277), since `snapshot`
 upserts one row per day regardless of cadence.
 
-`tail-check` runs twice: once over the full settled history, and once with
-`--since` restricted to the active calibration regime's start date
-(currently 2026-07-06, hardcoded in the workflow). The full-history run is
-the cross-regime baseline; the since-filtered run isolates calibration under
-the current fit, since a prior refit can make older runs a poor guide to
-current performance. When a refit lands (a prod `backfill` re-run), update
-the `--since` date in `daily-diagnostics.yml` in the same change that
-records the refit.
+`tail-check` and `track` each run twice: once over the full settled history,
+and once with `--since` restricted to the active calibration regime's start
+date (currently 2026-07-06, hardcoded in the workflow). The full-history run
+is the cross-regime baseline; the since-filtered run isolates calibration
+under the current fit, since a prior refit can make older runs a poor guide
+to current performance. `track --since` prints the same pooled P&L/Brier
+aggregate as a plain `track`, plus a per-(variable, lead) Brier/hit-rate
+breakdown restricted to that population, so a per-cell cost prediction (for
+example one recorded in a refit's decision doc) is directly comparable to
+live numbers. When a refit lands (a prod `backfill` re-run), update the
+`--since` date in `daily-diagnostics.yml` in the same change that records
+the refit.
 
 Every CLI command targets local SQLite (default `rainmaker.db`) unless
 `DATABASE_URL` is set to a postgres DSN. Export the prod DSN locally only when
@@ -43,9 +47,12 @@ you mean to touch prod.
   markets are simply retried on later runs.
 - `uv run rainmaker prune`: drop all-but-latest intraday rows per settled
   (market, UTC day) from prices/predictions/forecasts, to bound storage.
-- `uv run rainmaker track`: print P&L and calibration over settled markets.
-  P&L is hypothetical: one unit staked on every recommended bet at its listed
-  ask, so a market re-recommended on several days counts as several bets.
+- `uv run rainmaker track`: print P&L and calibration over settled markets,
+  plus a per-(variable, lead) Brier/hit-rate breakdown. P&L is hypothetical:
+  one unit staked on every recommended bet at its listed ask, so a market
+  re-recommended on several days counts as several bets. `--since YYYY-MM-DD`
+  restricts the breakdown (not the pooled P&L/Brier line) to predictions from
+  runs started on or after that date, matching `tail-check`'s `--since`.
 - `uv run rainmaker snapshot`: upsert today's metrics row into
   `tracking_snapshot`. This is what the dashboard reads.
 - `uv run rainmaker backfill --city <X>`: fit a calibration cell and backtest
