@@ -8,6 +8,7 @@ from rainmaker.tracking import (
     _wilson_interval,
     compute_attribution,
     compute_calibration,
+    compute_calibration_by_cell,
     compute_pnl,
     settled_rows,
 )
@@ -229,6 +230,159 @@ def test_compute_calibration_filters_by_venue():
     assert compute_calibration(conn, venue="kalshi")["n"] == 1
     assert compute_calibration(conn, venue="polymarket")["n"] == 1  # NULL venue = polymarket
     conn.close()
+
+
+def _add_cell_row(
+    conn,
+    market_id: str,
+    run_id: str,
+    *,
+    variable: str,
+    settlement_date: str,
+    started_at: str,
+    p_win: float,
+    actual: float,
+    bucket: str = "70-71°F",
+) -> None:
+    """One settled YES bet: market + run + price + prediction + outcome."""
+    conn.execute(
+        "INSERT OR IGNORE INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        (run_id, started_at, "ok"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        (market_id, "NYC", variable, settlement_date),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (run_id, market_id, bucket, 0.40, 0.40, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions (run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (run_id, market_id, bucket, p_win, 0.10, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        (market_id, actual, "t"),
+    )
+
+
+def test_compute_calibration_by_cell_splits_by_variable_and_lead():
+    conn = connect(":memory:")
+    init_schema(conn)
+    # TMAX lead 1: started a day before settlement, 71 wins the 70-71 bucket.
+    _add_cell_row(
+        conn,
+        "m1",
+        "r1",
+        variable="TMAX",
+        settlement_date="2026-05-30",
+        started_at="2026-05-29T12:00:00Z",
+        p_win=0.90,
+        actual=71.0,
+    )
+    # TMIN lead 0: started same day as settlement, 71 also wins but at a lower p_win.
+    _add_cell_row(
+        conn,
+        "m2",
+        "r2",
+        variable="TMIN",
+        settlement_date="2026-05-30",
+        started_at="2026-05-30T12:00:00Z",
+        p_win=0.60,
+        actual=71.0,
+    )
+    conn.commit()
+    rows = settled_rows(conn)
+    conn.close()
+
+    result = compute_calibration_by_cell(rows)
+    assert {(r["variable"], r["lead_time"]) for r in result} == {("TMAX", 1), ("TMIN", 0)}
+    tmax_cell = next(r for r in result if r["variable"] == "TMAX")
+    assert tmax_cell["n"] == 1
+    assert tmax_cell["brier"] == pytest.approx((0.90 - 1) ** 2)
+    assert tmax_cell["hit_rate"] == pytest.approx(1.0)
+    tmin_cell = next(r for r in result if r["variable"] == "TMIN")
+    assert tmin_cell["n"] == 1
+    assert tmin_cell["brier"] == pytest.approx((0.60 - 1) ** 2)
+
+
+def test_compute_calibration_by_cell_since_restricts_population():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _add_cell_row(
+        conn,
+        "m1",
+        "r1",
+        variable="TMAX",
+        settlement_date="2026-07-06",
+        started_at="2026-07-05T12:00:00+00:00",
+        p_win=0.90,
+        actual=71.0,
+    )
+    _add_cell_row(
+        conn,
+        "m2",
+        "r2",
+        variable="TMAX",
+        settlement_date="2026-07-07",
+        started_at="2026-07-06T12:00:00+00:00",
+        p_win=0.90,
+        actual=71.0,
+    )
+    conn.commit()
+    rows = settled_rows(conn)
+    conn.close()
+
+    unfiltered = compute_calibration_by_cell(rows)
+    filtered = compute_calibration_by_cell(rows, since="2026-07-06")
+    assert next(r for r in unfiltered if r["lead_time"] == 1)["n"] == 2
+    assert next(r for r in filtered if r["lead_time"] == 1)["n"] == 1
+
+
+def test_compute_calibration_by_cell_drops_catch_up_rows():
+    conn = connect(":memory:")
+    init_schema(conn)
+    # started after settlement -> negative lead -> a catch-up run, not a forecast
+    _add_cell_row(
+        conn,
+        "m1",
+        "r1",
+        variable="TMAX",
+        settlement_date="2026-05-30",
+        started_at="2026-06-02T12:00:00Z",
+        p_win=0.90,
+        actual=71.0,
+    )
+    conn.commit()
+    rows = settled_rows(conn)
+    conn.close()
+
+    assert compute_calibration_by_cell(rows) == []
+
+
+def test_compute_calibration_by_cell_never_queries_the_store():
+    """Package B's acceptance criterion: no additional database query (#277)."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    _add_cell_row(
+        conn,
+        "m1",
+        "r1",
+        variable="TMAX",
+        settlement_date="2026-05-30",
+        started_at="2026-05-29T12:00:00Z",
+        p_win=0.90,
+        actual=71.0,
+    )
+    conn.commit()
+    rows = settled_rows(conn)
+    conn.close()  # closed: compute_calibration_by_cell has no conn param to query with
+
+    result = compute_calibration_by_cell(rows, since="2026-01-01")
+    assert result and result[0]["n"] == 1
 
 
 def test_compute_pnl_settles_precip_bucket():
