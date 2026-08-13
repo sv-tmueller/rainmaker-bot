@@ -553,24 +553,18 @@ def _track(db_path: str, since: str | None = None) -> None:
         )
 
 
-def _attribution(db_path: str) -> None:
-    if "://" not in db_path:
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = connect(db_path)
-    try:
-        init_schema(conn)
-        result = compute_attribution(conn)
-    finally:
-        conn.close()
-    dim_labels = {
-        "city": "City",
-        "venue": "Venue",
-        "variable": "Variable",
-        "lead": "Lead (days)",
-        "edge": "Edge bucket",
-        "p_win": "p_win bucket",
-    }
-    for dim, label in dim_labels.items():
+_ATTRIBUTION_DIM_LABELS = {
+    "city": "City",
+    "venue": "Venue",
+    "variable": "Variable",
+    "lead": "Lead (days)",
+    "edge": "Edge bucket",
+    "p_win": "p_win bucket",
+}
+
+
+def _print_attribution(result: dict[str, list[dict[str, Any]]]) -> None:
+    for dim, label in _ATTRIBUTION_DIM_LABELS.items():
         segs = result[dim]
         if not segs:
             continue
@@ -588,6 +582,25 @@ def _attribution(db_path: str) -> None:
                 f"{s['segment']:<20} {s['n']:>5} {s['wins']:>5} {s['losses']:>5} "
                 f"{win_pct:>7} {lo:>7} {hi:>7} {roi:>8}"
             )
+
+
+def _attribution(db_path: str, since: str | None = None) -> None:
+    if "://" not in db_path:
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        # Fetch the full settled history once and share it across both views
+        # below (#277: a since-restricted view must not add a second read).
+        rows = settled_rows(conn)
+        full = compute_attribution(conn, rows=rows)
+        since_result = compute_attribution(conn, since=since, rows=rows) if since else None
+    finally:
+        conn.close()
+    _print_attribution(full)
+    if since is not None and since_result is not None:
+        print(f"\nsince: {since}")
+        _print_attribution(since_result)
 
 
 def _clv(db_path: str) -> None:
@@ -919,6 +932,13 @@ def main(argv: list[str] | None = None) -> None:
         "attribution", help="per-segment P&L breakdown by city/venue/variable/lead/edge/p_win"
     )
     attr.add_argument("--db", default=DB_PATH, help="SQLite database path")
+    attr.add_argument(
+        "--since",
+        type=date.fromisoformat,
+        default=None,
+        help="also print a second attribution restricted to runs started on or "
+        "after this date (YYYY-MM-DD)",
+    )
 
     clv_cmd = sub.add_parser(
         "clv",
@@ -990,7 +1010,8 @@ def main(argv: list[str] | None = None) -> None:
         since = args.since.isoformat() if args.since is not None else None
         _track(db, since)
     elif args.command == "attribution":
-        _attribution(db)
+        since = args.since.isoformat() if args.since is not None else None
+        _attribution(db, since)
     elif args.command == "clv":
         _clv(db)
     elif args.command == "snapshot":

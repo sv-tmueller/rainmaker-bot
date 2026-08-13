@@ -501,14 +501,29 @@ def _segment_stats(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]
     return out
 
 
-def compute_attribution(conn: Conn) -> dict[str, list[dict[str, Any]]]:
+def compute_attribution(
+    conn: Conn, since: str | None = None, *, rows: list[dict[str, Any]] | None = None
+) -> dict[str, list[dict[str, Any]]]:
     """Per-segment P&L attribution across six dimensions.
 
     Built from a single deduplicated bet list (same population as compute_pnl).
     Each dimension is an exhaustive partition, so per-dimension totals reconcile
     with compute_pnl's headline n/wins/losses/pnl/roi.
+
+    Pass rows= a pre-fetched settled_rows(conn) result to skip the query (#277);
+    conn is then only used if rows is None.
+
+    since (an ISO "YYYY-MM-DD" string) restricts to runs.started_at on or after
+    that date, applied to the rows settled_rows() already deduped to the latest
+    run per (market, UTC day), the same mechanism and equivalence argument as
+    compute_calibration_by_cell's since (see #323): since is a monotone
+    on-or-after threshold, so filtering the argmax-selected rows here gives the
+    same surviving winners as filtering before the dedup would have.
     """
-    bets = _best_per_market_run(settled_rows(conn))
+    all_rows = rows if rows is not None else settled_rows(conn)
+    if since is not None:
+        all_rows = [r for r in all_rows if r["started_at"] >= since]
+    bets = _best_per_market_run(all_rows)
     # Attach bucketed keys for each attribution dimension
     tagged: list[dict[str, Any]] = []
     for r in bets:

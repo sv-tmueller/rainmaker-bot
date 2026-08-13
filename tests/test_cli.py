@@ -1326,6 +1326,105 @@ def test_clv_command_prints_summary(httpx_mock, tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
+# attribution: --since dual view
+# ---------------------------------------------------------------------------
+
+_EMPTY_ATTRIBUTION = {
+    "city": [],
+    "venue": [],
+    "variable": [],
+    "lead": [],
+    "edge": [],
+    "p_win": [],
+}
+
+
+def test_attribution_command_without_since_prints_single_view(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
+    monkeypatch.setattr(
+        cli,
+        "compute_attribution",
+        lambda conn, since=None, *, rows=None: {
+            **_EMPTY_ATTRIBUTION,
+            "city": [
+                {
+                    "segment": "NYC",
+                    "n": 1,
+                    "wins": 1,
+                    "losses": 0,
+                    "win_pct": 1.0,
+                    "wilson_lo": 0.2,
+                    "wilson_hi": 1.0,
+                    "pnl": 0.6,
+                    "staked": 0.4,
+                    "roi": 1.5,
+                }
+            ],
+        },
+    )
+    cli.main(["attribution", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+    assert "since:" not in out  # plain attribution output is unchanged
+    assert "NYC" in out
+    assert out.count("--- City ---") == 1  # exactly one view, not a dual view
+
+
+def test_attribution_command_fetches_settled_rows_exactly_once(monkeypatch, tmp_path, capsys):
+    """Acceptance criterion: one settled_rows fetch, --since or not (#277)."""
+    fetch_count = 0
+
+    def _settled_rows(conn):
+        nonlocal fetch_count
+        fetch_count += 1
+        return []
+
+    monkeypatch.setattr(cli, "settled_rows", _settled_rows)
+    monkeypatch.setattr(
+        cli, "compute_attribution", lambda conn, since=None, *, rows=None: _EMPTY_ATTRIBUTION
+    )
+    cli.main(["attribution", "--db", str(tmp_path / "t.db"), "--since", "2026-07-18"])
+    capsys.readouterr()
+    assert fetch_count == 1
+
+
+def test_attribution_command_since_flag_prints_both_views(monkeypatch, tmp_path, capsys):
+    captured: list[str | None] = []
+
+    monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
+
+    def _compute_attribution(conn, since=None, *, rows=None):
+        captured.append(since)
+        city_segment = "FULL" if since is None else "SINCE"
+        return {
+            **_EMPTY_ATTRIBUTION,
+            "city": [
+                {
+                    "segment": city_segment,
+                    "n": 1,
+                    "wins": 1,
+                    "losses": 0,
+                    "win_pct": 1.0,
+                    "wilson_lo": 0.2,
+                    "wilson_hi": 1.0,
+                    "pnl": 0.6,
+                    "staked": 0.4,
+                    "roi": 1.5,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(cli, "compute_attribution", _compute_attribution)
+    cli.main(["attribution", "--db", str(tmp_path / "t.db"), "--since", "2026-07-18"])
+    out = capsys.readouterr().out
+
+    assert captured == [None, "2026-07-18"]  # full-history call, then since-restricted
+    assert "since: 2026-07-18" in out
+    assert "FULL" in out and "SINCE" in out
+    # since header appears after the full-history segment, before the since segment
+    assert out.index("FULL") < out.index("since: 2026-07-18") < out.index("SINCE")
+
+
+# ---------------------------------------------------------------------------
 # calibration-check: list_calibration_cells (store/query.py) + CLI rendering
 # ---------------------------------------------------------------------------
 
