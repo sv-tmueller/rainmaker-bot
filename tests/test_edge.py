@@ -1181,6 +1181,16 @@ def test_ksfo_tmax_no_side_edge_below_delta_floor_not_recommended() -> None:
     assert outcome.recommended is False
 
 
+def test_recommended_requires_current_min_edge() -> None:
+    """Regression pin for #350: a non-delta station (KLAX) with edge ~0.06
+    cleared the old 0.05 MIN_EDGE but must not clear the raised live floor.
+    Pins MIN_EDGE symbolically so a revert to 0.05 fails this test."""
+    report = _evaluate_delta("Los Angeles", "TMAX", best_ask=0.94)
+    outcome = report.outcomes[0]
+    assert 0.05 < outcome.edge < MIN_EDGE, f"edge={outcome.edge} must sit below MIN_EDGE"
+    assert outcome.recommended is False
+
+
 def test_us_market_single_source_blocked() -> None:
     """A US market (ghcnd_id set) with n_sources=1 must remain blocked.
 
