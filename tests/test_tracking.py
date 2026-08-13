@@ -1737,6 +1737,42 @@ def test_clv_empty_series_drops_from_n_clv_no_crash(httpx_mock):
     assert result["mean_clv"] == pytest.approx(0.15)
 
 
+def test_clv_malformed_body_drops_from_n_clv_no_crash(httpx_mock):
+    """A 200 response with a malformed body drops the bet from n_clv, not the run.
+
+    A CDN error page or a schema-drifted response body still returns HTTP 200,
+    so httpx never raises; the KeyError comes from the missing "history" key
+    inside fetch_price_history's json parsing. That must be caught alongside
+    the transport/status errors, the same as any other fetch failure.
+    """
+    import re
+
+    from rainmaker.polymarket.prices import CLOB_PRICES_URL
+    from rainmaker.tracking import compute_clv
+
+    # YES bet market: 200 response missing the "history" key.
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-70-71"),
+        json={"error": "not found"},
+    )
+    # NO bet market gets a valid series.
+    httpx_mock.add_response(
+        url=re.compile(re.escape(CLOB_PRICES_URL) + r".*market=token-yes-72-73"),
+        json=_clob_series(yes_close=0.15),
+    )
+
+    conn = connect(":memory:")
+    _setup_clv_fixture(conn)
+    with httpx.Client() as client:
+        result = compute_clv(conn, client)
+    conn.close()
+
+    assert result["n_bets"] == 2  # unchanged
+    assert result["n_clv"] == 1  # only the NO bet succeeded
+    # mean_clv over the one successful bet: (1 - 0.15) - 0.70 = 0.15
+    assert result["mean_clv"] == pytest.approx(0.15)
+
+
 def test_clv_aggregate_and_per_segment(httpx_mock):
     """mean_clv and by_segment values match hand-computed values.
 

@@ -567,7 +567,10 @@ def compute_clv(conn: Conn, client: httpx.Client, lead_hours: int = 24) -> dict[
 
     Returns:
         n_bets: total deduped Polymarket bets (must equal compute_pnl(conn, 'polymarket')['n_bets'])
-        n_clv: subset with a successful closing-price fetch
+        n_clv: subset with a successful closing-price fetch. A bet drops out (never
+            crashes the command) on a transport/status error, an empty series, or a
+            malformed 200 body (bad JSON, a missing "history" key, or an unparseable
+            point), any of which fetch_price_history or its json parsing can raise.
         n_coincident: bets where abs(CLV) < 1e-9 (advised == close on YES scale)
         mean_clv: mean CLV over n_clv bets (None when n_clv == 0)
         by_segment: per-dimension mean CLV over n_clv bets, keyed by dim name
@@ -593,7 +596,7 @@ def compute_clv(conn: Conn, client: httpx.Client, lead_hours: int = 24) -> dict[
         start_ts = reference_ts - 6 * 24 * 3600
         try:
             points = fetch_price_history(token, start_ts, reference_ts, client)
-        except httpx.HTTPError:
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
             continue
         yes_close = last_before(points, reference_ts)
         if yes_close is None:
