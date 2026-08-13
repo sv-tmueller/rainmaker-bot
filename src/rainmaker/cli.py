@@ -769,6 +769,14 @@ def _snapshot(db_path: str) -> None:
     skipped = max(p.get("skipped", 0), cal.get("skipped", 0))
     if skipped:
         print(f"skipped {skipped} ungradable settled row(s)")
+    for venue, stats in result.get("venues", {}).items():
+        vp = stats["pnl"]
+        if vp["n_bets"] == 0:
+            continue  # only show a venue that actually has settled bets
+        print(
+            f"  {venue}: {vp['n_bets']} bets, {vp['wins']}-{vp['losses']}, "
+            f"total {vp['total_pnl']:+.2f}u, ROI {vp['roi']:+.1%}"
+        )
 
 
 def _settle_divergence(pages: int, reports_dir: str) -> None:
