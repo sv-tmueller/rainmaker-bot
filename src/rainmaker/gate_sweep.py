@@ -227,9 +227,7 @@ def run_sweep(rows: list[dict[str, Any]], since: str | None = None) -> dict[str,
     lead_grid = [replay_policy(rows, Policy(label=v, lead=v)) for v in LEAD_GRID]
     venue_grid = [replay_policy(rows, Policy(label=v, venue=v)) for v in VENUE_GRID]
     combined = [
-        replay_policy(
-            rows, Policy(label=f"min_edge={v:.2f}, lead=exclude_0", min_edge=v, lead="exclude_0")
-        )
+        replay_policy(rows, Policy(label=f"{v:.2f}/excl0", min_edge=v, lead="exclude_0"))
         for v in MIN_EDGE_GRID
     ]
 

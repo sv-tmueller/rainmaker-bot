@@ -1311,3 +1311,86 @@ def test_calibration_check_empty_store_prints_no_rows(tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "no calibration cells stored" in out
+
+
+# gate-sweep: CLI rendering only (gate_sweep.py's own math is covered in
+# tests/test_gate_sweep.py); this stubs run_sweep entirely.
+_GATE_SWEEP_ROW = {
+    "label": "0.05",
+    "n_bets": 1,
+    "wins": 1,
+    "losses": 0,
+    "hit_rate": 1.0,
+    "wilson_lo": 0.2,
+    "wilson_hi": 1.0,
+    "pnl": 0.5,
+    "staked": 0.5,
+    "roi": 1.0,
+    "skipped": 0,
+    "lower_bound": False,
+}
+
+
+def _fake_sweep_result(lower_bound: bool = False) -> dict:
+    row = {**_GATE_SWEEP_ROW, "lower_bound": lower_bound}
+    anchor = {**row, "label": "live"}
+    return {
+        "anchors": {
+            "as_recorded": {**anchor, "label": "live (as recorded)"},
+            "replayed_live": anchor,
+        },
+        "min_edge": [row],
+        "floor_yes": [row],
+        "floor_no": [row],
+        "lead": [row],
+        "venue": [row],
+        "combined_min_edge_lead0": [row],
+    }
+
+
+def test_gate_sweep_command_prints_anchors_and_ofat_tables(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
+    monkeypatch.setattr(cli, "run_sweep", lambda rows, since=None: _fake_sweep_result())
+
+    cli.main(["gate-sweep", "--db", str(tmp_path / "t.db")])
+
+    out = capsys.readouterr().out
+    assert "Anchors (reconciliation)" in out
+    assert "live (as recorded)" in out
+    assert "live (replayed)" in out
+    assert "min_edge sweep" in out
+    assert "YES floor sweep" in out
+    assert "NO floor sweep" in out
+    assert "lead sweep" in out
+    assert "venue sweep" in out
+    assert "combined: min_edge x exclude lead 0" in out
+    assert "since:" not in out
+    assert "lower bound" not in out  # no footnote when nothing loosens
+
+
+def test_gate_sweep_command_since_flag_is_wired_through(monkeypatch, tmp_path, capsys):
+    captured: dict[str, str | None] = {}
+
+    monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
+
+    def _run_sweep(rows, since=None):
+        captured["since"] = since
+        return _fake_sweep_result()
+
+    monkeypatch.setattr(cli, "run_sweep", _run_sweep)
+
+    cli.main(["gate-sweep", "--db", str(tmp_path / "t.db"), "--since", "2026-07-18"])
+    out = capsys.readouterr().out
+
+    assert captured["since"] == "2026-07-18"
+    assert "since: 2026-07-18" in out
+
+
+def test_gate_sweep_command_prints_lower_bound_footnote_when_present(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
+    monkeypatch.setattr(cli, "run_sweep", lambda rows, since=None: _fake_sweep_result(True))
+
+    cli.main(["gate-sweep", "--db", str(tmp_path / "t.db")])
+
+    out = capsys.readouterr().out
+    assert "lower bound" in out
