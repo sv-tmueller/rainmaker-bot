@@ -3,6 +3,7 @@ from datetime import date
 import pytest
 
 from rainmaker.config import KALSHI_STATIONS
+from rainmaker.domain import parse_bucket_label
 from rainmaker.kalshi.markets import parse_kalshi_bucket, parse_kalshi_event
 
 
@@ -197,3 +198,55 @@ def test_less_strike_with_none_cap_raises_value_error():
     # int(None) raises TypeError pre-fix; post-fix raises ValueError explicitly.
     with pytest.raises(ValueError, match="cap_strike"):
         parse_kalshi_bucket(_mkt(strike_type="less", floor_strike=None, cap_strike=None))
+
+
+# ---------------------------------------------------------------------------
+# Label synthesis for a bare/missing subtitle (#333: the same defect the precip
+# parser had, applied to the temperature ladder before it bites in the wild)
+# ---------------------------------------------------------------------------
+
+
+def test_bare_unit_subtitle_synthesizes_canonical_label_above():
+    b = parse_kalshi_bucket(_mkt(subtitle="degrees"))
+    assert b.label == "79°F or higher"
+    parse_bucket_label(b.label)  # must round-trip through the label parser
+
+
+def test_bare_unit_subtitle_synthesizes_canonical_label_below():
+    b = parse_kalshi_bucket(
+        _mkt(strike_type="less", floor_strike=None, cap_strike=72, subtitle="degrees")
+    )
+    assert b.label == "72°F or below"
+    parse_bucket_label(b.label)
+
+
+def test_bare_unit_subtitle_synthesizes_canonical_label_range():
+    b = parse_kalshi_bucket(
+        _mkt(strike_type="between", floor_strike=78, cap_strike=79, subtitle="degrees")
+    )
+    assert b.label == "78-79°F"
+    parse_bucket_label(b.label)
+
+
+def test_missing_subtitle_synthesizes_canonical_label():
+    b = parse_kalshi_bucket(_mkt(subtitle=None))
+    assert b.label == "79°F or higher"
+
+
+def test_well_formed_subtitle_is_not_relabeled():
+    """Digit-bearing subtitles are the join key for historical rows: must pass
+    through unchanged, never rewritten to the canonical form."""
+    b = parse_kalshi_bucket(_mkt(subtitle="above 79"))
+    assert b.label == "above 79"
+
+
+def test_duplicate_synthesized_labels_raise_value_error():
+    markets = _event_markets()
+    for mk in markets:
+        mk["subtitle"] = "degrees"
+    # Force both strikes to synthesize the same label (both 'above' at 79).
+    markets[1]["strike_type"] = "greater"
+    markets[1]["floor_strike"] = 79
+    markets[1]["cap_strike"] = None
+    with pytest.raises(ValueError, match="duplicate"):
+        parse_kalshi_event("NYC", KALSHI_STATIONS["NYC"], markets)

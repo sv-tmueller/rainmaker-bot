@@ -235,6 +235,30 @@ def test_compute_live_calibration_reliability_bins():
     assert by_lo[0.7]["count"] == 1
 
 
+def test_compute_live_calibration_skips_ungradable_bucket_label():
+    """A malformed bucket label (no digit, matches no spec) never crashes: it is
+    excluded from reliability instead (#333)."""
+    from rainmaker.tracking import compute_live_calibration
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    _run(conn, "r1", "2026-05-30T12:00:00+00:00")
+    _market(conn, "m1", settlement_date="2026-05-31")
+    _pred(conn, "r1", "m1", "70-71°F", p_win=0.70, mu=70.0, sigma=2.0, side="YES")
+    _pred(conn, "r1", "m1", "garbage", p_win=0.20, mu=70.0, sigma=2.0, side="YES")
+    _outcome(conn, "m1", 70.0)
+    conn.commit()
+
+    rows = compute_live_calibration(conn)
+    conn.close()
+
+    assert len(rows) == 1
+    bins = rows[0]["reliability_bins"]
+    by_lo = {b["lo"]: b for b in bins}
+    assert 0.2 not in by_lo  # the ungradable bucket contributed no reliability point
+    assert 0.7 in by_lo
+
+
 def test_compute_live_calibration_same_day_collapses():
     """Two runs on the same UTC day collapse to the latest for CRPS/coverage."""
     from rainmaker.tracking import compute_live_calibration

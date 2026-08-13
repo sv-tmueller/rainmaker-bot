@@ -869,6 +869,39 @@ def test_compute_tail_calibration_excludes_nan_df_row():
     assert math.isfinite(pit["lower_05"])
 
 
+def test_compute_tail_calibration_skips_ungradable_bucket_label():
+    """A malformed bucket label with no matching outcome_spec entry never crashes
+    the tail check; the row is simply excluded from the primary population (#333)."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("r1", "2026-07-01T12:00:00+00:00", "ok"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        ("m1", "NYC", "TMAX", "2026-07-02"),
+    )
+    dist = json.dumps({"mu": 70.0, "sigma": 2.0, "n_sources": 2})
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, dist_params, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "m1", "garbage", 0.80, dist, 0.1, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("m1", 70.0, "t"),
+    )
+    conn.commit()
+
+    result = compute_tail_calibration(conn)
+    conn.close()
+
+    assert result["primary"] == []  # the ungradable row contributes no primary claim
+    assert _pit_row(result, "TMAX", 1) is not None  # dist_params population unaffected
+
+
 def test_cli_tail_check_smoke(tmp_path, capsys):
     db = str(tmp_path / "tail.db")
     conn = connect(db)
