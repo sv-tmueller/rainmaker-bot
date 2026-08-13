@@ -50,6 +50,22 @@ export function PnlChart({
   const toneClass = last.totalPnl >= 0 ? "text-pos" : "text-neg";
   const fillClass = last.totalPnl >= 0 ? "fill-pos" : "fill-neg";
 
+  // Legend x advances cumulatively by the previous label's rendered width, not
+  // a fixed slot: "polymarket" in 9px monospace runs wider than a fixed
+  // 34-unit slot and would overlap the next label otherwise.
+  const CHAR_WIDTH = 5.5;
+  const LEGEND_GAP = 6;
+  const legendLabels: { label: string; colorClass: string }[] = [
+    { label: "total", colorClass: toneClass },
+    ...venueSeries.map((s) => ({ label: s.label.toLowerCase(), colorClass: s.colorClass })),
+  ];
+  let cursorX = PAD;
+  const legendItems = legendLabels.map(({ label, colorClass }) => {
+    const item = { label, colorClass, x: cursorX };
+    cursorX += label.length * CHAR_WIDTH + LEGEND_GAP;
+    return item;
+  });
+
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="block w-full" role="img" aria-label="P&L over time">
       <line
@@ -96,17 +112,14 @@ export function PnlChart({
       </text>
       {venueSeries.length > 0 && (
         <g className="font-mono text-[9px]">
-          <text x={PAD} y={12} className={`fill-current ${toneClass}`}>
-            total
-          </text>
-          {venueSeries.map((series, i) => (
+          {legendItems.map((item) => (
             <text
-              key={series.label}
-              x={PAD + 34 * (i + 1)}
+              key={item.label}
+              x={item.x}
               y={12}
-              className={`fill-current ${series.colorClass}`}
+              className={`fill-current ${item.colorClass}`}
             >
-              {series.label.toLowerCase()}
+              {item.label}
             </text>
           ))}
         </g>

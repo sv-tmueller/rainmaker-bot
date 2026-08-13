@@ -24,6 +24,17 @@ function Kpi({
   );
 }
 
+// Only the last row per venue matters here (it already carries the
+// cumulative record/ROI); an empty array means no venue rows exist yet
+// (aggregate-only data), and a zero-bet last row (the sibling package writes
+// one unconditionally) means the venue has no settled bets yet. Either case
+// omits the card rather than showing a blank or falsely-toned "0-0".
+export function activeVenueSnapshot(rows: Snapshot[]): Snapshot | null {
+  if (rows.length === 0) return null;
+  const last = rows[rows.length - 1];
+  return last.nBets > 0 ? last : null;
+}
+
 export function KpiStrip({
   snap,
   venue,
@@ -33,12 +44,8 @@ export function KpiStrip({
 }) {
   const has = snap !== null && snap.nBets > 0;
   const tone = (x: number): "pos" | "neg" => (x >= 0 ? "pos" : "neg");
-  // Only the last row per venue matters here (it already carries the
-  // cumulative record/ROI); an empty array means no venue rows exist yet
-  // (aggregate-only data), so the card is omitted rather than shown blank.
-  const lastOf = (rows: Snapshot[]) => (rows.length > 0 ? rows[rows.length - 1] : null);
-  const polySnap = lastOf(venue.polymarket);
-  const kalshiSnap = lastOf(venue.kalshi);
+  const polySnap = activeVenueSnapshot(venue.polymarket);
+  const kalshiSnap = activeVenueSnapshot(venue.kalshi);
   return (
     <div className="flex items-baseline gap-12 py-5">
       <Kpi
