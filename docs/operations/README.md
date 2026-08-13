@@ -65,6 +65,84 @@ you mean to touch prod.
   (read-only; never fits or writes). Flags a Student-t fit clustered at the
   df search bounds so it is visible without querying the table by hand.
 
+## Ungradable settled rows (skip-and-count)
+
+`track` and `snapshot` score every settled prediction row by grading its bucket
+label against the actual value: first against the market's stored
+`outcome_spec`, falling back to the label parsers (`parse_bucket_label`,
+`parse_precip_bracket_label`) for legacy rows. A row whose label matches no
+spec entry and that the fallback parser also cannot read is ungradable. It is
+skipped rather than crashing the job, and counted: `track` and `snapshot`
+print `skipped N ungradable settled row(s)` whenever that count is nonzero (no
+line at all when it is zero). Watch that line as the coverage signal; a
+climbing count without a matching parser fix below means something upstream is
+recording labels the store can't join back to a settlement rule.
+
+### Root cause (#330, #331, #333)
+
+`daily-diagnostics` (settled-row scoring) started failing Aug 7, and
+`weekly-metrics` Aug 10, both on
+`ValueError: unrecognized precip bracket label: 'inches'` raised from
+`domain.parse_precip_bracket_label`. Before the fix, every P&L/calibration
+computation in `tracking.py` let that exception propagate, so one bad row
+killed both jobs.
+
+The label came from Kalshi's monthly-rain parser
+(`kalshi/precip_markets.py`): `label=market.get("subtitle") or
+market["ticker"]` trusted the venue's `subtitle` field with no check. Kalshi
+sent a bare unit string ("inches", no digit) for some strikes of the NYC
+August-2026 rain ladder (confirmed from the `daily-run` report artifacts for
+runs `31086017767`/`31097248956`/`31110384503`, 2026-08-06); other strikes on
+the same ladder that run had a normal digit-bearing subtitle ("4 inches", "2
+inches"), so this was a per-strike defect, not a whole-ladder one.
+`kalshi/markets.py` (temperature) had the identical `subtitle or ticker`
+pattern, unexercised so far, so it got the same guard.
+
+The stored `outcome_spec` didn't cover the bad rows either: `store/record.py`
+overwrites a market's `outcome_spec` on every run
+(`outcome_spec = excluded.outcome_spec`), so once Kalshi's subtitle recovered
+to a normal value on a later run, the spec was rewritten with the good labels
+and the earlier prediction/price rows recorded against `'inches'` were
+orphaned; the label is the only join key back to a settlement rule, and it is
+mutable at the market level while predictions are immutable at record time.
+That mismatch is the general defect skip-and-count hardens against,
+independent of the parser fix.
+
+Fixed two ways: (1) `tracking.py` grades through one seam, `_won`, that
+returns `None` for an ungradable row instead of raising; every caller
+(`compute_pnl`/`_bet_won`, `_cell_stats`, `_segment_stats`,
+`compute_live_calibration`, `compute_tail_calibration`) skips a `None` and
+counts it. (2) `kalshi/precip_markets.py` and `kalshi/markets.py` no longer
+trust a subtitle with no digit (or a missing one): they synthesize the
+canonical label (`<2"`, `2-3"`, `>4"` for precip; `"{t}°F or below"` /
+`"{lo}-{hi}°F"` / `"{t}°F or higher"` for temperature) from the already-parsed
+strike geometry instead, and a ladder-level guard raises if two strikes
+synthesize the same label. A well-formed, digit-bearing subtitle is never
+rewritten, since historical rows join on it as-is.
+
+### Disposition for the bad prod rows
+
+Not executed here: prod DB access is out of scope for this change, and
+re-grading historical bets is a non-goal. The rows recorded against the bare
+`'inches'` label (Kalshi NYC monthly rain, prediction/price rows from the
+2026-08-06 run window) stay ungradable forever; they will show up in
+`track`'s skipped count until pruned. If an operator wants to reclaim them
+instead of leaving them skipped, the repair is to re-derive each row's
+canonical label from its strike geometry and rewrite `predictions.bucket` (and
+the matching `prices.outcome`) to match, for example:
+
+```sql
+-- Illustrative only: confirm each row's true kind/lo/hi/threshold against the
+-- Kalshi event you pulled it from before running anything against prod.
+UPDATE predictions SET bucket = '<2"' WHERE market_id = '<event_ticker>' AND bucket = 'inches' AND <row identifies the <2" strike>;
+UPDATE prices SET outcome = '<2"' WHERE market_id = '<event_ticker>' AND outcome = 'inches' AND <same row>;
+```
+
+Since the bare-subtitle strikes on one ladder can't be told apart from the
+label alone (that's the whole defect), this needs the original Kalshi ticker
+IDs recovered from the `daily-run` artifacts to know which strike each `bucket
+= 'inches'` row actually was before rewriting it.
+
 ## Daily report runbook
 
 ### Run it

@@ -460,6 +460,28 @@ def test_snapshot_command_writes_and_reports(monkeypatch, tmp_path, capsys):
     cli.main(["snapshot", "--db", str(tmp_path / "t.db")])
     out = capsys.readouterr().out
     assert "snapshot" in out and "2 bets" in out
+    assert "skipped" not in out  # no skipped key in the mocked result: stays silent
+
+
+def test_snapshot_command_prints_skipped_count_when_nonzero(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        cli,
+        "write_snapshot",
+        lambda conn, on_date, created_at: {
+            "pnl": {
+                "n_bets": 2,
+                "wins": 1,
+                "losses": 1,
+                "total_pnl": 0.3,
+                "roi": 0.42,
+                "skipped": 3,
+            },
+            "calibration": {"n": 2, "brier": 0.13, "hit_rate": 0.5},
+        },
+    )
+    cli.main(["snapshot", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+    assert "skipped 3 ungradable settled row(s)" in out
 
 
 def test_track_command_reports_pnl_and_calibration(monkeypatch, tmp_path, capsys):
@@ -486,6 +508,31 @@ def test_track_command_reports_pnl_and_calibration(monkeypatch, tmp_path, capsys
     out = capsys.readouterr().out
     assert "P&L: 2 bets, 1-1" in out
     assert "Brier 0.127" in out
+    assert "skipped" not in out  # no skipped key in the mocked pnl: stays silent
+
+
+def test_track_command_prints_skipped_count_when_nonzero(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
+    monkeypatch.setattr(
+        cli,
+        "compute_pnl",
+        lambda conn, venue=None, *, rows=None: {
+            "n_bets": 2 if venue is None else 0,
+            "wins": 1,
+            "losses": 1,
+            "total_pnl": 0.3,
+            "roi": 0.42,
+            "skipped": 4 if venue is None else 0,
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "compute_calibration",
+        lambda conn, *, rows=None: {"n": 2, "brier": 0.127, "hit_rate": 0.5},
+    )
+    cli.main(["track", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+    assert "skipped 4 ungradable settled row(s)" in out
 
 
 def test_track_command_fetches_settled_rows_exactly_once(monkeypatch, tmp_path, capsys):

@@ -41,6 +41,31 @@ _MONTHS = {
 # A Kalshi high-temp event ticker is KXHIGH<CODE>-<YY><MON><DD> (e.g. -26JUN08).
 _TICKER_DATE_RE = re.compile(r"-(\d{2})([A-Z]{3})(\d{2})(?:-|$)")
 
+_DIGIT_RE = re.compile(r"\d")
+
+
+def _labeled_subtitle(subtitle: Any) -> str | None:
+    """The subtitle if it carries a threshold digit, else None.
+
+    Kalshi has been observed to send a blank or bare-unit subtitle (e.g. just
+    "inches") for some strikes; those carry no threshold and must not become the
+    join-key label (#333), so the caller synthesizes one from the strike geometry.
+    """
+    if isinstance(subtitle, str) and _DIGIT_RE.search(subtitle):
+        return subtitle
+    return None
+
+
+def _synthesize_temp_label(
+    kind: BucketKind, lo: int | None, hi: int | None, threshold: int | None
+) -> str:
+    """Canonical label matching domain.parse_bucket_label's expected shapes."""
+    if kind == "below":
+        return f"{threshold}°F or below"
+    if kind == "above":
+        return f"{threshold}°F or higher"
+    return f"{lo}-{hi}°F"
+
 
 def _price(market: dict[str, Any], key: str) -> float | None:
     raw: Any = market.get(key)
@@ -83,8 +108,10 @@ def parse_kalshi_bucket(market: dict[str, Any]) -> Bucket:
         kind, lo, hi = "range", int(floor), int(cap)
     else:
         raise ValueError(f"unknown Kalshi strike_type: {strike_type!r}")
+    subtitle = _labeled_subtitle(market.get("subtitle"))
+    label = subtitle if subtitle is not None else _synthesize_temp_label(kind, lo, hi, threshold)
     return Bucket(
-        label=market.get("subtitle") or market["ticker"],
+        label=label,
         kind=kind,
         lo=lo,
         hi=hi,
@@ -140,6 +167,9 @@ def parse_kalshi_event(
     local_date = _settlement_date(event_ticker)
     target = Target(station=station, variable=variable, local_date=local_date)
     buckets = [parse_kalshi_bucket(m) for m in event_markets]
+    labels = [b.label for b in buckets]
+    if len(labels) != len(set(labels)):
+        raise ValueError(f"duplicate bucket labels in Kalshi event {event_ticker}: {labels}")
     descriptor = "highest" if variable == "TMAX" else "lowest"
     return Market(
         id=event_ticker,

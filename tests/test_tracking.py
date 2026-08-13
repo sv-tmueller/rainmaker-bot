@@ -608,7 +608,129 @@ def test_compute_pnl_empty_when_nothing_settled():
     init_schema(conn)
     pnl = compute_pnl(conn)
     conn.close()
-    assert pnl == {"n_bets": 0, "wins": 0, "losses": 0, "total_pnl": 0.0, "roi": 0.0}
+    assert pnl == {
+        "n_bets": 0,
+        "wins": 0,
+        "losses": 0,
+        "total_pnl": 0.0,
+        "roi": 0.0,
+        "skipped": 0,
+    }
+
+
+def _add_ungradable_row(
+    conn, market_id, run_id, *, bucket="inches", actual=1.5, started_at="2026-06-28T12:00:00Z"
+):
+    """A settled PRCP row whose bucket label neither an outcome_spec entry nor the
+    label parser can read (#333: 'inches' with no digit, a bare Kalshi unit string).
+
+    started_at is a real ISO timestamp (not the "t" placeholder some other
+    fixtures use) so lead-time computations elsewhere in tracking.py (e.g.
+    compute_calibration_by_cell, compute_attribution) don't drop the row before
+    the grading seam under test ever sees it.
+    """
+    conn.execute(
+        "INSERT OR IGNORE INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        (run_id, started_at, "ok"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        (market_id, "NYC", "PRCP", "2026-06-30"),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (run_id, market_id, bucket, 0.30, 0.30, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions (run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (run_id, market_id, bucket, 0.60, 0.30, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        (market_id, actual, "t"),
+    )
+
+
+def test_compute_pnl_skips_ungradable_row_and_counts_it():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _add_ungradable_row(conn, "pm_bad", "r1")
+    # A normal gradable bet alongside it, so the good row is still scored.
+    conn.execute("INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)", ("r2", "t", "ok"))
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        ("m_good", "NYC", "TMAX", "2026-05-30"),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("r2", "m_good", "70-71°F", 0.40, 0.40, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions (run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("r2", "m_good", "70-71°F", 0.93, 0.20, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("m_good", 71.0, "t"),
+    )
+    conn.commit()
+    pnl = compute_pnl(conn)
+    conn.close()
+    assert pnl["skipped"] == 1
+    assert pnl["n_bets"] == 1  # only the gradable bet counted
+    assert (pnl["wins"], pnl["losses"]) == (1, 0)
+    assert pnl["total_pnl"] == pytest.approx(0.60)
+
+
+def test_compute_calibration_skips_ungradable_row_and_counts_it():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _add_ungradable_row(conn, "pm_bad", "r1")
+    conn.commit()
+    cal = compute_calibration(conn)
+    conn.close()
+    assert cal["skipped"] == 1
+    assert cal["n"] == 0
+    assert cal["brier"] is None
+    assert cal["hit_rate"] is None
+
+
+def test_compute_calibration_by_cell_skips_ungradable_row_and_counts_it():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _add_ungradable_row(conn, "pm_bad", "r1")
+    conn.commit()
+    rows = settled_rows(conn)
+    conn.close()
+    result = compute_calibration_by_cell(rows)
+    assert len(result) == 1
+    assert result[0]["variable"] == "PRCP"
+    assert result[0]["n"] == 0
+    assert result[0]["skipped"] == 1
+
+
+def test_write_snapshot_completes_with_ungradable_row():
+    from rainmaker.tracking import write_snapshot
+
+    conn = connect(":memory:")
+    _setup(conn)
+    _add_ungradable_row(conn, "pm_bad", "r_bad")
+    conn.commit()
+    result = write_snapshot(conn, "2026-06-04", "2026-06-04T00:00:00Z")
+    row = conn.execute(
+        "SELECT * FROM tracking_snapshot WHERE snapshot_date = ?", ("2026-06-04",)
+    ).fetchone()
+    conn.close()
+    # The good fixture bet (_setup) still scores; the ungradable PRCP row never
+    # crashes the snapshot and is counted instead.
+    assert result["pnl"]["skipped"] == 1
+    assert result["pnl"]["n_bets"] == 1
+    assert row["n_bets"] == 1
+    assert row["total_pnl"] == pytest.approx(0.60)
 
 
 def test_write_snapshot_persists_metrics():
@@ -1420,6 +1542,25 @@ def test_compute_attribution_consistency_with_compute_pnl():
         assert total_losses == pnl["losses"], f"{dim}: losses mismatch"
         assert total_pnl_sum == pytest.approx(pnl["total_pnl"]), f"{dim}: pnl mismatch"
         assert roi_recomputed == pytest.approx(pnl["roi"]), f"{dim}: roi mismatch"
+
+
+def test_compute_attribution_skips_ungradable_bet_and_counts_it():
+    conn = connect(":memory:")
+    _setup_attribution_fixture(conn)
+    _add_ungradable_row(conn, "pm_bad", "r_bad")
+    conn.commit()
+    pnl = compute_pnl(conn)
+    result = compute_attribution(conn)
+    conn.close()
+
+    assert pnl["skipped"] == 1
+    by_variable = {s["segment"]: s for s in result["variable"]}
+    assert by_variable["PRCP"]["skipped"] == 1
+    assert by_variable["PRCP"]["n"] == 0  # the ungradable row never touches n/staked
+    # Every dimension's total n still reconciles with compute_pnl (skips excluded
+    # from both consistently).
+    for dim in ("city", "venue", "variable", "lead", "edge", "p_win"):
+        assert sum(s["n"] for s in result[dim]) == pnl["n_bets"]
 
 
 # ---------------------------------------------------------------------------

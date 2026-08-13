@@ -521,6 +521,9 @@ def _track(db_path: str, since: str | None = None) -> None:
         f"P&L: {pnl['n_bets']} bets, {pnl['wins']}-{pnl['losses']}, "
         f"total {pnl['total_pnl']:+.2f}u, ROI {pnl['roi']:+.1%}"
     )
+    skipped = pnl.get("skipped", 0)
+    if skipped:
+        print(f"skipped {skipped} ungradable settled row(s)")
     for venue, vp in by_venue.items():
         if vp["n_bets"] == 0:
             continue  # only show a venue that actually has settled bets
@@ -742,6 +745,9 @@ def _snapshot(db_path: str) -> None:
         f"snapshot {on_date}: {p['n_bets']} bets, total {p['total_pnl']:+.2f}u "
         f"-> {_db_label(db_path)}"
     )
+    skipped = p.get("skipped", 0)
+    if skipped:
+        print(f"skipped {skipped} ungradable settled row(s)")
 
 
 def _settle_divergence(pages: int, reports_dir: str) -> None:
