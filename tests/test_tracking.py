@@ -858,9 +858,7 @@ def test_write_snapshot_splits_by_venue():
 
 def _add_settled_bet(conn, market_id, run_id, *, venue, settled_at, settlement_date="2026-05-30"):
     """One winning YES bet (70-71F, ask .40, actual 71) on the given venue/settled_at."""
-    conn.execute(
-        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)", (run_id, "t", "ok")
-    )
+    conn.execute("INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)", (run_id, "t", "ok"))
     conn.execute(
         "INSERT INTO markets (id, city, variable, settlement_date, venue) VALUES (?, ?, ?, ?, ?)",
         (market_id, "NYC", "TMAX", settlement_date, venue),

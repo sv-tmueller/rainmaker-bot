@@ -66,6 +66,25 @@ you mean to touch prod.
   settled-rows read, matching `track`'s and `tail-check`'s `--since`.
 - `uv run rainmaker snapshot`: upsert today's metrics row into
   `tracking_snapshot`. This is what the dashboard reads.
+- `uv run rainmaker snapshot-backfill`: one-shot admin command (manual
+  `workflow_dispatch`, not on the daily schedule) that reconstructs the
+  polymarket/kalshi rows still missing for any past date that only ever got
+  the aggregate `all` row (the pre-#347 shape, before the per-venue split).
+  Prints `backfilled N rows over M dates`. Never touches an `all` row and
+  never recomputes accuracy; idempotent, since a (date, venue) pair already
+  present is left alone, so re-running it prints `backfilled 0 rows over 0
+  dates` once caught up.
+
+  As-of semantics: a bet counts toward a reconstructed date's row only if it
+  had settled by that date (`outcomes.settled_at` on or before the snapshot
+  date; falls back to the market's `settlement_date` if `settled_at` is ever
+  NULL). This is a catch-up approximation, not a byte-for-byte replay of the
+  original day's run: a market that settled late (`settled_at` after its
+  `settlement_date`) is excluded from every date up to when it actually
+  settled, and a market that settled the same day as the original snapshot
+  but after that day's run time is included here even though the live run
+  would not have seen it yet. Both are edge cases at the single-bet level;
+  they do not change which pairs are missing or the zero-bet convention.
 - `uv run rainmaker backfill --city <X>`: fit a calibration cell and backtest
   accuracy from history (NCEI/ASOS actuals vs Open-Meteo Previous Runs
   forecasts) for every (variable, lead) cell the live run can bet: TMAX and

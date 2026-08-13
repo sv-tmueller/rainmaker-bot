@@ -1216,7 +1216,7 @@ def _effective_settled_at(row: dict[str, Any]) -> str:
     ever NULL in practice.
     """
     settled_at = row.get("settled_at")
-    return settled_at[:10] if settled_at else row["settlement_date"]
+    return str(settled_at)[:10] if settled_at else str(row["settlement_date"])
 
 
 def backfill_snapshots(conn: Conn, created_at: str) -> list[tuple[str, str]]:
