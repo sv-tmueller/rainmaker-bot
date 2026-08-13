@@ -1631,11 +1631,13 @@ def _fake_sweep_result(lower_bound: bool = False) -> dict:
             "replayed_live": anchor,
         },
         "min_edge": [row],
+        "max_edge": [row],
         "floor_yes": [row],
         "floor_no": [row],
         "lead": [row],
         "venue": [row],
         "combined_min_edge_lead0": [row],
+        "combined_min_edge_max_edge": [row],
     }
 
 
@@ -1650,11 +1652,13 @@ def test_gate_sweep_command_prints_anchors_and_ofat_tables(monkeypatch, tmp_path
     assert "live (as recorded)" in out
     assert "live (replayed)" in out
     assert "min_edge sweep" in out
+    assert "max_edge sweep" in out
     assert "YES floor sweep" in out
     assert "NO floor sweep" in out
     assert "lead sweep" in out
     assert "venue sweep" in out
     assert "combined: min_edge x exclude lead 0" in out
+    assert "combined: min_edge x max_edge" in out
     assert "since:" not in out
     assert "lower bound" not in out  # no footnote when nothing loosens
 

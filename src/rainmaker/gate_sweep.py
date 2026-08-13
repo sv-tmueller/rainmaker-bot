@@ -18,10 +18,18 @@ A (market, run) is "sweep-eligible" iff it has at least one stored
 four inherited gates in its era. Within an eligible (market, run), only the
 swept axes are re-derived from the stored p_win/edge/side/lead: min_edge base
 (with today's STATION_EDGE_DELTA re-added on top, since the stored `edge` is
-raw -- see ranking/edge.py), the YES/NO confidence floors, the lead filter,
-and venue. The best-edge bet is then re-picked via tracking's
-`_best_per_market_run` tie-break and scored at the stored ask via
+raw -- see ranking/edge.py), an optional max_edge cap, the YES/NO confidence
+floors, the lead filter, and venue. The best-edge bet is then re-picked via
+tracking's `_best_per_market_run` tie-break and scored at the stored ask via
 `_bet_won`/`compute_pnl`'s exact arithmetic.
+
+The max_edge cap compares against the raw stored `edge`, not the
+delta-adjusted effective min_edge threshold: it matches the #205
+backtest-pnl `--max-edge` precedent, so a KSFO TMAX row can clear its
+delta-raised effective min_edge and still be dropped by the cap. A cap is a
+pure tightening (it only ever removes bets from the population-pinned set,
+never adds one), so it needs no `is_loosening` change and `max_edge=None`
+(no cap) is the loosest value.
 
 Consequence (also a report footnote): loosening a gate (e.g. the NO floor)
 only ever surfaces markets that produced at least one recommended bet at run
@@ -62,6 +70,7 @@ VenueFilter = Literal["all", "polymarket", "kalshi"]
 
 # One-factor-at-a-time grid: each axis varies alone, the rest held at live policy.
 MIN_EDGE_GRID: tuple[float, ...] = (0.05, 0.07, 0.10, 0.12, 0.15)
+MAX_EDGE_GRID: tuple[float | None, ...] = (0.20, 0.25, 0.30, None)
 YES_FLOOR_GRID: tuple[float, ...] = (0.80, 0.85, 0.90)
 NO_FLOOR_GRID: tuple[float, ...] = (0.70, 0.75, 0.80, 0.85)
 LEAD_GRID: tuple[LeadFilter, ...] = ("all", "exclude_0", "exclude_le_0")
@@ -74,6 +83,7 @@ class Policy:
 
     label: str
     min_edge: float = MIN_EDGE
+    max_edge: float | None = None
     floor: float = CONFIDENCE_FLOOR
     floor_no: float = CONFIDENCE_FLOOR_NO
     lead: LeadFilter = "all"
@@ -90,6 +100,13 @@ class Policy:
 
 
 LIVE_POLICY = Policy(label="live")
+
+
+def _max_edge_label(value: float | None, *, prefix: bool = False) -> str:
+    """Format a max_edge grid value for a Policy label; None means no cap."""
+    if value is None:
+        return "no cap" if prefix else "none"
+    return f"cap {value:.2f}" if prefix else f"{value:.2f}"
 
 
 def _icao_for(row: dict[str, Any]) -> str | None:
@@ -124,7 +141,9 @@ def _recompute_recommended(row: dict[str, Any], policy: Policy) -> bool:
     edge is the stored raw value (p_win - ask / p_no - no_ask, no station delta
     folded in -- see ranking/edge.py); today's STATION_EDGE_DELTA is re-added
     here so the effective threshold matches what evaluate_market would apply
-    now, even though `policy.min_edge` sweeps only the base.
+    now, even though `policy.min_edge` sweeps only the base. `policy.max_edge`,
+    if set, caps the same raw edge directly (no delta), per the #205
+    backtest-pnl precedent.
     """
     edge = row.get("edge")
     if edge is None:
@@ -134,7 +153,11 @@ def _recompute_recommended(row: dict[str, Any], policy: Policy) -> bool:
     effective_min_edge = policy.min_edge + delta
     side = row.get("side") or "YES"
     floor = policy.floor_no if side == "NO" else policy.floor
-    return bool(row["p_win"] >= floor and edge >= effective_min_edge)
+    return bool(
+        row["p_win"] >= floor
+        and edge >= effective_min_edge
+        and (policy.max_edge is None or edge <= policy.max_edge)
+    )
 
 
 def _score(bets: list[dict[str, Any]]) -> dict[str, Any]:
@@ -205,7 +228,7 @@ def replay_policy(rows: list[dict[str, Any]], policy: Policy) -> dict[str, Any]:
 
 
 def run_sweep(rows: list[dict[str, Any]], since: str | None = None) -> dict[str, Any]:
-    """Build the two anchors, five OFAT grids, and one combined table.
+    """Build the two anchors, six OFAT grids, and two combined tables.
 
     since (an ISO "YYYY-MM-DD" string) restricts to rows whose run started on
     or after that date, applied post-dedup exactly as
@@ -224,6 +247,9 @@ def run_sweep(rows: list[dict[str, Any]], since: str | None = None) -> dict[str,
     min_edge_grid = [
         replay_policy(rows, Policy(label=f"{v:.2f}", min_edge=v)) for v in MIN_EDGE_GRID
     ]
+    max_edge_grid = [
+        replay_policy(rows, Policy(label=_max_edge_label(v), max_edge=v)) for v in MAX_EDGE_GRID
+    ]
     floor_yes_grid = [
         replay_policy(rows, Policy(label=f"{v:.2f}", floor=v)) for v in YES_FLOOR_GRID
     ]
@@ -236,13 +262,23 @@ def run_sweep(rows: list[dict[str, Any]], since: str | None = None) -> dict[str,
         replay_policy(rows, Policy(label=f"{v:.2f}/excl0", min_edge=v, lead="exclude_0"))
         for v in MIN_EDGE_GRID
     ]
+    combined_min_max = [
+        replay_policy(
+            rows,
+            Policy(label=f"{mn:.2f}/{_max_edge_label(mx, prefix=True)}", min_edge=mn, max_edge=mx),
+        )
+        for mn in MIN_EDGE_GRID
+        for mx in MAX_EDGE_GRID
+    ]
 
     return {
         "anchors": anchors,
         "min_edge": min_edge_grid,
+        "max_edge": max_edge_grid,
         "floor_yes": floor_yes_grid,
         "floor_no": floor_no_grid,
         "lead": lead_grid,
         "venue": venue_grid,
         "combined_min_edge_lead0": combined,
+        "combined_min_edge_max_edge": combined_min_max,
     }

@@ -10,6 +10,7 @@ import pytest
 
 from rainmaker.gate_sweep import (
     LIVE_POLICY,
+    MAX_EDGE_GRID,
     MIN_EDGE_GRID,
     Policy,
     as_recorded,
@@ -339,6 +340,88 @@ def test_wilson_interval_matches_hand_computed_value():
     expected_lo, expected_hi = _wilson_interval(3, 4)
     assert result["wilson_lo"] == pytest.approx(expected_lo)
     assert result["wilson_hi"] == pytest.approx(expected_hi)
+
+
+# (i) --------------------------------------------------------------------
+
+
+def test_max_edge_cap_flips_pick_to_under_cap_sibling():
+    """A cap can create sibling reversal: the higher-edge pick is capped out,
+    promoting the next-best under-cap sibling. #336's sub-plan noted this case
+    was unreachable for min_edge tightenings; a max_edge cap makes it reachable.
+    min_edge is passed explicitly (not the live default) so the test does not
+    depend on the sibling #350 package's MIN_EDGE change.
+    """
+    rows = [
+        _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.25, recommended=1, ask=0.50),
+        _row(
+            market_id="m1",
+            run_id="r1",
+            bucket="72-73°F",
+            p_win=0.85,
+            edge=0.10,
+            recommended=1,
+            ask=0.20,
+            actual_value=72.0,
+        ),
+    ]
+    capped = replay_policy(rows, Policy(label="cap 0.20", min_edge=0.01, max_edge=0.20))
+    assert capped["n_bets"] == 1
+    assert capped["staked"] == pytest.approx(0.20)
+
+
+def test_max_edge_cap_over_only_recommended_row_produces_no_bet():
+    rows = [
+        _row(market_id="m2", run_id="r1", p_win=0.85, edge=0.30, recommended=1, ask=0.40),
+    ]
+    capped = replay_policy(rows, Policy(label="cap 0.20", min_edge=0.01, max_edge=0.20))
+    assert capped["n_bets"] == 0
+
+
+def test_max_edge_cap_applies_to_raw_edge_not_delta_adjusted():
+    """KSFO TMAX's station-delta bump raises the effective min_edge floor, but
+    the cap compares against the raw stored edge (the #205 backtest-pnl
+    --max-edge precedent), so a raw edge of 0.22 is dropped by a 0.20 cap even
+    though its delta-relative margin (0.22 - 0.10 effective min_edge) is small.
+    """
+    row = _row(
+        market_id="m1",
+        run_id="r1",
+        city="San Francisco",
+        variable="TMAX",
+        p_win=0.85,
+        edge=0.22,
+        recommended=1,
+        ask=0.55,
+    )
+    capped = replay_policy([row], Policy(label="cap 0.20", min_edge=0.01, max_edge=0.20))
+    assert capped["n_bets"] == 0
+
+
+def test_max_edge_is_a_pure_tightening_not_a_loosening():
+    assert Policy(label="cap 0.20", max_edge=0.20).is_loosening is False
+
+
+def test_max_edge_ofat_none_row_matches_replayed_live_anchor():
+    rows = [
+        _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.20, recommended=1, ask=0.60),
+    ]
+    result = run_sweep(rows)
+    none_row = next(r for r in result["max_edge"] if r["label"] == "none")
+    anchor = result["anchors"]["replayed_live"]
+    for key, value in anchor.items():
+        if key in ("label", "lower_bound"):
+            continue
+        assert none_row[key] == value
+
+
+def test_max_edge_and_combined_grid_shapes():
+    rows = [
+        _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.20, recommended=1, ask=0.60),
+    ]
+    result = run_sweep(rows)
+    assert len(result["max_edge"]) == len(MAX_EDGE_GRID)
+    assert len(result["combined_min_edge_max_edge"]) == len(MIN_EDGE_GRID) * len(MAX_EDGE_GRID)
 
 
 # Grid shape ---------------------------------------------------------------
