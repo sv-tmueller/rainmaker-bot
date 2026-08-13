@@ -1,0 +1,33 @@
+name: gate-sweep
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: gate-sweep
+  cancel-in-progress: true
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync
+      - name: Gate sweep (full history and since-regime)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # Same single-sourced regime start as daily-diagnostics.yml; bump both
+          # in the change that records the next refit (docs/operations/README.md).
+          REGIME_SINCE: "2026-07-18"
+        run: |
+          case "$DATABASE_URL" in
+            postgres://*|postgresql://*) ;;
+            *) echo "DATABASE_URL is not a Postgres DSN; refusing to run (would silently read ephemeral SQLite)"; exit 1 ;;
+          esac
+          uv run rainmaker gate-sweep
+          uv run rainmaker gate-sweep --since "$REGIME_SINCE"
