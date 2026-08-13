@@ -7,14 +7,15 @@ real history before it is ever shipped to `ranking/edge.py`.
 
 Pinned semantics (the load-bearing decision; see the #336 sub-plan)
 ---------------------------------------------------------------------------
-`n_sources` is recorded per prediction row, but the `calibrated` tier
-("uncalibrated" / "bias_only" / "full") is not, and a market's uncalibratable
-and station-policy status are likewise not stored per row. Those three gates
-plus the full-calibration requirement are therefore not re-derivable here.
+Four gates are inherited as-was rather than re-derived: the full-calibration
+requirement (the `calibrated` tier is not stored per row), the min-sources
+gate (`n_sources` is recorded only inside `dist_params`, which the
+`settled_rows` shape does not carry), the station policy, and the
+uncalibratable guard (neither is stored per row).
 
 A (market, run) is "sweep-eligible" iff it has at least one stored
 `recommended=1` row: the live run's own verdict that the market cleared those
-un-re-derivable gates in its era. Within an eligible (market, run), only the
+four inherited gates in its era. Within an eligible (market, run), only the
 swept axes are re-derived from the stored p_win/edge/side/lead: min_edge base
 (with today's STATION_EDGE_DELTA re-added on top, since the stored `edge` is
 raw -- see ranking/edge.py), the YES/NO confidence floors, the lead filter,
@@ -144,9 +145,14 @@ def _score(bets: list[dict[str, Any]]) -> dict[str, Any]:
     staked = 0.0
     skipped = 0
     for r in bets:
+        # _bet_won returns None for an ungradable row since #333; the except
+        # stays as a belt for spec shapes the seam does not cover.
         try:
             won = _bet_won(r)
         except (ValueError, KeyError):
+            skipped += 1
+            continue
+        if won is None:
             skipped += 1
             continue
         n += 1
