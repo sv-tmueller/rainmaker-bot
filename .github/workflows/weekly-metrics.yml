@@ -53,6 +53,19 @@ jobs:
             *) echo "DATABASE_URL is not a Postgres DSN; refusing to run (would silently write to ephemeral SQLite)"; exit 1 ;;
           esac
           uv run rainmaker tail-check
+      - name: Closing-line value
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        # One CLOB price-history request per deduped Polymarket bet (~850 today,
+        # growing; up to 2x when the empty-result coarse-fidelity retry in
+        # polymarket/prices.py fires). Weekly cadence and the job's 45-minute
+        # timeout bound the total fetch volume.
+        run: |
+          case "$DATABASE_URL" in
+            postgres://*|postgresql://*) ;;
+            *) echo "DATABASE_URL is not a Postgres DSN; refusing to run (would silently write to ephemeral SQLite)"; exit 1 ;;
+          esac
+          uv run rainmaker clv
       - name: Upload report artifacts
         if: always()
         uses: actions/upload-artifact@v7

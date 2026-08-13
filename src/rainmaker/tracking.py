@@ -115,11 +115,17 @@ def _won(
     bucket_label: str,
     actual_value: float,
     outcome_spec: str | None = None,
-) -> bool:
-    # Try to grade from the structured spec stored at record time. This handles
-    # Kalshi labels ("74° to 75°", '2" to 3"') that the Polymarket-style parsers
-    # cannot read. Fall back to the label parsers for legacy rows (NULL spec) or
-    # rows where the label is absent from the spec.
+) -> bool | None:
+    """Grade a settled bucket, or return None when it cannot be graded.
+
+    Try the structured spec stored at record time first. This handles Kalshi
+    labels ("74° to 75°", '2" to 3"') that the Polymarket-style parsers cannot
+    read. Fall back to the label parsers for legacy rows (NULL spec) or rows
+    where the label is absent from the spec. None (rather than raising) is the
+    single seam every caller checks: a label that matches no spec entry and that
+    the fallback parser also cannot read (#333, e.g. a bare Kalshi unit string
+    like 'inches') is ungradable, not a crash.
+    """
     if outcome_spec:
         try:
             spec_list: list[dict[str, Any]] = json.loads(outcome_spec)
@@ -138,14 +144,23 @@ def _won(
                         return settles(kind, lo_i, hi_i, threshold_i, actual_value)
         except (json.JSONDecodeError, KeyError, TypeError):
             pass  # unparseable spec: fall through to label parser
-    if variable == "PRCP":
-        return precip_settles(*parse_precip_bracket_label(bucket_label), actual_value)
-    return settles(*parse_bucket_label(bucket_label), actual_value)
+    try:
+        if variable == "PRCP":
+            return precip_settles(*parse_precip_bracket_label(bucket_label), actual_value)
+        return settles(*parse_bucket_label(bucket_label), actual_value)
+    except (ValueError, KeyError):
+        return None  # no spec match and the label parser can't read it either
 
 
-def _bet_won(row: dict[str, Any]) -> bool:
-    """A YES bet wins when the bucket settles; a NO bet wins when it does not."""
+def _bet_won(row: dict[str, Any]) -> bool | None:
+    """A YES bet wins when the bucket settles; a NO bet wins when it does not.
+
+    None (ungradable, see _won) propagates unchanged: a NO bet on an ungradable
+    bucket is still ungradable, never silently flipped to a win.
+    """
     settled = _won(row["variable"], row["bucket"], row["actual_value"], row.get("outcome_spec"))
+    if settled is None:
+        return None
     return (not settled) if (row.get("side") or "YES") == "NO" else settled
 
 
@@ -260,12 +275,17 @@ def compute_pnl(
     total_staked = 0.0
     wins = 0
     n = 0
+    skipped = 0
     all_rows = rows if rows is not None else settled_rows(conn)
     for r in _best_per_market_run(_filter_venue(all_rows, venue)):
+        won = _bet_won(r)
+        if won is None:
+            skipped += 1
+            continue
         n += 1
         ask = r["ask"]
         total_staked += ask
-        if _bet_won(r):
+        if won:
             wins += 1
             total_pnl += 1 - ask
         else:
@@ -277,6 +297,7 @@ def compute_pnl(
         "losses": n - wins,
         "total_pnl": total_pnl,
         "roi": roi,
+        "skipped": skipped,
     }
 
 
@@ -285,33 +306,41 @@ def _cell_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     Shared by compute_calibration (pooled) and compute_calibration_by_cell (per
     variable/lead), so the two can never silently drift apart on the arithmetic.
+    An ungradable row (_won/_bet_won return None, see their docstrings) is
+    excluded from both n and hit_rate's denominator and counted into "skipped".
+    One physical row can feed both the brier population (yes_rows) and the hit-rate
+    population (bets); id(r) dedupes so it is only counted once.
     """
     if not rows:
-        return {"n": 0, "brier": None, "hit_rate": None}
+        return {"n": 0, "brier": None, "hit_rate": None, "skipped": 0}
     # Brier measures forecast calibration over the YES bucket-predictions; each NO
     # row's contribution is identical to its YES twin, so including it would only
     # double n. Hit rate is over the one best-edge bet per (market, run), either side.
     yes_rows = [r for r in rows if (r.get("side") or "YES") == "YES"]
-    brier = (
-        sum(
-            (
-                r["p_win"]
-                - (
-                    1.0
-                    if _won(r["variable"], r["bucket"], r["actual_value"], r.get("outcome_spec"))
-                    else 0.0
-                )
-            )
-            ** 2
-            for r in yes_rows
-        )
-        / len(yes_rows)
-        if yes_rows
-        else None
-    )
+    skipped_ids: set[int] = set()
+    brier_terms = []
+    for r in yes_rows:
+        won = _won(r["variable"], r["bucket"], r["actual_value"], r.get("outcome_spec"))
+        if won is None:
+            skipped_ids.add(id(r))
+            continue
+        brier_terms.append((r["p_win"] - (1.0 if won else 0.0)) ** 2)
+    brier = sum(brier_terms) / len(brier_terms) if brier_terms else None
     bets = _best_per_market_run(rows)
-    hit_rate = sum(1 for r in bets if _bet_won(r)) / len(bets) if bets else None
-    return {"n": len(yes_rows), "brier": brier, "hit_rate": hit_rate}
+    hit_results: list[bool] = []
+    for r in bets:
+        won = _bet_won(r)
+        if won is None:
+            skipped_ids.add(id(r))
+            continue
+        hit_results.append(won)
+    hit_rate = sum(1 for w in hit_results if w) / len(hit_results) if hit_results else None
+    return {
+        "n": len(brier_terms),
+        "brier": brier,
+        "hit_rate": hit_rate,
+        "skipped": len(skipped_ids),
+    }
 
 
 def compute_calibration(
@@ -424,17 +453,25 @@ def _p_win_bucket(p_win: float) -> str:
 
 
 def _segment_stats(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
-    """Group rows by key, compute per-segment stats, return sorted by segment label."""
+    """Group rows by key, compute per-segment stats, return sorted by segment label.
+
+    An ungradable row (_bet_won returns None) is skipped before it touches
+    n/wins/staked and counted into the segment's "skipped" instead.
+    """
     groups: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"n": 0, "wins": 0, "losses": 0, "pnl": 0.0, "staked": 0.0}
+        lambda: {"n": 0, "wins": 0, "losses": 0, "pnl": 0.0, "staked": 0.0, "skipped": 0}
     )
     for r in rows:
         seg = r[key]
-        ask = r["ask"]
         g = groups[seg]
+        won = _bet_won(r)
+        if won is None:
+            g["skipped"] += 1
+            continue
+        ask = r["ask"]
         g["n"] += 1
         g["staked"] += ask
-        if _bet_won(r):
+        if won:
             g["wins"] += 1
             g["pnl"] += 1 - ask
         else:
@@ -458,6 +495,7 @@ def _segment_stats(rows: list[dict[str, Any]], key: str) -> list[dict[str, Any]]
                 "pnl": g["pnl"],
                 "staked": g["staked"],
                 "roi": g["pnl"] / g["staked"] if g["staked"] else 0.0,
+                "skipped": g["skipped"],
             }
         )
     return out
@@ -582,7 +620,10 @@ def compute_clv(conn: Conn, client: httpx.Client, lead_hours: int = 24) -> dict[
 
     Returns:
         n_bets: total deduped Polymarket bets (must equal compute_pnl(conn, 'polymarket')['n_bets'])
-        n_clv: subset with a successful closing-price fetch
+        n_clv: subset with a successful closing-price fetch. A bet drops out (never
+            crashes the command) on a transport/status error, an empty series, or a
+            malformed 200 body (bad JSON, a missing "history" key, or an unparseable
+            point), any of which fetch_price_history or its json parsing can raise.
         n_coincident: bets where abs(CLV) < 1e-9 (advised == close on YES scale)
         mean_clv: mean CLV over n_clv bets (None when n_clv == 0)
         by_segment: per-dimension mean CLV over n_clv bets, keyed by dim name
@@ -608,7 +649,7 @@ def compute_clv(conn: Conn, client: httpx.Client, lead_hours: int = 24) -> dict[
         start_ts = reference_ts - 6 * 24 * 3600
         try:
             points = fetch_price_history(token, start_ts, reference_ts, client)
-        except httpx.HTTPError:
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
             continue
         yes_close = last_before(points, reference_ts)
         if yes_close is None:
@@ -803,10 +844,9 @@ def compute_live_calibration(conn: Conn) -> list[dict[str, Any]]:
             continue  # unparsable date (e.g. test sentinel "t"): skip
         if lead < 0:
             continue
-        try:
-            won = _won(r["variable"], r["bucket"], r["actual_value"], r.get("outcome_spec"))
-        except (ValueError, KeyError):
-            continue  # malformed bucket label: skip, never fail the snapshot
+        won = _won(r["variable"], r["bucket"], r["actual_value"], r.get("outcome_spec"))
+        if won is None:
+            continue  # ungradable bucket label: skip, never fail the snapshot
         rel_groups[(r["variable"], lead)].append((r["p_win"], won))
 
     # Combine into result rows; only emit groups that have dist samples.
@@ -1005,10 +1045,9 @@ def compute_tail_calibration(
             continue
         if lead < 0:
             continue
-        try:
-            won = _won(r["variable"], r["bucket"], r["actual_value"], r.get("outcome_spec"))
-        except (ValueError, KeyError):
-            continue
+        won = _won(r["variable"], r["bucket"], r["actual_value"], r.get("outcome_spec"))
+        if won is None:
+            continue  # ungradable bucket label: skip, never fail the tail check
         p_win = r["p_win"]
         if p_win >= 0.5:
             side, claim, event_won = "YES", p_win, won
