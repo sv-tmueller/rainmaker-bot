@@ -648,12 +648,13 @@ delta-carrying station (see `_recompute_recommended` in `gate_sweep.py`), so
 the evidence table above already reflects the KSFO TMAX interaction; no
 separate KSFO sweep was needed.
 
-**Policy-era marker.** Recommendations recorded before this change merged were
-made under `min_edge = 0.05`. Any attribution or tracking read spanning the
-merge date should segment before/after this date rather than treat the whole
-history as one policy: a bet recorded as `recommended` under the old 0.05
-floor may not have cleared the new 0.07 (or, for KSFO TMAX, 0.12) floor, and
-`track`/`gate-sweep`'s `--since` flag is the tool for that split.
+**Policy-era marker.** This change merged on 2026-08-13. Recommendations
+recorded before that date were made under `min_edge = 0.05`. Any attribution
+or tracking read spanning 2026-08-13 should segment before/after that date
+rather than treat the whole history as one policy: a bet recorded as
+`recommended` under the old 0.05 floor may not have cleared the new 0.07 (or,
+for KSFO TMAX, 0.12) floor, and `track --since 2026-08-13` /
+`gate-sweep --since 2026-08-13` is the tool for that split.
 
 **Non-goals.** This change touches only `MIN_EDGE`. Explicitly out of scope,
 each for its own reason:
