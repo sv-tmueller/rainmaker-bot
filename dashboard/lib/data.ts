@@ -34,6 +34,68 @@ export type Snapshot = {
   nScored: number;
 };
 
+// A tracking_snapshot row as read back by select("*"). venue is optional
+// because a DB predating the sibling package's migration has no such column
+// at all, not merely a null value.
+export type RawSnapshotRow = {
+  snapshot_date: string;
+  n_bets: number;
+  wins: number;
+  losses: number;
+  total_pnl: number;
+  roi: number;
+  brier: number | null;
+  hit_rate: number | null;
+  n_scored: number;
+  venue?: string | null;
+};
+
+export type VenueSnapshots = {
+  total: Snapshot[];
+  polymarket: Snapshot[];
+  kalshi: Snapshot[];
+};
+
+function toSnapshot(r: RawSnapshotRow): Snapshot {
+  return {
+    date: r.snapshot_date,
+    nBets: r.n_bets,
+    wins: r.wins,
+    losses: r.losses,
+    totalPnl: r.total_pnl,
+    roi: r.roi,
+    brier: r.brier,
+    hitRate: r.hit_rate,
+    nScored: r.n_scored,
+  };
+}
+
+// The snapshot query orders descending with a row cap so history growing past
+// Supabase's default row cap truncates the oldest rows, never the newest
+// (#345's row-cap fix). This restores ascending order for the chart/KPI
+// consumers without touching the query's cap semantics.
+export function orderSnapshotRows(rows: RawSnapshotRow[]): RawSnapshotRow[] {
+  return [...rows].reverse();
+}
+
+// Aggregate = venue 'all', null, or absent (a DB predating the sibling's
+// migration, since the read is select("*")); this one filter is the whole
+// graceful-degradation contract. Venue arrays only collect
+// venue === 'polymarket' | 'kalshi' rows, so aggregate-only data yields empty
+// venue arrays and every downstream consumer renders as it does today.
+export function splitSnapshotsByVenue(rows: RawSnapshotRow[]): VenueSnapshots {
+  const total: Snapshot[] = [];
+  const polymarket: Snapshot[] = [];
+  const kalshi: Snapshot[] = [];
+  for (const r of rows) {
+    const venue = r.venue ?? "all";
+    if (venue === "polymarket") polymarket.push(toSnapshot(r));
+    else if (venue === "kalshi") kalshi.push(toSnapshot(r));
+    else total.push(toSnapshot(r));
+  }
+  return { total, polymarket, kalshi };
+}
+
 export type AccCell = { n: number; mae: number; bias: number };
 export type AccSlot = { live: AccCell | null; backtest: AccCell | null };
 export type AccRow = { city: string; cells: Record<number, AccSlot> };
@@ -169,7 +231,15 @@ export async function getDashboardData() {
   // recently-settled markets is plenty and keeps reads bounded as history grows.
   const [runsQ, snapsQ, accQ, outcomesQ] = await Promise.all([
     db.from("runs").select("id, started_at, coverage").order("started_at", { ascending: false }).limit(1),
-    db.from("tracking_snapshot").select("*").order("snapshot_date", { ascending: true }),
+    // Descending + capped, then reversed client-side (#345): an unbounded
+    // ascending read gets silently truncated by Supabase's row cap once
+    // history exceeds it, dropping the newest rows and freezing the KPI
+    // strip. Descending + .limit(999) guarantees the newest rows survive.
+    db
+      .from("tracking_snapshot")
+      .select("*")
+      .order("snapshot_date", { ascending: false })
+      .limit(999),
     db.from("forecast_accuracy").select("city, variable, lead_time, kind, n, mae_f, bias_f, crps, coverage_50, coverage_80, coverage_90, reliability").order("city").order("lead_time"),
     db.from("outcomes").select("market_id, actual_value, settled_at").order("settled_at", { ascending: false }).limit(30),
   ]);
@@ -299,18 +369,11 @@ export async function getDashboardData() {
     })
     .sort((a, b) => b.edge - a.edge);
 
-  // Assemble snapshots.
-  const snapshots: Snapshot[] = (snapsQ.data ?? []).map((s) => ({
-    date: s.snapshot_date as string,
-    nBets: s.n_bets as number,
-    wins: s.wins as number,
-    losses: s.losses as number,
-    totalPnl: s.total_pnl as number,
-    roi: s.roi as number,
-    brier: s.brier as number | null,
-    hitRate: s.hit_rate as number | null,
-    nScored: s.n_scored as number,
-  }));
+  // Assemble snapshots, split by venue. The query above reads newest-first
+  // (capped); orderSnapshotRows restores ascending order before grouping.
+  const orderedSnapRows = orderSnapshotRows((snapsQ.data ?? []) as RawSnapshotRow[]);
+  const { total: snapshots, polymarket: polymarketSnapshots, kalshi: kalshiSnapshots } =
+    splitSnapshotsByVenue(orderedSnapRows);
 
   // Assemble accuracy pivot (MAE/bias rows only; kind='calibration' rows feed CalibrationPanel).
   const accMap = new Map<string, AccRow>();
@@ -423,5 +486,13 @@ export async function getDashboardData() {
       .map(({ settledAt: _settledAt, ...rest }) => rest);
   }
 
-  return { run, bets, snapshots, accuracy, calibration, settled };
+  return {
+    run,
+    bets,
+    snapshots,
+    venueSnapshots: { polymarket: polymarketSnapshots, kalshi: kalshiSnapshots },
+    accuracy,
+    calibration,
+    settled,
+  };
 }

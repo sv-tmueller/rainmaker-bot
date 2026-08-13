@@ -24,9 +24,28 @@ function Kpi({
   );
 }
 
-export function KpiStrip({ snap }: { snap: Snapshot | null }) {
+// Only the last row per venue matters here (it already carries the
+// cumulative record/ROI); an empty array means no venue rows exist yet
+// (aggregate-only data), and a zero-bet last row (the sibling package writes
+// one unconditionally) means the venue has no settled bets yet. Either case
+// omits the card rather than showing a blank or falsely-toned "0-0".
+export function activeVenueSnapshot(rows: Snapshot[]): Snapshot | null {
+  if (rows.length === 0) return null;
+  const last = rows[rows.length - 1];
+  return last.nBets > 0 ? last : null;
+}
+
+export function KpiStrip({
+  snap,
+  venue,
+}: {
+  snap: Snapshot | null;
+  venue: { polymarket: Snapshot[]; kalshi: Snapshot[] };
+}) {
   const has = snap !== null && snap.nBets > 0;
   const tone = (x: number): "pos" | "neg" => (x >= 0 ? "pos" : "neg");
+  const polySnap = activeVenueSnapshot(venue.polymarket);
+  const kalshiSnap = activeVenueSnapshot(venue.kalshi);
   return (
     <div className="flex items-baseline gap-12 py-5">
       <Kpi
@@ -46,6 +65,22 @@ export function KpiStrip({ snap }: { snap: Snapshot | null }) {
         value={has && snap.hitRate !== null ? pct(snap.hitRate) : "–"}
         sub={has ? `n${snap.nScored}` : undefined}
       />
+      {polySnap && (
+        <Kpi
+          label="Polymarket"
+          value={`${polySnap.wins}-${polySnap.losses}`}
+          tone={tone(polySnap.roi)}
+          sub={`${signed(polySnap.roi * 100, 1)}%`}
+        />
+      )}
+      {kalshiSnap && (
+        <Kpi
+          label="Kalshi"
+          value={`${kalshiSnap.wins}-${kalshiSnap.losses}`}
+          tone={tone(kalshiSnap.roi)}
+          sub={`${signed(kalshiSnap.roi * 100, 1)}%`}
+        />
+      )}
       {snap && (
         <div className="ml-auto font-mono text-[11px] text-faint">snapshot {snap.date}</div>
       )}

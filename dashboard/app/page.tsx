@@ -10,7 +10,8 @@ import { getDashboardData } from "../lib/data";
 export const dynamic = "force-dynamic"; // always read live data, never prerender
 
 export default async function Page() {
-  const { run, bets, snapshots, accuracy, calibration, settled } = await getDashboardData();
+  const { run, bets, snapshots, venueSnapshots, accuracy, calibration, settled } =
+    await getDashboardData();
   const snap = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null;
   return (
     <main className="mx-auto w-full max-w-[1200px] px-9 py-7">
@@ -19,7 +20,7 @@ export default async function Page() {
         <RunHealth run={run} />
       </header>
 
-      <KpiStrip snap={snap} />
+      <KpiStrip snap={snap} venue={venueSnapshots} />
 
       <BetsTable bets={bets} />
 
@@ -35,7 +36,7 @@ export default async function Page() {
           ) : (
             <>
               <div className="mt-2.5">
-                <PnlChart snapshots={snapshots} />
+                <PnlChart snapshots={snapshots} venue={venueSnapshots} />
               </div>
               {settled.length > 0 && (
                 <>
