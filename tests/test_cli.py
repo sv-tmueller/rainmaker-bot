@@ -509,6 +509,44 @@ def test_snapshot_command_prints_skipped_when_only_calibration_has_skips(
     assert "skipped 1 ungradable settled row(s)" in out
 
 
+def test_snapshot_command_prints_per_venue_record_and_roi(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        cli,
+        "write_snapshot",
+        lambda conn, on_date, created_at: {
+            "pnl": {"n_bets": 2, "wins": 1, "losses": 1, "total_pnl": 0.3, "roi": 0.42},
+            "calibration": {"n": 2, "brier": 0.13, "hit_rate": 0.5},
+            "venues": {
+                "polymarket": {
+                    "pnl": {
+                        "n_bets": 1,
+                        "wins": 1,
+                        "losses": 0,
+                        "total_pnl": 0.6,
+                        "roi": 1.5,
+                    },
+                    "calibration": {"n": 1, "brier": 0.1, "hit_rate": 1.0},
+                },
+                "kalshi": {
+                    "pnl": {
+                        "n_bets": 0,
+                        "wins": 0,
+                        "losses": 0,
+                        "total_pnl": 0.0,
+                        "roi": 0.0,
+                    },
+                    "calibration": {"n": 0, "brier": None, "hit_rate": None},
+                },
+            },
+        },
+    )
+    cli.main(["snapshot", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+    assert "polymarket: 1 bets, 1-0, total +0.60u, ROI +150.0%" in out
+    # A zero-bet venue is not printed, matching _track's convention.
+    assert "kalshi" not in out
+
+
 def test_track_command_reports_pnl_and_calibration(monkeypatch, tmp_path, capsys):
     # overall (venue=None) has bets; the per-venue calls return none so only the
     # overall line prints (the per-venue breakdown is covered in test_tracking).

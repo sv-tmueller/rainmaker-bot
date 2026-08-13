@@ -1097,16 +1097,66 @@ def compute_tail_calibration(
     return {"primary": primary, "pit": pit}
 
 
+_SNAPSHOT_VENUES: tuple[tuple[str, str | None], ...] = (
+    ("all", None),
+    ("polymarket", "polymarket"),
+    ("kalshi", "kalshi"),
+)
+
+
+def _upsert_snapshot_row(
+    conn: Conn,
+    on_date: str,
+    venue_label: str,
+    pnl: dict[str, Any],
+    cal: dict[str, Any],
+    created_at: str,
+) -> None:
+    conn.execute(
+        "INSERT INTO tracking_snapshot "
+        "(snapshot_date, venue, n_bets, wins, losses, total_pnl, roi, brier, hit_rate, "
+        "n_scored, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(snapshot_date, venue) DO UPDATE SET "
+        "n_bets = excluded.n_bets, wins = excluded.wins, losses = excluded.losses, "
+        "total_pnl = excluded.total_pnl, roi = excluded.roi, brier = excluded.brier, "
+        "hit_rate = excluded.hit_rate, n_scored = excluded.n_scored, "
+        "created_at = excluded.created_at",
+        (
+            on_date,
+            venue_label,
+            pnl["n_bets"],
+            pnl["wins"],
+            pnl["losses"],
+            pnl["total_pnl"],
+            pnl["roi"],
+            cal["brier"],
+            cal["hit_rate"],
+            cal["n"],
+            created_at,
+        ),
+    )
+
+
 def write_snapshot(conn: Conn, on_date: str, created_at: str) -> dict[str, Any]:
-    """Compute the current P&L/calibration and upsert a snapshot row for on_date."""
-    # One full-history read shared by both calls below (#277: this halved the
-    # settled-history reads a snapshot run issues).
+    """Compute the current P&L/calibration and upsert a snapshot row per venue.
+
+    Writes one row per (on_date, venue) for venue in (all, polymarket, kalshi):
+    "all" is the aggregate across every venue, unfiltered. A venue with no
+    settled bets still writes its row (n_bets=0), so the dashboard can always
+    find a row for the day rather than treating an absent venue as missing data.
+    """
+    # One full-history read shared by every compute_pnl/compute_calibration call
+    # below (#277: this halved the settled-history reads a snapshot run issues).
     rows = settled_rows(conn)
-    pnl = compute_pnl(conn, rows=rows)
-    cal = compute_calibration(conn, rows=rows)
-    # save_accuracy commits internally after each row; insert the snapshot only
-    # after the loop so a mid-loop failure cannot leave a committed snapshot row
-    # without its corresponding accuracy rows.
+    per_venue: dict[str, dict[str, Any]] = {}
+    for venue_label, venue in _SNAPSHOT_VENUES:
+        pnl = compute_pnl(conn, venue=venue, rows=rows)
+        cal = compute_calibration(conn, venue=venue, rows=rows)
+        per_venue[venue_label] = {"pnl": pnl, "calibration": cal}
+    # save_accuracy commits internally after each row; insert the snapshot rows only
+    # after the loop so a mid-loop failure cannot leave committed snapshot rows
+    # without their corresponding accuracy rows.
     for row in compute_live_accuracy(conn):
         save_accuracy(
             conn,
@@ -1138,28 +1188,14 @@ def write_snapshot(conn: Conn, on_date: str, created_at: str) -> dict[str, Any]:
             ),
             updated_at=created_at,
         )
-    conn.execute(
-        "INSERT INTO tracking_snapshot "
-        "(snapshot_date, n_bets, wins, losses, total_pnl, roi, brier, hit_rate, "
-        "n_scored, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-        "ON CONFLICT(snapshot_date) DO UPDATE SET "
-        "n_bets = excluded.n_bets, wins = excluded.wins, losses = excluded.losses, "
-        "total_pnl = excluded.total_pnl, roi = excluded.roi, brier = excluded.brier, "
-        "hit_rate = excluded.hit_rate, n_scored = excluded.n_scored, "
-        "created_at = excluded.created_at",
-        (
-            on_date,
-            pnl["n_bets"],
-            pnl["wins"],
-            pnl["losses"],
-            pnl["total_pnl"],
-            pnl["roi"],
-            cal["brier"],
-            cal["hit_rate"],
-            cal["n"],
-            created_at,
-        ),
-    )
+    for venue_label, stats in per_venue.items():
+        _upsert_snapshot_row(
+            conn, on_date, venue_label, stats["pnl"], stats["calibration"], created_at
+        )
     conn.commit()
-    return {"pnl": pnl, "calibration": cal}
+    aggregate = per_venue["all"]
+    return {
+        "pnl": aggregate["pnl"],
+        "calibration": aggregate["calibration"],
+        "venues": {k: v for k, v in per_venue.items() if k != "all"},
+    }

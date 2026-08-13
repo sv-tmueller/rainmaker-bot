@@ -289,6 +289,110 @@ def test_backfill_venue_does_not_overwrite_explicit_venue():
     assert row["venue"] == "kalshi"
 
 
+def test_migration_0012_backfills_venue_all_for_legacy_row():
+    """A legacy tracking_snapshot row (no venue column) gets venue='all' after
+    apply_migrations, and the new composite PK allows a second venue row for the
+    same date.
+    """
+    conn = connect(":memory:")
+    conn.execute("CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT)")
+    # The pre-#344 shape: single-column PK, no venue.
+    conn.execute(
+        "CREATE TABLE tracking_snapshot ("
+        "snapshot_date TEXT PRIMARY KEY, n_bets INTEGER, wins INTEGER, losses INTEGER, "
+        "total_pnl REAL, roi REAL, brier REAL, hit_rate REAL, n_scored INTEGER, "
+        "created_at TEXT)"
+    )
+    already_applied = [m for m, _ in _MIGRATIONS if m != "0012_tracking_snapshot_venue"] + [
+        "0007_backfill_venue",
+        "0010_widen_float4_columns",
+    ]
+    for mid in already_applied:
+        conn.execute("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)", (mid, "t"))
+    conn.execute(
+        "INSERT INTO tracking_snapshot "
+        "(snapshot_date, n_bets, wins, losses, total_pnl, roi, brier, hit_rate, "
+        "n_scored, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("2026-06-04", 2, 1, 1, 0.3, 0.42, 0.13, 0.5, 2, "t"),
+    )
+    conn.commit()
+
+    apply_migrations(conn)
+
+    row = conn.execute(
+        "SELECT * FROM tracking_snapshot WHERE snapshot_date = ?", ("2026-06-04",)
+    ).fetchone()
+    assert row["venue"] == "all"
+    assert row["n_bets"] == 2
+
+    # Composite PK holds: a second venue row for the same date does not conflict.
+    conn.execute(
+        "INSERT INTO tracking_snapshot (snapshot_date, venue, n_bets, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        ("2026-06-04", "polymarket", 1, "t"),
+    )
+    conn.commit()
+    n = conn.execute(
+        "SELECT count(*) AS n FROM tracking_snapshot WHERE snapshot_date = ?", ("2026-06-04",)
+    ).fetchone()["n"]
+    conn.close()
+    assert n == 2
+
+
+def test_migration_0012_second_apply_is_a_noop():
+    """Re-running apply_migrations after 0012 has landed must not error or re-run it."""
+    conn = connect(":memory:")
+    conn.execute("CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT)")
+    conn.execute(
+        "CREATE TABLE tracking_snapshot ("
+        "snapshot_date TEXT PRIMARY KEY, n_bets INTEGER, wins INTEGER, losses INTEGER, "
+        "total_pnl REAL, roi REAL, brier REAL, hit_rate REAL, n_scored INTEGER, "
+        "created_at TEXT)"
+    )
+    already_applied = [m for m, _ in _MIGRATIONS if m != "0012_tracking_snapshot_venue"] + [
+        "0007_backfill_venue",
+        "0010_widen_float4_columns",
+    ]
+    for mid in already_applied:
+        conn.execute("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)", (mid, "t"))
+    conn.execute(
+        "INSERT INTO tracking_snapshot "
+        "(snapshot_date, n_bets, wins, losses, total_pnl, roi, brier, hit_rate, "
+        "n_scored, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("2026-06-04", 2, 1, 1, 0.3, 0.42, 0.13, 0.5, 2, "t"),
+    )
+    conn.commit()
+
+    apply_migrations(conn)
+    apply_migrations(conn)  # second pass must be a no-op
+
+    n = conn.execute("SELECT count(*) AS n FROM tracking_snapshot").fetchone()["n"]
+    row = conn.execute("SELECT * FROM tracking_snapshot").fetchone()
+    conn.close()
+    assert n == 1
+    assert row["venue"] == "all"
+
+
+def test_migration_0012_records_harmlessly_on_fresh_db():
+    """A fresh DB gets the new shape directly from the base schema; 0012 still
+    records itself but the rebuild is a no-op over zero rows.
+    """
+    conn = connect(":memory:")
+    init_schema(conn)
+    ids = {r["id"] for r in conn.execute("SELECT id FROM schema_migrations").fetchall()}
+    assert "0012_tracking_snapshot_venue" in ids
+
+    conn.execute(
+        "INSERT INTO tracking_snapshot (snapshot_date, venue, n_bets, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        ("2026-06-04", "all", 0, "t"),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM tracking_snapshot").fetchone()
+    conn.close()
+    assert row["venue"] == "all"
+
+
 def test_backfill_venue_is_idempotent():
     """Running _backfill_venue twice produces the same result."""
     conn = connect(":memory:")

@@ -49,6 +49,41 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
     # Gaussian row, not an absent one: apply_calibration trusts df presence to
     # dispatch family, so a legacy or Gaussian-fit row must stay NULL, not 0.
     ("0011_calibration_df", ["ALTER TABLE calibration ADD COLUMN df REAL"]),
+    # Split tracking_snapshot into per-venue rows (all/polymarket/kalshi) so the
+    # dashboard can show a venue breakdown. Neither backend supports ALTER TABLE
+    # ADD COLUMN ... PRIMARY KEY, so this is a table rebuild: build the new shape
+    # alongside the old one, backfill every existing row as venue='all' (the only
+    # venue that existed before this migration), then swap. Each statement runs
+    # in the migration's own transaction (see apply_migrations), so a crash before
+    # the final commit leaves the original table untouched, not half-rebuilt; the
+    # leading DROP guards a stale tracking_snapshot_new from an earlier partial
+    # attempt within that same uncommitted transaction.
+    (
+        "0012_tracking_snapshot_venue",
+        [
+            "DROP TABLE IF EXISTS tracking_snapshot_new",
+            "CREATE TABLE tracking_snapshot_new ("
+            "snapshot_date TEXT NOT NULL, "
+            "venue         TEXT NOT NULL DEFAULT 'all', "
+            "n_bets        INTEGER, "
+            "wins          INTEGER, "
+            "losses        INTEGER, "
+            "total_pnl     REAL, "
+            "roi           REAL, "
+            "brier         REAL, "
+            "hit_rate      REAL, "
+            "n_scored      INTEGER, "
+            "created_at    TEXT, "
+            "PRIMARY KEY (snapshot_date, venue))",
+            "INSERT INTO tracking_snapshot_new "
+            "(snapshot_date, venue, n_bets, wins, losses, total_pnl, roi, brier, "
+            "hit_rate, n_scored, created_at) "
+            "SELECT snapshot_date, 'all', n_bets, wins, losses, total_pnl, roi, "
+            "brier, hit_rate, n_scored, created_at FROM tracking_snapshot",
+            "DROP TABLE tracking_snapshot",
+            "ALTER TABLE tracking_snapshot_new RENAME TO tracking_snapshot",
+        ],
+    ),
 ]
 
 

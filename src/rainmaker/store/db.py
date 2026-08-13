@@ -113,7 +113,8 @@ CREATE TABLE IF NOT EXISTS forecast_accuracy (
 );
 
 CREATE TABLE IF NOT EXISTS tracking_snapshot (
-    snapshot_date TEXT PRIMARY KEY,
+    snapshot_date TEXT NOT NULL,
+    venue         TEXT NOT NULL DEFAULT 'all',
     n_bets        INTEGER,
     wins          INTEGER,
     losses        INTEGER,
@@ -122,7 +123,8 @@ CREATE TABLE IF NOT EXISTS tracking_snapshot (
     brier         REAL,
     hit_rate      REAL,
     n_scored      INTEGER,
-    created_at    TEXT
+    created_at    TEXT,
+    PRIMARY KEY (snapshot_date, venue)
 );
 """
 
