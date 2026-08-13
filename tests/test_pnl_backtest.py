@@ -809,9 +809,15 @@ def test_backtest_pnl_trades_mode_uses_fill_as_ask(httpx_mock):
       lead 3: no fills -> NO ask = 0.85 (fallback)
 
     Fill coverage: market 1 uses fills at leads {0,1}, market 2 at leads {1,2} -> 4 total.
-    The recommended "38F or higher" NO bet wins for both markets (actuals 34F/35F).
-    Trades-mode total_pnl = 1.10 vs mid-mode 1.20 because two bets pay the higher
-    0.90 fill ask instead of the 0.85 mid complement, reducing payout from 0.15 to 0.10.
+    The recommended "38F or higher" NO bet wins everywhere it is placed (actuals
+    34F/35F). Trades mode raises the NO ask to 0.90 at both fill-affected leads
+    (market1-lead0, market2-lead1), cutting each one's edge relative to the 0.85
+    mid-mode price. Market1-lead0's edge still clears the live MIN_EDGE (#350: 0.07),
+    so it stays recommended at a reduced payout (0.15 -> 0.10). Market2-lead1's edge
+    lands just below the live MIN_EDGE, so that bet drops out entirely rather than
+    being repriced: 7 bets instead of the mid-mode 8, total_pnl = 1.20 - 0.05
+    (market1-lead0's reduced payout) - 0.15 (market2-lead1's bet removed) = 1.00
+    (not 1.10, the total under the pre-#350 MIN_EDGE=0.05).
     """
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
@@ -841,10 +847,12 @@ def test_backtest_pnl_trades_mode_uses_fill_as_ask(httpx_mock):
     assert result.fill_coverage.n_leads == 8
     # market 1: fills at leads {0,1}; market 2: fills at leads {1,2} -> 4 total
     assert result.fill_coverage.fills_used == 4
-    # End-to-end: fills flow into asks -> lower payouts when NO ask is 0.90 (d1 fill)
-    # vs. mid complement 0.85. Two such leads (market1-lead0, market2-lead1) each
-    # reduce payout by 0.05, so total_pnl = 1.20 - 0.10 = 1.10 (not 1.20 as in mid mode).
-    assert result.overall.total_pnl == pytest.approx(1.10)
+    # End-to-end: market2-lead1's fill-driven edge drop takes it below the live
+    # MIN_EDGE, so only 7 of the 8 lead-market combinations end up as bets.
+    assert result.overall.n_bets == 7
+    # market1-lead0 pays the reduced 0.10 (0.90 ask); market2-lead1 contributes
+    # nothing (bet removed): total_pnl = 1.20 - 0.05 - 0.15 = 1.00.
+    assert result.overall.total_pnl == pytest.approx(1.00)
 
 
 def test_replay_market_fill_coverage_distribution_per_market(httpx_mock):
