@@ -5,7 +5,7 @@ The advisory recommends a bet only when all three gates hold
 
 - `p_win >= CONFIDENCE_FLOOR` (0.80, relaxed from 0.90; see the resolution below)
 - `n_sources >= MIN_SOURCES` (2)
-- `edge >= MIN_EDGE` (0.05)
+- `edge >= MIN_EDGE` (0.07, raised from 0.05; see the 2026-08-13 update below)
 
 The same three gates apply to each side. A YES bet is priced off the YES ask; a
 NO bet off the NO ask (`1 - yes_bid`) with `p_win = 1 - p_yes`.
@@ -612,3 +612,59 @@ re-check, the same date the addendum's own KMDW/KSEA season-scoped rows use.
 
 Un-penalizing KSFO TMAX, or retuning the delta, is a one-line change:
 edit or delete its `STATION_EDGE_DELTA` entry.
+
+## Update 2026-08-13: min edge raised to 0.07 (#350)
+
+`rainmaker gate-sweep` replayed the live `min_edge` axis over settled history
+in two windows (full history and since the per-cell regime tracking landed,
+#323). Source: 2026-08-13 prod gate-sweep run 31671026079.
+
+| min_edge | ROI, full window | ROI, since regime |
+| ---: | ---: | ---: |
+| 0.05 | +2.3% | +1.9% |
+| 0.07 | +3.1% | +3.5% |
+| 0.10 | +2.9% | +3.8% |
+
+0.07 and 0.10 both clear 0.05 by a wide margin on ROI, at an 8-10% cut in
+recommended-bet volume relative to 0.05. Between 0.07 and 0.10, 0.10 edges out
+on the since-regime read (+3.8% vs +3.5%) but trails on the full window (+2.9%
+vs +3.1%); 0.07 is the more consistent riser across both windows and was the
+value chosen, not 0.10.
+
+**Corroboration.** A separate attribution read (not the sweep itself) scored
+the [0.05, 0.10) edge band directly: 236 bets, +0.7% ROI, and CLV
+(closing-line value, whether the entry price beat the price right before
+settlement) statistically indistinguishable from zero in that band. A band
+that clears the floor today but shows no timing edge and barely positive
+return is exactly the marginal population a raised floor should cut, so this
+independent read backs the sweep's own conclusion rather than only being read
+through it.
+
+**Interaction with the KSFO TMAX delta (#303).** `STATION_EDGE_DELTA[("KSFO",
+"TMAX")] = 0.05` is unchanged and stacks on top of the new base, so KSFO TMAX's
+effective floor moves from 0.10 to 0.12. The sweep's own 0.07 row already
+re-adds today's `STATION_EDGE_DELTA` on top of the swept base for every
+delta-carrying station (see `_recompute_recommended` in `gate_sweep.py`), so
+the evidence table above already reflects the KSFO TMAX interaction; no
+separate KSFO sweep was needed.
+
+**Policy-era marker.** Recommendations recorded before this change merged were
+made under `min_edge = 0.05`. Any attribution or tracking read spanning the
+merge date should segment before/after this date rather than treat the whole
+history as one policy: a bet recorded as `recommended` under the old 0.05
+floor may not have cleared the new 0.07 (or, for KSFO TMAX, 0.12) floor, and
+`track`/`gate-sweep`'s `--since` flag is the tool for that split.
+
+**Non-goals.** This change touches only `MIN_EDGE`. Explicitly out of scope,
+each for its own reason:
+
+- *No NO-floor change*: the per-side regime floor (#85, `CONFIDENCE_FLOOR_NO`)
+  was not swept here, and the little evidence that exists for it points in
+  different directions across windows; a floor change needs its own sweep and
+  its own decision record, not a side effect of this one.
+- *No venue tilt*: the gate sweep's venue axis (Polymarket vs Kalshi) was not
+  part of this decision; nothing here changes venue-conditional behavior.
+- *No calibration change*: the full-calibration gate requirement (#225) and
+  the fitted bias/spread parameters it depends on are untouched. Raising
+  `MIN_EDGE` changes which calibrated forecasts clear the bar, not how they
+  are calibrated.
