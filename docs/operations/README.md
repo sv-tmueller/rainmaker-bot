@@ -64,6 +64,27 @@ you mean to touch prod.
 - `uv run rainmaker calibration-check`: print every stored calibration cell
   (read-only; never fits or writes). Flags a Student-t fit clustered at the
   df search bounds so it is visible without querying the table by hand.
+- `uv run rainmaker gate-sweep`: replay the recommendation gate (min_edge,
+  YES/NO confidence floors, lead filter, venue) over settled history at
+  alternate values, one factor at a time, plus one combined min_edge x
+  exclude-lead-0 table. Read-only: no refit, no gate change, no persistence.
+  Run it ad hoc before proposing a gate change (raising `MIN_EDGE`, excluding
+  lead 0, a venue tilt); it is not part of either scheduled workflow. Against
+  prod, point it at Supabase (export `DATABASE_URL` first, see above); it
+  otherwise runs against local SQLite like every other command. `--since
+  YYYY-MM-DD` matches `track`/`tail-check`'s `--since`.
+
+  Read the two anchor rows first: "live (as recorded)" is the stored
+  `recommended` flags, so it must equal `track`'s headline bet count and P&L.
+  "live (replayed)" recomputes the same bets from today's constants; a delta
+  between the two is era drift (a bet recommended before a calibration or
+  station-policy change), not a bug, and is explained inline. Every OFAT row
+  is scored only over (market, run) pairs that had at least one recommended
+  bet at run time (a market's full-calibration/min-sources/station-policy
+  verdict from its own era isn't re-derivable per row), so a row that
+  loosens a gate below live policy (marked `*`, currently only the 0.70 NO
+  floor) is a lower bound: a permanently loosened policy would see more bets
+  than shown.
 
 ## Daily report runbook
 

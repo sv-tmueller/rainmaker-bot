@@ -102,6 +102,10 @@ Python 3.11+ managed with uv. Commands:
 - Tail check: `uv run rainmaker tail-check` (claimed-vs-realized tail calibration
   and PIT tail ratios per variable/lead, read-only diagnostic; `--by-hour`,
   `--since YYYY-MM-DD` to restrict to runs started on or after that date)
+- Gate sweep: `uv run rainmaker gate-sweep` (replay the recommendation gate --
+  min_edge, YES/NO floors, lead filter, venue -- over settled history at
+  alternate values, one factor at a time; read-only diagnostic, ad hoc, not
+  part of a scheduled workflow; `--since YYYY-MM-DD` matches `track`/`tail-check`)
 - Snapshot: `uv run rainmaker snapshot` (upsert the daily metrics row the dashboard reads)
 - Backfill: `uv run rainmaker backfill --city <X>` (fit a calibration cell and
   backtest accuracy from history; `--city all` covers every city)
@@ -137,6 +141,7 @@ src/rainmaker/
   pnl_backtest.py     replay closed markets at historical CLOB prices -> betting P/L
   settle.py           settle past markets against NOAA actuals (idempotent catch-up)
   tracking.py         hypothetical P&L + calibration scoring, daily snapshot
+  gate_sweep.py       replay the recommendation gate over settled history at alternate values
   forecasts/
     base.py           ForecastSample, ForecastSet, ForecastSource protocol
     nws.py            NWS fetch + parse
