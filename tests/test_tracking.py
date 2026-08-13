@@ -1112,7 +1112,7 @@ def test_lead_bucket_boundary():
     assert _lead_bucket("2026-05-30", "2026-05-31T00:00:00") == "<0 (catch-up)"  # lead=-1
 
 
-def _setup_attribution_fixture(conn):
+def _setup_attribution_fixture(conn, add_since_bets=False):
     """Three bets across two cities, two venues, two variables, three lead buckets.
 
     Bet A: NYC, polymarket (NULL venue), TMAX
@@ -1134,6 +1134,27 @@ def _setup_attribution_fixture(conn):
       ask=0.45, actual=71 (70-71 wins) -> WIN, pnl=+0.55, staked=0.45
 
     Overall: n=3, wins=2, losses=1, total_pnl=0.80, total_staked=1.20, roi=0.80/1.20
+
+    add_since_bets=True adds two more bets on a later started_at date, for the
+    `since` tests: A/B/C cluster on 2026-05-26..05-29, G/H cluster on
+    2026-06-10..06-11, so a cutoff between the two clusters splits the fixture
+    cleanly into "old" (A/B/C) and "new" (G/H).
+
+    Bet G: NYC, polymarket (NULL venue), TMAX
+      started_at=2026-06-10T00:00:00, settlement_date=2026-06-12 -> lead=2
+      edge=0.12  -> bucket [.10,.20) (same as A)
+      p_win=0.88 -> bucket [.80,.90) (same as A)
+      ask=0.40, actual=71 (70-71 wins) -> WIN, pnl=+0.60, staked=0.40
+
+    Bet H: LAX, kalshi, TMIN
+      started_at=2026-06-11T00:00:00, settlement_date=2026-06-12 -> lead=1
+      edge=0.22  -> bucket [.20,inf) (same as B)
+      p_win=0.93 -> bucket [.90,.95) (same as B)
+      ask=0.35, actual=75 (70-71 does NOT win) -> LOSS, pnl=-0.35, staked=0.35
+
+    G/H never touch the "3+" lead bucket, the "[.05,.10)" edge bucket, or the
+    "[.75,.80)" p_win bucket: those three segments come only from bet C, so a
+    since cutoff between the two clusters must make them disappear entirely.
     """
     init_schema(conn)
     # Bet A: NYC, polymarket (NULL venue), TMAX, lead=2, edge=0.12, p_win=0.88, win
@@ -1208,6 +1229,59 @@ def _setup_attribution_fixture(conn):
         "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
         ("mC", 71.0, "t"),  # 71 in 70-71 -> wins
     )
+
+    if add_since_bets:
+        # Bet G: NYC, polymarket (NULL venue), TMAX, lead=2, edge=0.12, p_win=0.88, win
+        conn.execute(
+            "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+            ("rG", "2026-06-10T00:00:00", "ok"),
+        )
+        conn.execute(
+            "INSERT INTO markets (id, city, variable, settlement_date, venue) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("mG", "NYC", "TMAX", "2026-06-12", None),
+        )
+        conn.execute(
+            "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("rG", "mG", "70-71°F", 0.40, 0.40, "t"),
+        )
+        conn.execute(
+            "INSERT INTO predictions "
+            "(run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("rG", "mG", "70-71°F", 0.88, 0.12, 1, "t"),
+        )
+        conn.execute(
+            "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+            ("mG", 71.0, "t"),  # 71 in 70-71 -> wins
+        )
+        # Bet H: LAX, kalshi, TMIN, lead=1, edge=0.22, p_win=0.93, loss
+        conn.execute(
+            "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+            ("rH", "2026-06-11T00:00:00", "ok"),
+        )
+        conn.execute(
+            "INSERT INTO markets (id, city, variable, settlement_date, venue) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("mH", "LAX", "TMIN", "2026-06-12", "kalshi"),
+        )
+        conn.execute(
+            "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("rH", "mH", "70-71°F", 0.35, 0.35, "t"),
+        )
+        conn.execute(
+            "INSERT INTO predictions "
+            "(run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("rH", "mH", "70-71°F", 0.93, 0.22, 1, "t"),
+        )
+        conn.execute(
+            "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+            ("mH", 75.0, "t"),  # 75 NOT in 70-71 -> loss
+        )
+
     conn.commit()
 
 
@@ -1420,6 +1494,78 @@ def test_compute_attribution_consistency_with_compute_pnl():
         assert total_losses == pnl["losses"], f"{dim}: losses mismatch"
         assert total_pnl_sum == pytest.approx(pnl["total_pnl"]), f"{dim}: pnl mismatch"
         assert roi_recomputed == pytest.approx(pnl["roi"]), f"{dim}: roi mismatch"
+
+
+def test_compute_attribution_since_drops_pre_date_rows_from_every_dimension():
+    """A since cutoff between the fixture's two started_at clusters drops A/B/C.
+
+    Bet C alone contributes the "3+" lead bucket, the "[.05,.10)" edge bucket,
+    and the "[.75,.80)" p_win bucket; G/H (the post-cutoff bets) never touch
+    those buckets, so filtering on since must make all three disappear.
+    """
+    conn = connect(":memory:")
+    _setup_attribution_fixture(conn, add_since_bets=True)
+    rows = settled_rows(conn)
+    conn.close()
+
+    since = "2026-06-01"  # between C's 05-26 and G's 06-10
+    filtered = compute_attribution(conn, since=since, rows=rows)
+
+    for dim in ("city", "venue", "variable", "lead", "edge", "p_win"):
+        total_n = sum(s["n"] for s in filtered[dim])
+        assert total_n == 2, f"{dim}: expected only G/H (2 bets) post-cutoff"
+
+    by_lead = {s["segment"]: s for s in filtered["lead"]}
+    assert "3+" not in by_lead, "bet C's lead bucket must be dropped by since"
+
+    by_edge = {s["segment"]: s for s in filtered["edge"]}
+    assert "[.05,.10)" not in by_edge, "bet C's edge bucket must be dropped by since"
+
+    by_p_win = {s["segment"]: s for s in filtered["p_win"]}
+    assert "[.75,.80)" not in by_p_win, "bet C's p_win bucket must be dropped by since"
+
+
+def test_compute_attribution_since_reconciles_with_compute_pnl():
+    """Per-dimension totals over the since-filtered rows match compute_pnl over
+    the same since-filtered rows, mirroring the full-history reconciliation
+    test above."""
+    conn = connect(":memory:")
+    _setup_attribution_fixture(conn, add_since_bets=True)
+    rows = settled_rows(conn)
+    conn.close()
+
+    since = "2026-06-01"
+    since_filtered_rows = [r for r in rows if r["started_at"] >= since]
+    pnl = compute_pnl(_BombConn(), rows=since_filtered_rows)
+    result = compute_attribution(_BombConn(), since=since, rows=rows)
+
+    for dim in ("city", "venue", "variable", "lead", "edge", "p_win"):
+        segs = result[dim]
+        total_n = sum(s["n"] for s in segs)
+        total_wins = sum(s["wins"] for s in segs)
+        total_losses = sum(s["losses"] for s in segs)
+        total_pnl_sum = sum(s["pnl"] for s in segs)
+        total_staked = sum(s["staked"] for s in segs)
+        roi_recomputed = total_pnl_sum / total_staked if total_staked else 0.0
+
+        assert total_n == pnl["n_bets"], f"{dim}: n mismatch"
+        assert total_wins == pnl["wins"], f"{dim}: wins mismatch"
+        assert total_losses == pnl["losses"], f"{dim}: losses mismatch"
+        assert total_pnl_sum == pytest.approx(pnl["total_pnl"]), f"{dim}: pnl mismatch"
+        assert roi_recomputed == pytest.approx(pnl["roi"]), f"{dim}: roi mismatch"
+
+
+def test_compute_attribution_accepts_prefetched_rows_without_querying():
+    """compute_attribution(conn, rows=rows) must equal compute_attribution(conn)
+    and never touch the store (locks the #277 sharing path)."""
+    conn = connect(":memory:")
+    _setup_attribution_fixture(conn)
+    rows = settled_rows(conn)
+    fresh = compute_attribution(conn)
+    conn.close()
+
+    result = compute_attribution(_BombConn(), rows=rows)
+    assert result == fresh
 
 
 # ---------------------------------------------------------------------------
