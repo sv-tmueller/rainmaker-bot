@@ -185,18 +185,19 @@ def _latest_run_per_market_day(rows: list[dict[str, Any]]) -> list[dict[str, Any
 
 def settled_rows(conn: Conn) -> list[dict[str, Any]]:
     # Match the price to the prediction's side; legacy rows with a null side are YES.
-    # city and settlement_date are carried for compute_attribution; compute_pnl and
-    # compute_calibration ignore these extra keys. markets.raw is NOT selected here:
-    # it duplicates the full market JSON onto every row (#277: egress). compute_clv
-    # is the only caller that needs it, and it fetches raw separately, bounded to
-    # the deduped bet market ids, via _raw_by_market_id.
+    # city, settlement_date, and settled_at are carried for compute_attribution and
+    # backfill_snapshots; compute_pnl and compute_calibration ignore these extra
+    # keys. markets.raw is NOT selected here: it duplicates the full market JSON
+    # onto every row (#277: egress). compute_clv is the only caller that needs it,
+    # and it fetches raw separately, bounded to the deduped bet market ids, via
+    # _raw_by_market_id.
     rows = conn.execute(
         "SELECT p.market_id AS market_id, p.run_id AS run_id, p.bucket AS bucket, "
         "p.side AS side, p.p_win AS p_win, p.edge AS edge, "
         "p.recommended AS recommended, m.variable AS variable, m.venue AS venue, "
         "m.outcome_spec AS outcome_spec, m.city AS city, "
         "m.settlement_date AS settlement_date, r.started_at AS started_at, "
-        "pr.price AS ask, o.actual_value AS actual_value "
+        "pr.price AS ask, o.actual_value AS actual_value, o.settled_at AS settled_at "
         "FROM predictions p "
         "JOIN markets m ON m.id = p.market_id "
         "JOIN outcomes o ON o.market_id = p.market_id "
@@ -1199,3 +1200,68 @@ def write_snapshot(conn: Conn, on_date: str, created_at: str) -> dict[str, Any]:
         "calibration": aggregate["calibration"],
         "venues": {k: v for k, v in per_venue.items() if k != "all"},
     }
+
+
+def _existing_snapshot_pairs(conn: Conn) -> set[tuple[str, str]]:
+    rows = conn.execute("SELECT snapshot_date, venue FROM tracking_snapshot").fetchall()
+    return {(r["snapshot_date"], r["venue"]) for r in rows}
+
+
+def _effective_settled_at(row: dict[str, Any]) -> str:
+    """The date a row's market actually settled, for the as-of comparison.
+
+    outcomes.settled_at should always be set once a market has an actual_value
+    (settled_rows requires the outcomes join), but fall back to the market's own
+    settlement_date rather than dropping or always including the row if it is
+    ever NULL in practice.
+    """
+    settled_at = row.get("settled_at")
+    return settled_at[:10] if settled_at else row["settlement_date"]
+
+
+def backfill_snapshots(conn: Conn, created_at: str) -> list[tuple[str, str]]:
+    """Fill in missing per-venue tracking_snapshot rows for past dates, as-of.
+
+    Every date already carrying an 'all' aggregate row (written by write_snapshot,
+    or backfilled from the pre-#347 shape by migration 0012) is a real snapshot
+    day. For each such date, reconstruct whichever of the polymarket/kalshi rows
+    are still missing (the pre-#347 dates, before the venue split existed), using
+    the same one-full-history-read shape as write_snapshot.
+
+    As-of filter: a row counts toward on_date's snapshot only if it had settled
+    by that date (_effective_settled_at(row) <= on_date, a "YYYY-MM-DD" string
+    comparison). Filtering settled_rows()'s output (already deduped to the latest
+    run per (market, UTC day) by _latest_run_per_market_day) this way is
+    equivalent to filtering before the dedup: outcomes.settled_at is one value
+    per market (outcomes.market_id is the primary key), so every row of a given
+    market shares the same effective_settled_at, and the as-of filter can only
+    remove a market's rows in their entirety, never some but not others. It
+    therefore cannot change which run's rows the per-market argmax in
+    _latest_run_per_market_day picked for a surviving market.
+
+    A missing pair with zero as-of bets still gets its n_bets=0 row written,
+    matching write_snapshot's zero-bet convention. Never computes or writes a
+    venue='all' row (only write_snapshot owns that), and never calls
+    save_accuracy (write_snapshot's job, not a backfill's).
+
+    Returns the (snapshot_date, venue) pairs actually written, so the CLI can
+    report a count; idempotent by construction, since a pair already present is
+    never revisited (a second run over the same history always returns []).
+    """
+    rows = settled_rows(conn)
+    existing = _existing_snapshot_pairs(conn)
+    dates_with_all = sorted({on_date for on_date, venue in existing if venue == "all"})
+    missing_venues = _SNAPSHOT_VENUES[1:]  # skip 'all': never backfilled here
+    written: list[tuple[str, str]] = []
+    for on_date in dates_with_all:
+        for venue_label, venue in missing_venues:
+            if (on_date, venue_label) in existing:
+                continue
+            as_of_rows = [r for r in rows if _effective_settled_at(r) <= on_date]
+            pnl = compute_pnl(conn, venue=venue, rows=as_of_rows)
+            cal = compute_calibration(conn, venue=venue, rows=as_of_rows)
+            _upsert_snapshot_row(conn, on_date, venue_label, pnl, cal, created_at)
+            written.append((on_date, venue_label))
+    if written:
+        conn.commit()
+    return written

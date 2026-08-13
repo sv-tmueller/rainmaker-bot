@@ -856,6 +856,181 @@ def test_write_snapshot_splits_by_venue():
     assert result["pnl"]["n_bets"] == 2
 
 
+def _add_settled_bet(conn, market_id, run_id, *, venue, settled_at, settlement_date="2026-05-30"):
+    """One winning YES bet (70-71F, ask .40, actual 71) on the given venue/settled_at."""
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)", (run_id, "t", "ok")
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue) VALUES (?, ?, ?, ?, ?)",
+        (market_id, "NYC", "TMAX", settlement_date, venue),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (run_id, market_id, "70-71°F", 0.40, 0.40, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions (run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (run_id, market_id, "70-71°F", 0.93, 0.20, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        (market_id, 71.0, settled_at),
+    )
+
+
+def _seed_all_row(conn, on_date, created_at):
+    """Pre-seed an aggregate-only 'all' snapshot row, as migration 0012 left every
+    pre-existing date. backfill_snapshots must treat this as the marker that a
+    real snapshot exists for on_date and fill in the missing per-venue rows."""
+    conn.execute(
+        "INSERT INTO tracking_snapshot "
+        "(snapshot_date, venue, n_bets, wins, losses, total_pnl, roi, brier, hit_rate, "
+        "n_scored, created_at) VALUES (?, 'all', 0, 0, 0, 0.0, 0.0, NULL, NULL, 0, ?)",
+        (on_date, created_at),
+    )
+
+
+def _seed_staggered_history(conn):
+    """Three dates, each with a pre-seeded 'all' row; bets settle on staggered
+    dates so an as-of read at an earlier date must miss later-settling bets."""
+    init_schema(conn)
+    _add_settled_bet(conn, "m_pm1", "r_pm1", venue="polymarket", settled_at="2026-06-01T00:00:00Z")
+    _add_settled_bet(conn, "m_pm2", "r_pm2", venue="polymarket", settled_at="2026-06-02T00:00:00Z")
+    _add_settled_bet(conn, "m_kx1", "r_kx1", venue="kalshi", settled_at="2026-06-03T00:00:00Z")
+    for on_date in ("2026-06-01", "2026-06-02", "2026-06-03"):
+        _seed_all_row(conn, on_date, "orig")
+    conn.commit()
+
+
+def test_backfill_snapshots_as_of_correctness():
+    """A bet settled after date D is absent from D's venue row, present later."""
+    from rainmaker.tracking import backfill_snapshots
+
+    conn = connect(":memory:")
+    _seed_staggered_history(conn)
+    backfill_snapshots(conn, "t_new")
+    rows = {
+        (r["snapshot_date"], r["venue"]): r["n_bets"]
+        for r in conn.execute(
+            "SELECT snapshot_date, venue, n_bets FROM tracking_snapshot"
+        ).fetchall()
+    }
+    conn.close()
+    assert rows[("2026-06-01", "polymarket")] == 1  # only m_pm1 settled by D1
+    assert rows[("2026-06-02", "polymarket")] == 2  # m_pm1 and m_pm2 settled by D2
+    assert rows[("2026-06-03", "polymarket")] == 2  # still just the two polymarket bets
+    assert rows[("2026-06-03", "kalshi")] == 1  # m_kx1 settled by D3, absent before
+
+
+def test_backfill_snapshots_writes_zero_bet_venue_row():
+    from rainmaker.tracking import backfill_snapshots
+
+    conn = connect(":memory:")
+    _seed_staggered_history(conn)
+    backfill_snapshots(conn, "t_new")
+    rows = {
+        (r["snapshot_date"], r["venue"]): r["n_bets"]
+        for r in conn.execute(
+            "SELECT snapshot_date, venue, n_bets FROM tracking_snapshot"
+        ).fetchall()
+    }
+    conn.close()
+    # kalshi has no bet settled by D1 or D2, but the row must still be written.
+    assert rows[("2026-06-01", "kalshi")] == 0
+    assert rows[("2026-06-02", "kalshi")] == 0
+
+
+def test_backfill_snapshots_second_run_is_noop():
+    from rainmaker.tracking import backfill_snapshots
+
+    conn = connect(":memory:")
+    _seed_staggered_history(conn)
+    first = backfill_snapshots(conn, "t_first")
+    assert first  # the first run has missing pairs to fill
+    n_before = conn.execute("SELECT count(*) AS n FROM tracking_snapshot").fetchone()["n"]
+    created_before = {
+        (r["snapshot_date"], r["venue"]): r["created_at"]
+        for r in conn.execute(
+            "SELECT snapshot_date, venue, created_at FROM tracking_snapshot"
+        ).fetchall()
+    }
+
+    second = backfill_snapshots(conn, "t_second")
+
+    n_after = conn.execute("SELECT count(*) AS n FROM tracking_snapshot").fetchone()["n"]
+    created_after = {
+        (r["snapshot_date"], r["venue"]): r["created_at"]
+        for r in conn.execute(
+            "SELECT snapshot_date, venue, created_at FROM tracking_snapshot"
+        ).fetchall()
+    }
+    conn.close()
+
+    assert second == []  # no missing pairs left: zero writes
+    assert n_after == n_before
+    assert created_after == created_before  # nothing re-touched, not even created_at
+
+
+def test_backfill_snapshots_never_touches_all_rows():
+    from rainmaker.tracking import backfill_snapshots
+
+    conn = connect(":memory:")
+    _seed_staggered_history(conn)
+    before = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM tracking_snapshot WHERE venue = 'all' ORDER BY snapshot_date"
+        ).fetchall()
+    ]
+    backfill_snapshots(conn, "t_new")
+    after = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT * FROM tracking_snapshot WHERE venue = 'all' ORDER BY snapshot_date"
+        ).fetchall()
+    ]
+    conn.close()
+    assert before == after  # full row tuples byte-identical, never written
+
+
+def test_backfill_snapshots_skips_dates_with_no_all_row():
+    """A date with no pre-existing snapshot at all is not backfilled."""
+    from rainmaker.tracking import backfill_snapshots
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    _add_settled_bet(conn, "m1", "r1", venue="polymarket", settled_at="2026-06-05T00:00:00Z")
+    conn.commit()  # no 'all' row seeded for 2026-06-05 at all
+    written = backfill_snapshots(conn, "t_new")
+    n = conn.execute("SELECT count(*) AS n FROM tracking_snapshot").fetchone()["n"]
+    conn.close()
+    assert written == []
+    assert n == 0
+
+
+def test_backfill_snapshots_null_settled_at_falls_back_to_settlement_date():
+    """A NULL outcomes.settled_at falls back to the row's settlement_date for as-of."""
+    from rainmaker.tracking import backfill_snapshots
+
+    conn = connect(":memory:")
+    init_schema(conn)
+    _add_settled_bet(
+        conn, "m1", "r1", venue="polymarket", settled_at=None, settlement_date="2026-06-01"
+    )
+    _seed_all_row(conn, "2026-06-01", "orig")
+    conn.commit()
+    backfill_snapshots(conn, "t_new")
+    row = conn.execute(
+        "SELECT n_bets FROM tracking_snapshot WHERE snapshot_date = ? AND venue = 'polymarket'",
+        ("2026-06-01",),
+    ).fetchone()
+    conn.close()
+    assert row["n_bets"] == 1  # settlement_date <= on_date: included via the NULL fallback
+
+
 def _setup_live(conn, city="NYC", venue=None):
     init_schema(conn)
     conn.execute(
