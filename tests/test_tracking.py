@@ -722,7 +722,8 @@ def test_write_snapshot_completes_with_ungradable_row():
     conn.commit()
     result = write_snapshot(conn, "2026-06-04", "2026-06-04T00:00:00Z")
     row = conn.execute(
-        "SELECT * FROM tracking_snapshot WHERE snapshot_date = ?", ("2026-06-04",)
+        "SELECT * FROM tracking_snapshot WHERE snapshot_date = ? AND venue = 'all'",
+        ("2026-06-04",),
     ).fetchone()
     conn.close()
     # The good fixture bet (_setup) still scores; the ungradable PRCP row never
@@ -740,7 +741,8 @@ def test_write_snapshot_persists_metrics():
     _setup(conn)
     write_snapshot(conn, "2026-06-04", "2026-06-04T00:00:00Z")
     row = conn.execute(
-        "SELECT * FROM tracking_snapshot WHERE snapshot_date = ?", ("2026-06-04",)
+        "SELECT * FROM tracking_snapshot WHERE snapshot_date = ? AND venue = 'all'",
+        ("2026-06-04",),
     ).fetchone()
     conn.close()
     assert row["n_bets"] == 1
@@ -758,9 +760,100 @@ def test_write_snapshot_is_idempotent_per_day():
     _setup(conn)
     write_snapshot(conn, "2026-06-04", "t1")
     write_snapshot(conn, "2026-06-04", "t2")
+    # One row per venue (all/polymarket/kalshi); a second same-day run must
+    # upsert those three rows, not append new ones.
     n = conn.execute("SELECT count(*) AS n FROM tracking_snapshot").fetchone()["n"]
     conn.close()
-    assert n == 1
+    assert n == 3
+
+
+def test_write_snapshot_writes_one_row_per_venue_even_with_zero_bets():
+    from rainmaker.tracking import write_snapshot
+
+    conn = connect(":memory:")
+    _setup(conn)  # a single polymarket-shaped bet; no Kalshi market at all
+    write_snapshot(conn, "2026-06-04", "t")
+    rows = {
+        r["venue"]: r["n_bets"]
+        for r in conn.execute(
+            "SELECT venue, n_bets FROM tracking_snapshot WHERE snapshot_date = ?",
+            ("2026-06-04",),
+        ).fetchall()
+    }
+    conn.close()
+    assert set(rows) == {"all", "polymarket", "kalshi"}
+    assert rows["polymarket"] == 1
+    assert rows["kalshi"] == 0  # zero-bet venue still writes its row
+
+
+def _setup_mixed_venues(conn):
+    """One winning Polymarket bet and one losing Kalshi bet, same settlement date."""
+    init_schema(conn)
+    conn.execute("INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)", ("r1", "t", "ok"))
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue) VALUES (?, ?, ?, ?, ?)",
+        ("m_pm", "NYC", "TMAX", "2026-05-30", "polymarket"),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("r1", "m_pm", "70-71°F", 0.40, 0.40, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions (run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "m_pm", "70-71°F", 0.93, 0.20, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("m_pm", 71.0, "t"),  # 70-71 wins
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue) VALUES (?, ?, ?, ?, ?)",
+        ("m_kx", "NYC", "TMAX", "2026-05-30", "kalshi"),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("r1", "m_kx", "72-73°F", 0.30, 0.30, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions (run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "m_kx", "72-73°F", 0.50, 0.10, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("m_kx", 71.0, "t"),  # 72-73 loses
+    )
+    conn.commit()
+
+
+def test_write_snapshot_splits_by_venue():
+    from rainmaker.tracking import write_snapshot
+
+    conn = connect(":memory:")
+    _setup_mixed_venues(conn)
+    result = write_snapshot(conn, "2026-06-04", "t")
+    rows = {
+        r["venue"]: r
+        for r in conn.execute(
+            "SELECT * FROM tracking_snapshot WHERE snapshot_date = ?", ("2026-06-04",)
+        ).fetchall()
+    }
+    conn.close()
+
+    assert rows["all"]["n_bets"] == 2
+    assert (rows["polymarket"]["n_bets"], rows["polymarket"]["wins"]) == (1, 1)
+    assert (rows["kalshi"]["n_bets"], rows["kalshi"]["wins"]) == (1, 0)
+
+    # The venues dict in the return value mirrors the persisted per-venue rows.
+    assert result["venues"]["polymarket"]["pnl"]["n_bets"] == 1
+    assert result["venues"]["polymarket"]["pnl"]["wins"] == 1
+    assert result["venues"]["kalshi"]["pnl"]["n_bets"] == 1
+    assert result["venues"]["kalshi"]["pnl"]["wins"] == 0
+    # The aggregate return value is still the "all" figures, unchanged shape.
+    assert result["pnl"]["n_bets"] == 2
 
 
 def _setup_live(conn, city="NYC", venue=None):
