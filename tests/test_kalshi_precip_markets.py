@@ -3,6 +3,7 @@ from datetime import date
 import pytest
 
 from rainmaker.config import KALSHI_PRECIP_STATIONS
+from rainmaker.domain import parse_precip_bracket_label
 from rainmaker.kalshi.precip_markets import parse_kalshi_precip_bracket, parse_kalshi_precip_event
 
 
@@ -121,3 +122,66 @@ def test_precip_between_strike_none_cap_raises_value_error():
         parse_kalshi_precip_bracket(
             _rain_bracket(strike_type="between", floor_strike=2, cap_strike=None)
         )
+
+
+# ---------------------------------------------------------------------------
+# Label synthesis for a bare/missing subtitle (#333: root cause of the
+# unrecognized precip bracket label 'inches' that killed the diagnostics jobs)
+# ---------------------------------------------------------------------------
+
+
+def test_bare_unit_subtitle_synthesizes_canonical_label_above():
+    # Kalshi sent subtitle="inches" (no digit) for this strike in the wild.
+    b = parse_kalshi_precip_bracket(_rain_bracket(subtitle="inches"))
+    assert b.label == '>4"'
+    parse_precip_bracket_label(b.label)  # must round-trip through the label parser
+
+
+def test_bare_unit_subtitle_synthesizes_canonical_label_below():
+    b = parse_kalshi_precip_bracket(
+        _rain_bracket(strike_type="less", floor_strike=None, cap_strike=2, subtitle="inches")
+    )
+    assert b.label == '<2"'
+    parse_precip_bracket_label(b.label)
+
+
+def test_bare_unit_subtitle_synthesizes_canonical_label_range():
+    b = parse_kalshi_precip_bracket(
+        _rain_bracket(strike_type="between", floor_strike=2, cap_strike=3, subtitle="inches")
+    )
+    assert b.label == '2-3"'
+    parse_precip_bracket_label(b.label)
+
+
+def test_missing_subtitle_synthesizes_canonical_label():
+    b = parse_kalshi_precip_bracket(_rain_bracket(subtitle=None))
+    assert b.label == '>4"'
+
+
+def test_empty_subtitle_synthesizes_canonical_label():
+    b = parse_kalshi_precip_bracket(_rain_bracket(subtitle=""))
+    assert b.label == '>4"'
+
+
+def test_well_formed_subtitle_is_not_relabeled():
+    """Digit-bearing subtitles are the join key for historical rows: must pass through
+    unchanged, never rewritten to the canonical form."""
+    b = parse_kalshi_precip_bracket(_rain_bracket(subtitle="greater than 4in"))
+    assert b.label == "greater than 4in"
+
+
+def test_duplicate_synthesized_labels_raise_value_error():
+    """Two strikes both missing a usable subtitle would synthesize colliding
+    labels if their strike geometry matched; the ladder-level guard catches this
+    even when the strikes differ, since a same-kind duplicate is still unsafe as
+    a join key for one settled bucket."""
+    markets = _rain_markets()
+    for mk in markets:
+        mk["subtitle"] = "inches"
+    # Force both strikes to synthesize the same label (both 'above' at the same
+    # threshold), simulating a malformed ladder.
+    markets[1]["strike_type"] = "greater"
+    markets[1]["floor_strike"] = 4
+    markets[1]["cap_strike"] = None
+    with pytest.raises(ValueError, match="duplicate"):
+        parse_kalshi_precip_event("NYC", KALSHI_PRECIP_STATIONS["NYC"], markets)

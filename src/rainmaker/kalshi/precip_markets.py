@@ -13,9 +13,28 @@ from typing import Any
 
 from rainmaker.config import PrecipStation
 from rainmaker.domain import BucketKind, PrecipBracket, PrecipMonthlyMarket, PrecipTarget
-from rainmaker.kalshi.markets import _MONTHS, _price, _yes_price
+from rainmaker.kalshi.markets import _MONTHS, _labeled_subtitle, _price, _yes_price
 
 _MONTH_TOKEN_RE = re.compile(r"-(\d{2})([A-Z]{3})(?:-|$)")
+
+
+def _fmt_inches(x: float) -> str:
+    """Format an inch bound without a spurious trailing '.0' (2.0 -> "2")."""
+    return f"{x:g}"
+
+
+def _synthesize_precip_label(
+    kind: BucketKind, lo: float | None, hi: float | None, threshold: float | None
+) -> str:
+    """Canonical label matching domain.parse_precip_bracket_label's expected shapes."""
+    if kind == "below":
+        assert threshold is not None
+        return f'<{_fmt_inches(threshold)}"'
+    if kind == "above":
+        assert threshold is not None
+        return f'>{_fmt_inches(threshold)}"'
+    assert lo is not None and hi is not None
+    return f'{_fmt_inches(lo)}-{_fmt_inches(hi)}"'
 
 
 def parse_kalshi_precip_bracket(market: dict[str, Any]) -> PrecipBracket:
@@ -42,8 +61,10 @@ def parse_kalshi_precip_bracket(market: dict[str, Any]) -> PrecipBracket:
         kind, lo, hi = "range", float(floor), float(cap)
     else:
         raise ValueError(f"unknown Kalshi strike_type: {strike_type!r}")
+    subtitle = _labeled_subtitle(market.get("subtitle"))
+    label = subtitle if subtitle is not None else _synthesize_precip_label(kind, lo, hi, threshold)
     return PrecipBracket(
-        label=market.get("subtitle") or market["ticker"],
+        label=label,
         kind=kind,
         lo=lo,
         hi=hi,
@@ -96,6 +117,11 @@ def parse_kalshi_precip_event(
         settlement_date=date(year, month, last_day),
     )
     buckets = [parse_kalshi_precip_bracket(m) for m in event_markets]
+    labels = [b.label for b in buckets]
+    if len(labels) != len(set(labels)):
+        raise ValueError(
+            f"duplicate precip bracket labels in Kalshi event {event_ticker}: {labels}"
+        )
     return PrecipMonthlyMarket(
         id=event_ticker,
         slug=event_ticker,
