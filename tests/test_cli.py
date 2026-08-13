@@ -484,6 +484,31 @@ def test_snapshot_command_prints_skipped_count_when_nonzero(monkeypatch, tmp_pat
     assert "skipped 3 ungradable settled row(s)" in out
 
 
+def test_snapshot_command_prints_skipped_when_only_calibration_has_skips(
+    monkeypatch, tmp_path, capsys
+):
+    # Same gap as the track case: compute_pnl's population can show zero skips
+    # while compute_calibration's broader population has an ungradable row.
+    monkeypatch.setattr(
+        cli,
+        "write_snapshot",
+        lambda conn, on_date, created_at: {
+            "pnl": {
+                "n_bets": 2,
+                "wins": 1,
+                "losses": 1,
+                "total_pnl": 0.3,
+                "roi": 0.42,
+                "skipped": 0,
+            },
+            "calibration": {"n": 2, "brier": 0.13, "hit_rate": 0.5, "skipped": 1},
+        },
+    )
+    cli.main(["snapshot", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+    assert "skipped 1 ungradable settled row(s)" in out
+
+
 def test_track_command_reports_pnl_and_calibration(monkeypatch, tmp_path, capsys):
     # overall (venue=None) has bets; the per-venue calls return none so only the
     # overall line prints (the per-venue breakdown is covered in test_tracking).
@@ -533,6 +558,88 @@ def test_track_command_prints_skipped_count_when_nonzero(monkeypatch, tmp_path, 
     cli.main(["track", "--db", str(tmp_path / "t.db")])
     out = capsys.readouterr().out
     assert "skipped 4 ungradable settled row(s)" in out
+
+
+def test_track_command_prints_skipped_when_only_calibration_has_skips(
+    monkeypatch, tmp_path, capsys
+):
+    # compute_pnl's population (recommended best-per-market-run bets) can miss an
+    # ungradable row that compute_calibration's broader yes_rows population catches
+    # (#333 round 1: a settled row with recommended=0). The skipped line must still
+    # surface nonzero.
+    monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
+    monkeypatch.setattr(
+        cli,
+        "compute_pnl",
+        lambda conn, venue=None, *, rows=None: {
+            "n_bets": 2 if venue is None else 0,
+            "wins": 1,
+            "losses": 1,
+            "total_pnl": 0.3,
+            "roi": 0.42,
+            "skipped": 0,
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "compute_calibration",
+        lambda conn, *, rows=None: {"n": 2, "brier": 0.127, "hit_rate": 0.5, "skipped": 1},
+    )
+    cli.main(["track", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+    assert "skipped 1 ungradable settled row(s)" in out
+
+
+def _add_non_recommended_ungradable_row(db_path: str) -> None:
+    """A settled PRCP row with bucket='inches' (ungradable, #333) that is NOT the
+    recommended bet for its (market, run): compute_pnl's population
+    (_best_per_market_run keeps only recommended=1 rows) never sees it, so its
+    own "skipped" count stays 0, while compute_calibration's broader yes_rows
+    population (not filtered to recommended) does see it and counts it. This is
+    the tester's round-1 repro for the CLI print silently dropping the skip.
+    """
+    conn = connect(db_path)
+    init_schema(conn)
+    conn.execute("INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)", ("r1", "t", "ok"))
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date) VALUES (?, ?, ?, ?)",
+        ("pm_bad", "NYC", "PRCP", "2026-06-30"),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ("r1", "pm_bad", "inches", 0.30, 0.30, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions (run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "pm_bad", "inches", 0.60, 0.30, 0, "t"),  # recommended=0
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        ("pm_bad", 1.5, "t"),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_track_command_prints_skipped_for_non_recommended_ungradable_row(tmp_path, capsys):
+    """End-to-end repro (no mocks): compute_pnl alone would report skipped=0 for
+    this row, but `track`'s printed line must still surface it as nonzero.
+    """
+    db = str(tmp_path / "t.db")
+    _add_non_recommended_ungradable_row(db)
+    cli.main(["track", "--db", db])
+    out = capsys.readouterr().out
+    assert "skipped 1 ungradable settled row(s)" in out
+
+
+def test_snapshot_command_prints_skipped_for_non_recommended_ungradable_row(tmp_path, capsys):
+    db = str(tmp_path / "t.db")
+    _add_non_recommended_ungradable_row(db)
+    cli.main(["snapshot", "--db", db])
+    out = capsys.readouterr().out
+    assert "skipped 1 ungradable settled row(s)" in out
 
 
 def test_track_command_fetches_settled_rows_exactly_once(monkeypatch, tmp_path, capsys):

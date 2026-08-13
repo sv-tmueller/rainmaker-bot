@@ -521,7 +521,12 @@ def _track(db_path: str, since: str | None = None) -> None:
         f"P&L: {pnl['n_bets']} bets, {pnl['wins']}-{pnl['losses']}, "
         f"total {pnl['total_pnl']:+.2f}u, ROI {pnl['roi']:+.1%}"
     )
-    skipped = pnl.get("skipped", 0)
+    # compute_pnl's population is recommended best-per-market-run bets only;
+    # compute_calibration's is broader (all YES rows plus that same bet
+    # population), so it can catch an ungradable row compute_pnl's narrower
+    # population never sees (#333 round 1). Surface whichever is larger so a
+    # skip anywhere in either population is never silently dropped.
+    skipped = max(pnl.get("skipped", 0), cal.get("skipped", 0))
     if skipped:
         print(f"skipped {skipped} ungradable settled row(s)")
     for venue, vp in by_venue.items():
@@ -741,11 +746,13 @@ def _snapshot(db_path: str) -> None:
     finally:
         conn.close()
     p = result["pnl"]
+    cal = result["calibration"]
     print(
         f"snapshot {on_date}: {p['n_bets']} bets, total {p['total_pnl']:+.2f}u "
         f"-> {_db_label(db_path)}"
     )
-    skipped = p.get("skipped", 0)
+    # Same population gap as _track (#333 round 1): take whichever count is larger.
+    skipped = max(p.get("skipped", 0), cal.get("skipped", 0))
     if skipped:
         print(f"skipped {skipped} ungradable settled row(s)")
 
