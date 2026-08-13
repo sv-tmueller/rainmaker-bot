@@ -15,22 +15,27 @@ fails loud instead of silently writing to a throwaway SQLite file in the runner.
 The dated md/json report is attached to each run as an artifact.
 
 `.github/workflows/daily-diagnostics.yml` runs once a day, after the 21:00 run's
-settle: `rainmaker snapshot`, then `rainmaker track` and `rainmaker tail-check`.
-These are read-only diagnostics; running them every 3 hours instead of daily
-was most of the Supabase egress this bot generates (#277), since `snapshot`
-upserts one row per day regardless of cadence.
+settle: `rainmaker snapshot`, then `rainmaker track`, `rainmaker tail-check`,
+and `rainmaker attribution`. These are read-only diagnostics; running them
+every 3 hours instead of daily was most of the Supabase egress this bot
+generates (#277), since `snapshot` upserts one row per day regardless of
+cadence.
 
-`tail-check` and `track` each run twice: once over the full settled history,
-and once with `--since` restricted to the active calibration regime's start
-date (the value passed to `--since` in the `diagnostics` job of
-`daily-diagnostics.yml`). The full-history run is the cross-regime baseline;
-the since-filtered run isolates calibration under the current fit, since a
+`track`, `tail-check`, and `attribution` each print a full-history view and a
+since-filtered view, restricted to the active calibration regime's start date
+(the value passed to `--since` in the `diagnostics` job of
+`daily-diagnostics.yml`). The full-history view is the cross-regime baseline;
+the since-filtered view isolates calibration under the current fit, since a
 prior refit can make older runs a poor guide to current performance.
 `track --since` prints the same pooled P&L/Brier aggregate as a plain
 `track`, plus a per-(variable, lead) Brier/hit-rate breakdown restricted to
 that population, so a per-cell cost prediction (for example one recorded in a
-refit's decision doc) is directly comparable to live numbers. When a refit
-lands (a prod `backfill` re-run), update the `--since` value passed in the
+refit's decision doc) is directly comparable to live numbers. `track` and
+`tail-check` run twice in the workflow (once plain, once with `--since`) to
+get both views; `attribution --since` prints both views from a single
+invocation instead, sharing one settled-rows read internally so the workflow
+never issues a second full-history query for it (#334). When a refit lands (a
+prod `backfill` re-run), update the `--since` value passed in the
 `diagnostics` job of `daily-diagnostics.yml` in the same change that records
 the refit.
 
@@ -54,6 +59,11 @@ you mean to touch prod.
   re-recommended on several days counts as several bets. `--since YYYY-MM-DD`
   restricts the breakdown (not the pooled P&L/Brier line) to predictions from
   runs started on or after that date, matching `tail-check`'s `--since`.
+- `uv run rainmaker attribution`: print per-segment P&L attribution over the
+  same deduped bets as `track`, broken out by city, venue, variable, lead,
+  edge bucket, and p_win bucket. `--since YYYY-MM-DD` prints a second,
+  since-restricted attribution after the full-history one, from the same
+  settled-rows read, matching `track`'s and `tail-check`'s `--since`.
 - `uv run rainmaker snapshot`: upsert today's metrics row into
   `tracking_snapshot`. This is what the dashboard reads.
 - `uv run rainmaker backfill --city <X>`: fit a calibration cell and backtest

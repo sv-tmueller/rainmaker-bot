@@ -3,8 +3,10 @@ on:
   schedule:
     # Once a day, after the 21:00 scheduled-run settle so the day's snapshot
     # row covers the fullest day (#277: track/snapshot/tail-check moved off
-    # the 3h cron to cut Supabase egress). tail-check now prints both a
-    # full-history view and a since-filtered view of the active regime.
+    # the 3h cron to cut Supabase egress). track and tail-check each print a
+    # full-history view and a since-filtered view of the active regime via two
+    # invocations; attribution prints both views from one invocation, sharing
+    # a single settled-rows read (#334).
     - cron: "45 21 * * *"
   workflow_dispatch: {}
 permissions:
@@ -32,14 +34,14 @@ jobs:
             *) echo "DATABASE_URL is not a Postgres DSN; refusing to run (would silently write to ephemeral SQLite)"; exit 1 ;;
           esac
           uv run rainmaker snapshot
-      - name: Print track and tail-check summaries
+      - name: Print track, tail-check, and attribution summaries
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           # REGIME_SINCE is the active calibration regime's start (first full day
           # after the 2026-07-17 TMIN Student-t refit, #292/#299); bump this
           # value in the same change that records the next refit (see
-          # docs/operations/README.md). Single-sourced here for both --since
-          # calls below.
+          # docs/operations/README.md). Single-sourced here for every --since
+          # call below.
           REGIME_SINCE: "2026-07-18"
         run: |
           case "$DATABASE_URL" in
@@ -50,6 +52,7 @@ jobs:
           uv run rainmaker track --since "$REGIME_SINCE"
           uv run rainmaker tail-check
           uv run rainmaker tail-check --since "$REGIME_SINCE"
+          uv run rainmaker attribution --since "$REGIME_SINCE"
           uv run rainmaker calibration-check
   notify:
     runs-on: ubuntu-latest
