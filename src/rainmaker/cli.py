@@ -37,6 +37,7 @@ from rainmaker.forecasts.base import ForecastSet
 from rainmaker.forecasts.nws import NwsSource
 from rainmaker.forecasts.openmeteo import OpenMeteoSource
 from rainmaker.forecasts.precip import PrecipForecastSet, build_precip_forecast_set
+from rainmaker.gate_sweep import run_sweep
 from rainmaker.httpclient import build_client
 from rainmaker.kalshi.client import discover_kalshi_markets, discover_kalshi_precip_markets
 from rainmaker.pnl_backtest import backtest_pnl, render_pnl_report
@@ -810,6 +811,85 @@ def _settle_divergence(pages: int, reports_dir: str) -> None:
     )
 
 
+_GATE_SWEEP_HEADER = (
+    f"{'Policy':<28} {'n':>5} {'W':>4} {'L':>4} {'Hit%':>6} {'CI_lo':>6} {'CI_hi':>6} "
+    f"{'PnL':>8} {'ROI':>8} {'Skip':>4}"
+)
+
+
+def _fmt_gate_sweep_row(row: dict[str, Any]) -> str:
+    hit = "n/a" if row["hit_rate"] is None else f"{row['hit_rate']:.0%}"
+    flag = " *" if row["lower_bound"] else ""
+    return (
+        f"{row['label']:<28} {row['n_bets']:>5} {row['wins']:>4} {row['losses']:>4} "
+        f"{hit:>6} {row['wilson_lo']:>6.3f} {row['wilson_hi']:>6.3f} "
+        f"{row['pnl']:>+8.2f} {row['roi']:>+8.1%} {row['skipped']:>4}{flag}"
+    )
+
+
+def _print_gate_sweep_table(title: str, rows: list[dict[str, Any]]) -> None:
+    print(f"\n--- {title} ---")
+    print(_GATE_SWEEP_HEADER)
+    for row in rows:
+        print(_fmt_gate_sweep_row(row))
+
+
+def _gate_sweep(db_path: str, since: str | None = None) -> None:
+    """Replay the recommendation gate (min_edge/floor/lead/venue) over settled history.
+
+    Read-only diagnostic: no refit, no gate change, no persistence. See
+    gate_sweep.py's module docstring for the sweep-eligibility rule and the
+    lower-bound caveat on loosening rows.
+    """
+    if "://" not in db_path:
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        rows = settled_rows(conn)
+        result = run_sweep(rows, since=since)
+    finally:
+        conn.close()
+
+    if since is not None:
+        print(f"since: {since}")
+
+    print("--- Anchors (reconciliation) ---")
+    print(_GATE_SWEEP_HEADER)
+    print(_fmt_gate_sweep_row(result["anchors"]["as_recorded"]))
+    print(_fmt_gate_sweep_row({**result["anchors"]["replayed_live"], "label": "live (replayed)"}))
+    print(
+        "as-recorded reconciles with `track`'s headline by construction (same stored\n"
+        "recommended flags); a delta from replayed is era drift (a pre-full-calibration\n"
+        "bet, a pre-STATION_EDGE_DELTA KSFO TMAX bet, a since-changed floor), not a bug."
+    )
+
+    _print_gate_sweep_table("min_edge sweep (OFAT, others at live policy)", result["min_edge"])
+    _print_gate_sweep_table("YES floor sweep (OFAT)", result["floor_yes"])
+    _print_gate_sweep_table("NO floor sweep (OFAT)", result["floor_no"])
+    _print_gate_sweep_table("lead sweep (OFAT)", result["lead"])
+    _print_gate_sweep_table("venue sweep (OFAT)", result["venue"])
+    _print_gate_sweep_table(
+        "combined: min_edge x exclude lead 0", result["combined_min_edge_lead0"]
+    )
+
+    all_rows = (
+        result["min_edge"]
+        + result["floor_yes"]
+        + result["floor_no"]
+        + result["lead"]
+        + result["venue"]
+        + result["combined_min_edge_lead0"]
+    )
+    if any(row["lower_bound"] for row in all_rows):
+        print(
+            "\n* lower bound: this row loosens a gate below live policy, so its bet count "
+            "only covers (market, run) pairs that produced at least one recommended bet "
+            "at run time (the population pin); a permanently loosened policy would see "
+            "more bets than shown here."
+        )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="rainmaker")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -972,6 +1052,18 @@ def main(argv: list[str] | None = None) -> None:
     )
     calibration_check.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
+    gate_sweep_cmd = sub.add_parser(
+        "gate-sweep",
+        help="replay the recommendation gate (min_edge/floor/lead/venue) over settled history",
+    )
+    gate_sweep_cmd.add_argument("--db", default=DB_PATH, help="SQLite database path")
+    gate_sweep_cmd.add_argument(
+        "--since",
+        type=date.fromisoformat,
+        default=None,
+        help="restrict to predictions whose run started on or after this date (YYYY-MM-DD)",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "backtest":
@@ -1021,3 +1113,6 @@ def main(argv: list[str] | None = None) -> None:
         _tail_check(db, args.by_hour, since)
     elif args.command == "calibration-check":
         _calibration_check(db)
+    elif args.command == "gate-sweep":
+        since = args.since.isoformat() if args.since is not None else None
+        _gate_sweep(db, since)
