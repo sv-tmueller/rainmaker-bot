@@ -77,6 +77,7 @@ def evaluate_market(
     require_calibration: bool = True,
     station_policy: StationPolicy | None = None,
     min_edge_delta: float = 0.0,
+    max_edge: float | None = None,
 ) -> MarketReport:
     """Edge-rank a temperature market.
 
@@ -103,6 +104,13 @@ def evaluate_market(
     without moving p_win, the display, or any other gate; see the #296
     addendum and the dated 2026-07-18 update in
     docs/architecture/recommendation-gate.md for the KSFO TMAX rationale.
+
+    max_edge (#356, default None) is an inclusive upper bound on the raw edge
+    (not the delta-adjusted floor) on both YES and NO sides: None keeps every
+    existing call site byte-for-byte, matching the house precedent set by
+    floor_no and min_edge_delta. An over-cap outcome stays in the report with
+    its real p_win/edge; only recommended flips. See the 2026-08-14 update in
+    docs/architecture/recommendation-gate.md.
     """
     no_floor = floor_no if floor_no is not None else floor
     effective_min_edge = min_edge + min_edge_delta
@@ -175,6 +183,7 @@ def evaluate_market(
                 and p_win >= floor
                 and n_sources >= min_sources
                 and edge >= effective_min_edge
+                and (max_edge is None or edge <= max_edge)
             )
             outcomes.append(
                 RankedOutcome(
@@ -200,6 +209,7 @@ def evaluate_market(
                 and p_no >= no_floor
                 and n_sources >= min_sources
                 and edge_no >= effective_min_edge
+                and (max_edge is None or edge_no <= max_edge)
             )
             outcomes.append(
                 RankedOutcome(
@@ -232,15 +242,19 @@ def evaluate_precip_market(
     min_edge: float,
     var_floor: float,
     floor_no: float | None = None,
+    max_edge: float | None = None,
 ) -> MarketReport:
     """Edge-rank a monthly precipitation market via the gamma over inch brackets.
 
     The parallel of evaluate_market for the precip path: same YES/NO gates
-    (confidence floor, min sources, min edge), same MarketReport, but the
-    distribution is a method-of-moments gamma and calibration is not applied.
+    (confidence floor, min sources, min edge, max edge), same MarketReport, but
+    the distribution is a method-of-moments gamma and calibration is not applied.
 
     floor applies to YES bets. floor_no applies to NO bets; when None it
     falls back to floor (flat behaviour, preserving all existing call sites).
+
+    max_edge (#356, default None) mirrors evaluate_market's inclusive upper
+    edge bound: None keeps every existing call site byte-for-byte.
     """
     no_floor = floor_no if floor_no is not None else floor
     n_sources = sum(1 for c in forecast_set.coverage if c.ok and c.n_samples > 0)
@@ -251,7 +265,12 @@ def evaluate_precip_market(
         p_win = bracket_probability(gamma, bracket)
         if bracket.best_ask is not None and bracket.best_ask > 0:
             edge = p_win - bracket.best_ask
-            recommended = p_win >= floor and n_sources >= min_sources and edge >= min_edge
+            recommended = (
+                p_win >= floor
+                and n_sources >= min_sources
+                and edge >= min_edge
+                and (max_edge is None or edge <= max_edge)
+            )
             outcomes.append(
                 RankedOutcome(
                     bucket_label=bracket.label,
@@ -267,7 +286,12 @@ def evaluate_precip_market(
         if bracket.no_ask is not None and 0 < bracket.no_ask < 1:
             p_no = 1 - p_win
             edge_no = p_no - bracket.no_ask
-            recommended_no = p_no >= no_floor and n_sources >= min_sources and edge_no >= min_edge
+            recommended_no = (
+                p_no >= no_floor
+                and n_sources >= min_sources
+                and edge_no >= min_edge
+                and (max_edge is None or edge_no <= max_edge)
+            )
             outcomes.append(
                 RankedOutcome(
                     bucket_label=bracket.label,

@@ -7,10 +7,12 @@ import pytest
 
 from rainmaker.config import (
     CONFIDENCE_FLOOR,
+    MAX_EDGE,
     MIN_EDGE,
     MIN_SIGMA_C,
     MIN_SIGMA_F,
     MIN_SOURCES,
+    PRECIP_STATIONS,
     PRECIP_VAR_FLOOR,
     STATION_EDGE_DELTA,
     STATION_POLICIES,
@@ -511,6 +513,170 @@ def test_recommended_passes_min_edge():
     assert o.recommended is True
 
 
+# ---------------------------------------------------------------------------
+# max_edge cap (#356): an inclusive upper bound on edge, symmetric with the
+# min_edge floor. Default None preserves every existing call site byte-for-byte.
+# ---------------------------------------------------------------------------
+
+
+def test_max_edge_pin():
+    assert MAX_EDGE == 0.25
+
+
+def _max_edge_market(*, best_ask: float = 0.50, no_ask: float = 0.50) -> Market:
+    return _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=best_ask, no_ask=no_ask)])
+
+
+def _max_edge_probe_p_win(side: str) -> float:
+    """p_win (YES) or p_no (NO) for the shared 70-71°F / [69,70,71,72] fixture.
+
+    Read off a neutral-ask, gate-open call so the boundary tests can derive
+    an exact ask/no_ask relative to the real p_win.
+    """
+    fs = _forecast_set([69, 70, 71, 72])
+    report = evaluate_market(
+        _max_edge_market(),
+        fs,
+        floor=0.0,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
+        calibration=_full_cal(),
+    )
+    return next(o.p_win for o in report.outcomes if o.side == side)
+
+
+def test_max_edge_boundary_is_inclusive_yes_side():
+    p_win = _max_edge_probe_p_win("YES")
+    ask = p_win - 0.25  # exact in IEEE double: 0.25 is 2^-2, no epsilon needed
+    fs = _forecast_set([69, 70, 71, 72])
+    report = evaluate_market(
+        _max_edge_market(best_ask=ask),
+        fs,
+        floor=0.0,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
+        max_edge=0.25,
+        calibration=_full_cal(),
+    )
+    o = next(o for o in report.outcomes if o.side == "YES")
+    assert o.edge == 0.25
+    assert o.recommended is True
+
+
+def test_max_edge_boundary_is_inclusive_no_side():
+    p_no = _max_edge_probe_p_win("NO")
+    no_ask = p_no - 0.25  # exact in IEEE double
+    fs = _forecast_set([69, 70, 71, 72])
+    report = evaluate_market(
+        _max_edge_market(no_ask=no_ask),
+        fs,
+        floor=0.0,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
+        max_edge=0.25,
+        calibration=_full_cal(),
+    )
+    o = next(o for o in report.outcomes if o.side == "NO")
+    assert o.edge == 0.25
+    assert o.recommended is True
+
+
+def test_max_edge_just_over_cap_drops_yes_side():
+    p_win = _max_edge_probe_p_win("YES")
+    ask = p_win - 0.26  # edge 0.26: just over the 0.25 cap
+    fs = _forecast_set([69, 70, 71, 72])
+    report = evaluate_market(
+        _max_edge_market(best_ask=ask),
+        fs,
+        floor=0.0,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
+        max_edge=0.25,
+        calibration=_full_cal(),
+    )
+    o = next(o for o in report.outcomes if o.side == "YES")
+    assert o.edge > 0.25
+    assert o.recommended is False
+    # Over-cap outcomes stay in the report with their real numbers; only
+    # `recommended` flips.
+    assert o in report.outcomes
+
+
+def test_max_edge_just_over_cap_drops_no_side():
+    p_no = _max_edge_probe_p_win("NO")
+    no_ask = p_no - 0.26  # edge 0.26: just over the 0.25 cap
+    fs = _forecast_set([69, 70, 71, 72])
+    report = evaluate_market(
+        _max_edge_market(no_ask=no_ask),
+        fs,
+        floor=0.0,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
+        max_edge=0.25,
+        calibration=_full_cal(),
+    )
+    o = next(o for o in report.outcomes if o.side == "NO")
+    assert o.edge > 0.25
+    assert o.recommended is False
+
+
+def test_max_edge_stacks_with_other_gates():
+    """max_edge is a conjunct like every other gate: a bet that clears floor,
+    sources, and min_edge is still blocked when it fails the cap, and the
+    same market is recommended again once the cap is lifted (None, the
+    default)."""
+    p_win = _max_edge_probe_p_win("YES")
+    ask = p_win - 0.30  # edge 0.30: clears every other gate, fails the cap
+    market = _max_edge_market(best_ask=ask)
+    fs = _forecast_set([69, 70, 71, 72])
+
+    uncapped = evaluate_market(
+        market, fs, floor=0.0, min_sources=2, min_sigma=1.5, min_edge=0.0, calibration=_full_cal()
+    )
+    assert uncapped.outcomes[0].recommended is True
+
+    capped = evaluate_market(
+        market,
+        fs,
+        floor=0.0,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
+        max_edge=0.25,
+        calibration=_full_cal(),
+    )
+    assert capped.outcomes[0].recommended is False
+
+
+def test_max_edge_under_cap_still_blocked_by_other_gate():
+    """The reverse stack: clearing max_edge is not sufficient on its own.  A
+    bet with edge comfortably under the 0.25 cap is still not recommended
+    when it fails a different gate (here, the confidence floor)."""
+    p_win = _max_edge_probe_p_win("YES")
+    ask = p_win - 0.10  # edge ~0.10: well under the cap
+    market = _max_edge_market(best_ask=ask)
+    fs = _forecast_set([69, 70, 71, 72])
+
+    report = evaluate_market(
+        market,
+        fs,
+        floor=p_win + 0.01,  # just above p_win: fails the confidence floor
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
+        max_edge=0.25,
+        calibration=_full_cal(),
+    )
+    o = next(o for o in report.outcomes if o.side == "YES")
+    assert o.edge < 0.25
+    assert o.recommended is False
+
+
 def _precip_market():
     return parse_precip_event(
         json.loads((FIXTURES / "polymarket_precip_monthly_nyc.json").read_text())
@@ -669,6 +835,84 @@ def test_evaluate_precip_market_emits_no_side_complement():
     for o in no:
         assert o.p_win == pytest.approx(1 - yes_by_label[o.bucket_label])
     assert report.excluded_no_ask == []
+
+
+def _precip_max_edge_target() -> PrecipTarget:
+    return PrecipTarget(
+        station=PRECIP_STATIONS["NYC"],
+        variable="PRCP",
+        year=2026,
+        month=6,
+        settlement_date=date(2026, 6, 30),
+    )
+
+
+def _precip_max_edge_market(*, best_ask: float, no_ask: float) -> PrecipMonthlyMarket:
+    """A single-bracket precip market with an ask under our own control,
+    parallel to _max_edge_market on the temperature path."""
+    target = _precip_max_edge_target()
+    bracket = PrecipBracket(
+        label="2-3in",
+        kind="range",
+        lo=2.0,
+        hi=3.0,
+        threshold=None,
+        yes_token_id="t",
+        best_ask=best_ask,
+        best_bid=None,
+        yes_price=0.0,
+        no_ask=no_ask,
+    )
+    return PrecipMonthlyMarket(id="pm1", slug="s", title="t", target=target, buckets=[bracket])
+
+
+def test_evaluate_precip_market_max_edge_caps_both_sides():
+    """Same inclusive-cap contract as evaluate_market's temperature path: an
+    over-cap YES or NO outcome is dropped from recommended, an at-cap one
+    stays recommended."""
+    fs = _precip_forecast_set(_precip_max_edge_target(), mean=2.5, var=0.6)
+    probe = evaluate_precip_market(
+        _precip_max_edge_market(best_ask=0.50, no_ask=0.50),
+        fs,
+        floor=0.0,
+        min_sources=0,
+        min_edge=0.0,
+        var_floor=PRECIP_VAR_FLOOR,
+    )
+    p_win = next(o.p_win for o in probe.outcomes if o.side == "YES")
+    p_no = next(o.p_win for o in probe.outcomes if o.side == "NO")
+
+    at_cap = evaluate_precip_market(
+        _precip_max_edge_market(best_ask=p_win - 0.25, no_ask=p_no - 0.25),
+        fs,
+        floor=0.0,
+        min_sources=0,
+        min_edge=0.0,
+        var_floor=PRECIP_VAR_FLOOR,
+        max_edge=0.25,
+    )
+    yes_at_cap = next(o for o in at_cap.outcomes if o.side == "YES")
+    no_at_cap = next(o for o in at_cap.outcomes if o.side == "NO")
+    assert yes_at_cap.edge == 0.25
+    assert yes_at_cap.recommended is True
+    assert no_at_cap.edge == 0.25
+    assert no_at_cap.recommended is True
+
+    over_cap = evaluate_precip_market(
+        _precip_max_edge_market(best_ask=p_win - 0.30, no_ask=p_no - 0.30),
+        fs,
+        floor=0.0,
+        min_sources=0,
+        min_edge=0.0,
+        var_floor=PRECIP_VAR_FLOOR,
+        max_edge=0.25,
+    )
+    yes_over_cap = next(o for o in over_cap.outcomes if o.side == "YES")
+    no_over_cap = next(o for o in over_cap.outcomes if o.side == "NO")
+    assert yes_over_cap.edge > 0.25
+    assert yes_over_cap.recommended is False
+    assert no_over_cap.edge > 0.25
+    assert no_over_cap.recommended is False
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ from rainmaker.config import (
     CONFIDENCE_FLOOR_NO,
     DB_PATH,
     KALSHI_STATIONS,
+    MAX_EDGE,
     MIN_EDGE,
     MIN_SIGMA_C,
     MIN_SIGMA_F,
@@ -178,6 +179,7 @@ def _run(reports_dir: str, db_path: str) -> None:
                 min_edge_delta=STATION_EDGE_DELTA.get(
                     (market.target.station.icao, market.target.variable), 0.0
                 ),
+                max_edge=MAX_EDGE,
             )
             evaluated.append((market, forecast_set, report))
 
@@ -212,6 +214,7 @@ def _run(reports_dir: str, db_path: str) -> None:
                 min_edge_delta=STATION_EDGE_DELTA.get(
                     (market.target.station.icao, market.target.variable), 0.0
                 ),
+                max_edge=MAX_EDGE,
             )
             evaluated.append((market, forecast_set, report))
 
@@ -235,6 +238,7 @@ def _run(reports_dir: str, db_path: str) -> None:
                 min_sources=MIN_SOURCES,
                 min_edge=MIN_EDGE,
                 var_floor=PRECIP_VAR_FLOOR,
+                max_edge=MAX_EDGE,
             )
             precip_evaluated.append((precip_market, precip_report))
         finished_at = _now_iso()
@@ -398,7 +402,7 @@ def _backtest_pnl(
     spread: float,
     reports_dir: str,
     ask_source: str = "mid",
-    max_edge: float | None = None,
+    max_edge: float | None = MAX_EDGE,
     max_p_win: float | None = None,
     db_path: str = DB_PATH,
     floor_no: float = CONFIDENCE_FLOOR_NO,
@@ -982,8 +986,8 @@ def main(argv: list[str] | None = None) -> None:
     btp.add_argument(
         "--max-edge",
         type=float,
-        default=None,
-        help="upper edge cap: exclude recommended bets with edge above this value",
+        default=MAX_EDGE,
+        help="upper edge cap: defaults to the live cap; pass 1.0 to replay uncapped",
     )
     btp.add_argument(
         "--max-p-win",

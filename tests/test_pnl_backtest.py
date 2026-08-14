@@ -627,6 +627,7 @@ def test_backtest_pnl_replays_closed_markets_end_to_end(httpx_mock):
             on_or_after=date(2026, 3, 1),
             leads=(0, 1, 2, 3),
             calibration_lookup=lambda icao, lead: _full_cal(),
+            max_edge=None,  # this test is about replay mechanics, not the cap (#356)
         )
     assert result is not None
     # The Feb market is date-filtered and London is dropped; two March markets remain.
@@ -839,6 +840,7 @@ def test_backtest_pnl_trades_mode_uses_fill_as_ask(httpx_mock):
             leads=(0, 1, 2, 3),
             ask_source="trades",
             calibration_lookup=lambda icao, lead: _full_cal(),
+            max_edge=None,  # this test is about fill-derived asks, not the cap (#356)
         )
     assert result is not None
     assert result.ask_source == "trades"
@@ -950,7 +952,11 @@ def test_backtest_pnl_mid_mode_no_fill_coverage(httpx_mock):
     )
     with httpx.Client() as client:
         result = backtest_pnl(
-            _closed_events(), client, on_or_after=date(2026, 3, 1), leads=(0, 1, 2, 3)
+            _closed_events(),
+            client,
+            on_or_after=date(2026, 3, 1),
+            leads=(0, 1, 2, 3),
+            max_edge=None,  # this test is about fill_coverage, not the cap (#356)
         )
     assert result is not None
     assert result.ask_source == "mid"
@@ -1370,7 +1376,13 @@ def test_backtest_pnl_skips_intl_stations_before_venue_actuals(
     )
 
     with httpx.Client() as client:
-        result = backtest_pnl([], client, on_or_after=date(2026, 3, 1), leads=(0, 1, 2, 3))
+        result = backtest_pnl(
+            [],
+            client,
+            on_or_after=date(2026, 3, 1),
+            leads=(0, 1, 2, 3),
+            max_edge=None,  # this test is about the intl-station skip, not the cap (#356)
+        )
 
     # The intl group must never have reached venue_actuals.
     assert london not in fetched_stations, (
@@ -1502,6 +1514,7 @@ def test_backtest_pnl_trades_mode_one_market_degrades_other_keeps_fills(
             leads=(0, 1, 2, 3),
             ask_source="trades",
             calibration_lookup=lambda icao, lead: _full_cal(),
+            max_edge=None,  # this test is about fill-fetch degrade, not the cap (#356)
         )
     assert result is not None
     assert result.fill_coverage is not None
@@ -1542,6 +1555,7 @@ def test_backtest_pnl_trades_mode_all_408_degrades_to_mid_totals(
             leads=(0, 1, 2, 3),
             ask_source="trades",
             calibration_lookup=lambda icao, lead: _full_cal(),
+            max_edge=None,  # this test is about the all-408 degrade, not the cap (#356)
         )
     assert result is not None
     assert result.fill_coverage is not None

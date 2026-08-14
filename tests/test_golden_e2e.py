@@ -8,6 +8,7 @@ import pytest
 
 from rainmaker.config import (
     CONFIDENCE_FLOOR,
+    MAX_EDGE,
     MIN_EDGE,
     MIN_SIGMA_C,
     MIN_SIGMA_F,
@@ -82,6 +83,7 @@ def test_golden_pipeline_on_fixture_market():
         min_sources=MIN_SOURCES,
         min_sigma=MIN_SIGMA_F,
         min_edge=MIN_EDGE,
+        max_edge=MAX_EDGE,
     )
 
     # All 11 buckets had an ask in the fixture, so none are excluded.
