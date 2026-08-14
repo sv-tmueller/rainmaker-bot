@@ -1082,6 +1082,37 @@ def test_backtest_pnl_command_floor_no_defaults_and_overrides(monkeypatch, tmp_p
     assert captured["floor_no"] == pytest.approx(0.70)
 
 
+def test_backtest_pnl_command_max_edge_defaults_to_live_cap(monkeypatch, tmp_path):
+    """--max-edge defaults to MAX_EDGE (the live cap) when omitted."""
+    from rainmaker.config import MAX_EDGE
+    from rainmaker.pnl_backtest import LeadPnl, PnlBacktestResult
+
+    lp = LeadPnl(
+        lead=0, n_bets=0, wins=0, losses=0, total_pnl=0.0, roi=0.0, win_rate=0.0, mean_edge=0.0
+    )
+    result = PnlBacktestResult(
+        n_markets=1,
+        floor=0.90,
+        min_sources=1,
+        min_edge=0.05,
+        per_lead=[lp],
+        overall=lp.model_copy(update={"lead": -1}),
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_backtest_pnl(events, client, **kwargs):
+        captured.update(kwargs)
+        return result
+
+    monkeypatch.setattr(cli, "backtest_pnl", _fake_backtest_pnl)
+    monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+
+    db = str(tmp_path / "t.db")
+    cli.main(["backtest-pnl", "--city", "NYC", "--reports-dir", str(tmp_path), "--db", db])
+    assert captured["max_edge"] == MAX_EDGE
+
+
 def test_backtest_pnl_command_calibration_lookup_reaches_the_store(monkeypatch, tmp_path):
     """The calibration_lookup passed to backtest_pnl reads through --db to the
     real calibration table (the same load_calibration used by the live run).

@@ -535,7 +535,12 @@ def _max_edge_probe_p_win(side: str) -> float:
     """
     fs = _forecast_set([69, 70, 71, 72])
     report = evaluate_market(
-        _max_edge_market(), fs, floor=0.0, min_sources=2, min_sigma=1.5, min_edge=0.0,
+        _max_edge_market(),
+        fs,
+        floor=0.0,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
         calibration=_full_cal(),
     )
     return next(o.p_win for o in report.outcomes if o.side == side)
@@ -646,6 +651,30 @@ def test_max_edge_stacks_with_other_gates():
         calibration=_full_cal(),
     )
     assert capped.outcomes[0].recommended is False
+
+
+def test_max_edge_under_cap_still_blocked_by_other_gate():
+    """The reverse stack: clearing max_edge is not sufficient on its own.  A
+    bet with edge comfortably under the 0.25 cap is still not recommended
+    when it fails a different gate (here, the confidence floor)."""
+    p_win = _max_edge_probe_p_win("YES")
+    ask = p_win - 0.10  # edge ~0.10: well under the cap
+    market = _max_edge_market(best_ask=ask)
+    fs = _forecast_set([69, 70, 71, 72])
+
+    report = evaluate_market(
+        market,
+        fs,
+        floor=p_win + 0.01,  # just above p_win: fails the confidence floor
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
+        max_edge=0.25,
+        calibration=_full_cal(),
+    )
+    o = next(o for o in report.outcomes if o.side == "YES")
+    assert o.edge < 0.25
+    assert o.recommended is False
 
 
 def _precip_market():
