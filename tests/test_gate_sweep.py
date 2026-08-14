@@ -140,7 +140,7 @@ def test_loosening_no_floor_admits_sibling_only_when_recommended_row_exists():
     rows = [
         # m1: YES bucket recommended at base (makes m1 sweep-eligible); NO
         # sibling failed the base NO floor (0.75), not edge.
-        _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.06, recommended=1, ask=0.60),
+        _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.08, recommended=1, ask=0.60),
         _row(
             market_id="m1",
             run_id="r1",
@@ -183,7 +183,7 @@ def test_ksfo_tmax_row_must_clear_base_plus_station_delta():
         city="San Francisco",
         variable="TMAX",
         p_win=0.85,
-        edge=0.07,  # clears base (0.05) but not base + KSFO/TMAX delta (0.10)
+        edge=0.07,  # clears base (0.07) but not base + KSFO/TMAX delta (0.12)
         recommended=1,  # stored recommended from an earlier era, before the delta applied
         ask=0.60,
     )
@@ -196,7 +196,9 @@ def test_ksfo_tmax_row_must_clear_base_plus_station_delta():
         city="San Francisco",
         variable="TMAX",
         p_win=0.85,
-        edge=0.12,  # clears base + delta (0.10)
+        # Clears base + delta (0.12) with margin: an exact 0.12 literal falls
+        # just short of 0.07 + 0.05 in float arithmetic (0.12000000000000001).
+        edge=0.13,
         recommended=1,
         ask=0.55,
     )

@@ -547,6 +547,28 @@ def test_snapshot_command_prints_per_venue_record_and_roi(monkeypatch, tmp_path,
     assert "kalshi" not in out
 
 
+def test_snapshot_backfill_command_reports_rows_and_dates(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(
+        cli,
+        "backfill_snapshots",
+        lambda conn, created_at: [
+            ("2026-06-01", "polymarket"),
+            ("2026-06-01", "kalshi"),
+            ("2026-06-02", "kalshi"),
+        ],
+    )
+    cli.main(["snapshot-backfill", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+    assert "backfilled 3 rows over 2 dates" in out
+
+
+def test_snapshot_backfill_command_reports_zero_on_noop(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "backfill_snapshots", lambda conn, created_at: [])
+    cli.main(["snapshot-backfill", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+    assert "backfilled 0 rows over 0 dates" in out
+
+
 def test_track_command_reports_pnl_and_calibration(monkeypatch, tmp_path, capsys):
     # overall (venue=None) has bets; the per-venue calls return none so only the
     # overall line prints (the per-venue breakdown is covered in test_tracking).

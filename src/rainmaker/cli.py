@@ -68,6 +68,7 @@ from rainmaker.store.record import (
     save_calibration,
 )
 from rainmaker.tracking import (
+    backfill_snapshots,
     compute_attribution,
     compute_calibration,
     compute_calibration_by_cell,
@@ -779,6 +780,25 @@ def _snapshot(db_path: str) -> None:
         )
 
 
+def _snapshot_backfill(db_path: str) -> None:
+    """One-shot admin command: reconstruct missing per-venue snapshot rows.
+
+    Kept separate from `snapshot` (a daily-cadence command wired into
+    daily-diagnostics) rather than a flag on it, since this is a one-off
+    catch-up, not part of the regular schedule.
+    """
+    if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        written = backfill_snapshots(conn, _now_iso())
+    finally:
+        conn.close()
+    n_dates = len({on_date for on_date, _venue in written})
+    print(f"backfilled {len(written)} rows over {n_dates} dates -> {_db_label(db_path)}")
+
+
 def _settle_divergence(pages: int, reports_dir: str) -> None:
     """Fetch closed Polymarket events, run Arm A (GHCND) and Arm B (Mesonet ASOS), write report."""
     client = build_client(60.0)
@@ -1041,6 +1061,12 @@ def main(argv: list[str] | None = None) -> None:
     snapshot = sub.add_parser("snapshot", help="write a daily P&L/calibration snapshot row")
     snapshot.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
+    snapshot_backfill = sub.add_parser(
+        "snapshot-backfill",
+        help="reconstruct missing per-venue tracking_snapshot rows for past dates",
+    )
+    snapshot_backfill.add_argument("--db", default=DB_PATH, help="SQLite database path")
+
     tail_check = sub.add_parser(
         "tail-check",
         help="claimed-vs-realized tail calibration and PIT tail ratios per (variable, lead)",
@@ -1123,6 +1149,8 @@ def main(argv: list[str] | None = None) -> None:
         _clv(db)
     elif args.command == "snapshot":
         _snapshot(db)
+    elif args.command == "snapshot-backfill":
+        _snapshot_backfill(db)
     elif args.command == "tail-check":
         since = args.since.isoformat() if args.since is not None else None
         _tail_check(db, args.by_hour, since)
