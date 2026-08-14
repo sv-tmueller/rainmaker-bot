@@ -625,8 +625,10 @@ in two windows (full history and since the per-cell regime tracking landed,
 | 0.07 | +3.1% | +3.5% |
 | 0.10 | +2.9% | +3.8% |
 
-0.07 and 0.10 both clear 0.05 by a wide margin on ROI, at an 8-10% cut in
-recommended-bet volume relative to 0.05. Between 0.07 and 0.10, 0.10 edges out
+0.07 and 0.10 both clear 0.05 by a wide margin on ROI. The volume cost
+relative to 0.05 differs: 8-10% at 0.07 (1275 -> 1177 bets full window, 390 ->
+352 since regime) and 19-25% at 0.10 (1275 -> 1035, 390 -> 292), per the same
+sweep run. Between 0.07 and 0.10, 0.10 edges out
 on the since-regime read (+3.8% vs +3.5%) but trails on the full window (+2.9%
 vs +3.1%); 0.07 is the more consistent riser across both windows and was the
 value chosen, not 0.10.
@@ -648,13 +650,13 @@ delta-carrying station (see `_recompute_recommended` in `gate_sweep.py`), so
 the evidence table above already reflects the KSFO TMAX interaction; no
 separate KSFO sweep was needed.
 
-**Policy-era marker.** This change merged on 2026-08-13. Recommendations
+**Policy-era marker.** This change merged on 2026-08-14. Recommendations
 recorded before that date were made under `min_edge = 0.05`. Any attribution
-or tracking read spanning 2026-08-13 should segment before/after that date
+or tracking read spanning 2026-08-14 should segment before/after that date
 rather than treat the whole history as one policy: a bet recorded as
 `recommended` under the old 0.05 floor may not have cleared the new 0.07 (or,
-for KSFO TMAX, 0.12) floor, and `track --since 2026-08-13` /
-`gate-sweep --since 2026-08-13` is the tool for that split.
+for KSFO TMAX, 0.12) floor, and `track --since 2026-08-14` /
+`gate-sweep --since 2026-08-14` is the tool for that split.
 
 **Non-goals.** This change touches only `MIN_EDGE`. Explicitly out of scope,
 each for its own reason:
