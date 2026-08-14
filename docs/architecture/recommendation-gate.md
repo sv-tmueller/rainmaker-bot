@@ -6,6 +6,7 @@ The advisory recommends a bet only when all three gates hold
 - `p_win >= CONFIDENCE_FLOOR` (0.80, relaxed from 0.90; see the resolution below)
 - `n_sources >= MIN_SOURCES` (2)
 - `edge >= MIN_EDGE` (0.07, raised from 0.05; see the 2026-08-13 update below)
+- `edge <= MAX_EDGE` (0.25; see the 2026-08-14 update below)
 
 The same three gates apply to each side. A YES bet is priced off the YES ask; a
 NO bet off the NO ask (`1 - yes_bid`) with `p_win = 1 - p_yes`.
@@ -415,6 +416,12 @@ the same pending re-run #226 already flagged.
 
 ## Update 2026-07-06: cap sweep re-run under the honest replay, no cap ships (#230)
 
+[Superseded by the 2026-08-14 update at the end of this doc: a live-settled
+gate-sweep run over real recommended history reverses this call and ships
+`MAX_EDGE = 0.25`. This section's no-cap read stands as the honest record of
+what the 730-day archive replay showed at the time; see the 2026-08-14
+section for why settled live history outweighs it.]
+
 This is the dated follow-up promised by the 2026-07-05 #226 update. The
 2026-06-27 sweep is re-run under the #226 production-faithful replay,
 re-deciding the voided 2026-06-28 call.
@@ -671,3 +678,72 @@ each for its own reason:
   the fitted bias/spread parameters it depends on are untouched. Raising
   `MIN_EDGE` changes which calibrated forecasts clear the bar, not how they
   are calibrated.
+
+## Update 2026-08-14: upper edge cap shipped, MAX_EDGE = 0.25 (#356)
+
+The 2026-07-06 no-cap decision (#230) is superseded. That call was made on a
+730-day archive replay predating any settled live history under the current
+gate stack; this decision is made on `rainmaker gate-sweep` replaying real,
+already-settled recommended bets. Settled live history outranks an archive
+replay for the same question, so it wins the tie.
+
+**Evidence.** Source: 2026-08-14 prod gate-sweep run 31771933147, the same
+two-window method the 2026-08-13 min-edge update uses (full history and
+since the per-cell regime tracking landed, #323, `REGIME_SINCE=2026-07-18`).
+The `max_edge` OFAT axis, live policy otherwise:
+
+| max_edge | ROI, full window | ROI, since regime |
+| ---: | ---: | ---: |
+| 0.20 | +6.8% | +5.4% |
+| 0.25 | +6.4% | +5.5% |
+| 0.30 | +3.6% | +3.5% |
+| none (uncapped) | +3.0% | +3.2% |
+
+0.25 clears uncapped by a wide margin on both windows (+6.4 vs +3.0 full,
++5.5 vs +3.2 since regime) and, unlike the min-edge sweep, is not the
+smallest-loss-of-volume option: 0.20 edges it out narrowly on ROI in the
+full window (+6.8% vs +6.4%) but trails on the since-regime window (+5.4%
+vs +5.5%), the same pattern the min-edge decision resolved by picking the
+more consistent riser. 0.25 is also the total-P/L leader in the full window
+(+36.66u, vs +35.34u at 0.20 and +18.18u uncapped) and keeps more bets than
+0.20 (796 vs 704 full window), so it was chosen over the marginally
+higher-ROI 0.20 row.
+
+**Corroboration.** A separate attribution read (not the sweep itself, same
+shape as the 2026-08-13 min-edge corroboration) scored the high-edge tail
+directly: bets with edge in [0.20, infinity) returned -6.4% ROI over 647
+bets. A tail that clears every other gate today and still loses money live
+is exactly the population an upper cap should remove, corroborating the
+sweep's own conclusion rather than only being read through it. It also
+explains why the 2026-07-06 archive replay found the opposite direction:
+that replay used calibrated but not-yet-settled-live forecasts, so it could
+not see this tail's live realized performance, only its claimed edge.
+
+**Decision.** Ship `MAX_EDGE = 0.25` (`config.py`), wired into
+`evaluate_market` and `evaluate_precip_market` as an inclusive upper bound
+on edge (`edge <= MAX_EDGE`), applied on both YES and NO sides identically
+to the existing `MIN_EDGE` floor. `gate_sweep.py`'s `Policy.max_edge` default
+moves from `None` to `MAX_EDGE` so `LIVE_POLICY` and every other OFAT axis
+replay the live cap; `is_loosening` now also flags an uncapped or
+looser-than-live `max_edge` row as a population-pinned lower bound, the
+same caveat the NO-floor loosening row already carries.
+
+**Policy-era marker.** This change merged on 2026-08-14, the same day as the
+2026-08-13 min-edge change actually landed. Recommendations recorded before
+2026-08-14 were made under `MIN_EDGE = 0.05` and no `MAX_EDGE` cap. From
+2026-08-14, both `MIN_EDGE = 0.07` and `MAX_EDGE = 0.25` apply. Any
+attribution or tracking read spanning 2026-08-14 should segment
+before/after rather than treat the whole history as one policy; `track
+--since 2026-08-14` / `gate-sweep --since 2026-08-14` is the tool for that
+split.
+
+**Two changes, one history.** Because `MIN_EDGE` and `MAX_EDGE` both moved
+on the same date, any future settled history after 2026-08-14 carries both
+changes at once: an ROI move cannot be cleanly attributed to one gate
+versus the other from tracking data alone until enough post-2026-08-14
+history accrues to sweep each axis independently again. The scheduled
+`weekly-metrics` workflow (`rainmaker backtest-pnl` against the live cap by
+default, plus `track`/`tail-check`/`clv`) is the out-of-sample check that
+will re-measure both changes together, and re-running `gate-sweep --since
+2026-08-14` once enough post-change history accrues will let them be
+disentangled.
