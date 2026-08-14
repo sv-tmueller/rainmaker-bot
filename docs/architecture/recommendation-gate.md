@@ -1,6 +1,6 @@
 # Recommendation gate and the confidence floor
 
-The advisory recommends a bet only when all three gates hold
+The advisory recommends a bet only when all four gates hold
 (`ranking/edge.py`, constants in `config.py`):
 
 - `p_win >= CONFIDENCE_FLOOR` (0.80, relaxed from 0.90; see the resolution below)
@@ -8,7 +8,7 @@ The advisory recommends a bet only when all three gates hold
 - `edge >= MIN_EDGE` (0.07, raised from 0.05; see the 2026-08-13 update below)
 - `edge <= MAX_EDGE` (0.25; see the 2026-08-14 update below)
 
-The same three gates apply to each side. A YES bet is priced off the YES ask; a
+The same four gates apply to each side. A YES bet is priced off the YES ask; a
 NO bet off the NO ask (`1 - yes_bid`) with `p_win = 1 - p_yes`.
 
 ## The question (issue #58)

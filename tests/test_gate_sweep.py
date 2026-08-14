@@ -415,6 +415,26 @@ def test_max_edge_is_a_pure_tightening_not_a_loosening():
     assert Policy(label="cap 0.20", max_edge=0.20).is_loosening is False
 
 
+def test_max_edge_looser_than_live_is_a_loosening():
+    """A cap of None (no cap) or above the live MAX_EDGE (0.25) is a
+    population-pin lower bound, same as any other loosened gate."""
+    assert Policy(label="none", max_edge=None).is_loosening is True
+    assert Policy(label="0.30", max_edge=0.30).is_loosening is True
+
+
+def test_max_edge_ofat_grid_rows_looser_than_live_are_lower_bounds():
+    """The "none" and "0.30" max_edge grid rows are looser than the live cap
+    (0.25), so run_sweep must flag them as lower_bound rows."""
+    rows = [
+        _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.20, recommended=1, ask=0.60),
+    ]
+    result = run_sweep(rows)
+    none_row = next(r for r in result["max_edge"] if r["label"] == "none")
+    row_030 = next(r for r in result["max_edge"] if r["label"] == "0.30")
+    assert none_row["lower_bound"] is True
+    assert row_030["lower_bound"] is True
+
+
 def test_max_edge_ofat_025_row_matches_replayed_live_anchor():
     """LIVE_POLICY carries MAX_EDGE (#356), so the grid row at the same value
     (not the uncapped "none" row) is the one that must reconcile with the
