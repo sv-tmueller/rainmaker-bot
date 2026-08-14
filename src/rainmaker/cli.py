@@ -18,6 +18,7 @@ from rainmaker.config import (
     CONFIDENCE_FLOOR_NO,
     DB_PATH,
     KALSHI_STATIONS,
+    MAX_EDGE,
     MIN_EDGE,
     MIN_SIGMA_C,
     MIN_SIGMA_F,
@@ -178,6 +179,7 @@ def _run(reports_dir: str, db_path: str) -> None:
                 min_edge_delta=STATION_EDGE_DELTA.get(
                     (market.target.station.icao, market.target.variable), 0.0
                 ),
+                max_edge=MAX_EDGE,
             )
             evaluated.append((market, forecast_set, report))
 
@@ -212,6 +214,7 @@ def _run(reports_dir: str, db_path: str) -> None:
                 min_edge_delta=STATION_EDGE_DELTA.get(
                     (market.target.station.icao, market.target.variable), 0.0
                 ),
+                max_edge=MAX_EDGE,
             )
             evaluated.append((market, forecast_set, report))
 
@@ -235,6 +238,7 @@ def _run(reports_dir: str, db_path: str) -> None:
                 min_sources=MIN_SOURCES,
                 min_edge=MIN_EDGE,
                 var_floor=PRECIP_VAR_FLOOR,
+                max_edge=MAX_EDGE,
             )
             precip_evaluated.append((precip_market, precip_report))
         finished_at = _now_iso()
