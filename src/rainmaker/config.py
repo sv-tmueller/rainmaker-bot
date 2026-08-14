@@ -404,6 +404,9 @@ MIN_SOURCES = 2
 # Raised from 0.05 (#350): see the 2026-08-13 dated update in
 # docs/architecture/recommendation-gate.md for the gate-sweep evidence.
 MIN_EDGE = 0.07
+# Upper edge cap (#356): see the 2026-08-14 dated update in
+# docs/architecture/recommendation-gate.md for the gate-sweep evidence.
+MAX_EDGE = 0.25
 
 # Per-station recommendation-gate overrides (#302), keyed by ICAO. See
 # docs/architecture/recommendation-gate.md for the dated decision record.
