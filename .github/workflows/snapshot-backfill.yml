@@ -1,0 +1,35 @@
+# Unlike gate-sweep.yml (read-only), this workflow WRITES to prod: it inserts
+# any tracking_snapshot rows still missing for the polymarket/kalshi venues on
+# past dates (the pre-#347 shape, before the per-venue split). It only ever
+# inserts a row for a (date, venue) pair that does not exist yet and never
+# touches an existing row (including every 'all' aggregate row), so running it
+# more than once is a no-op after the first pass: idempotent, safe to re-run.
+name: snapshot-backfill
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: snapshot-backfill
+  cancel-in-progress: true
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync
+      - name: Snapshot backfill
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          case "$DATABASE_URL" in
+            postgres://*|postgresql://*) ;;
+            *) echo "DATABASE_URL is not a Postgres DSN; refusing to run (would silently read ephemeral SQLite)"; exit 1 ;;
+          esac
+          uv run rainmaker snapshot-backfill
