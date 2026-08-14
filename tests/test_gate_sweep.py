@@ -372,6 +372,17 @@ def test_max_edge_cap_flips_pick_to_under_cap_sibling():
     assert capped["staked"] == pytest.approx(0.20)
 
 
+def test_max_edge_cap_boundary_is_inclusive():
+    """A row with edge exactly equal to the cap is kept (edge <= cap, the #205
+    convention). Pins the inclusive comparison: a strict < would drop this bet.
+    """
+    rows = [
+        _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.20, recommended=1, ask=0.50),
+    ]
+    capped = replay_policy(rows, Policy(label="cap 0.20", min_edge=0.01, max_edge=0.20))
+    assert capped["n_bets"] == 1
+
+
 def test_max_edge_cap_over_only_recommended_row_produces_no_bet():
     rows = [
         _row(market_id="m2", run_id="r1", p_win=0.85, edge=0.30, recommended=1, ask=0.40),
