@@ -863,7 +863,7 @@ def _print_gate_sweep_table(title: str, rows: list[dict[str, Any]]) -> None:
 
 
 def _gate_sweep(db_path: str, since: str | None = None) -> None:
-    """Replay the recommendation gate (min_edge/floor/lead/venue) over settled history.
+    """Replay the recommendation gate (min_edge/max_edge/floor/lead/venue) over settled history.
 
     Read-only diagnostic: no refit, no gate change, no persistence. See
     gate_sweep.py's module docstring for the sweep-eligibility rule and the
@@ -893,6 +893,7 @@ def _gate_sweep(db_path: str, since: str | None = None) -> None:
     )
 
     _print_gate_sweep_table("min_edge sweep (OFAT, others at live policy)", result["min_edge"])
+    _print_gate_sweep_table("max_edge sweep (OFAT, others at live policy)", result["max_edge"])
     _print_gate_sweep_table("YES floor sweep (OFAT)", result["floor_yes"])
     _print_gate_sweep_table("NO floor sweep (OFAT)", result["floor_no"])
     _print_gate_sweep_table("lead sweep (OFAT)", result["lead"])
@@ -900,14 +901,17 @@ def _gate_sweep(db_path: str, since: str | None = None) -> None:
     _print_gate_sweep_table(
         "combined: min_edge x exclude lead 0", result["combined_min_edge_lead0"]
     )
+    _print_gate_sweep_table("combined: min_edge x max_edge", result["combined_min_edge_max_edge"])
 
     all_rows = (
         result["min_edge"]
+        + result["max_edge"]
         + result["floor_yes"]
         + result["floor_no"]
         + result["lead"]
         + result["venue"]
         + result["combined_min_edge_lead0"]
+        + result["combined_min_edge_max_edge"]
     )
     if any(row["lower_bound"] for row in all_rows):
         print(
@@ -1088,7 +1092,10 @@ def main(argv: list[str] | None = None) -> None:
 
     gate_sweep_cmd = sub.add_parser(
         "gate-sweep",
-        help="replay the recommendation gate (min_edge/floor/lead/venue) over settled history",
+        help=(
+            "replay the recommendation gate (min_edge/max_edge/floor/lead/venue) "
+            "over settled history"
+        ),
     )
     gate_sweep_cmd.add_argument("--db", default=DB_PATH, help="SQLite database path")
     gate_sweep_cmd.add_argument(
