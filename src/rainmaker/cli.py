@@ -986,8 +986,8 @@ def main(argv: list[str] | None = None) -> None:
     btp.add_argument(
         "--max-edge",
         type=float,
-        default=None,
-        help="upper edge cap: exclude recommended bets with edge above this value",
+        default=MAX_EDGE,
+        help="upper edge cap: defaults to the live cap; pass 1.0 to replay uncapped",
     )
     btp.add_argument(
         "--max-p-win",

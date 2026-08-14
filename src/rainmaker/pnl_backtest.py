@@ -49,6 +49,7 @@ from pydantic import BaseModel, ConfigDict
 from rainmaker.backfill import fetch_historical_samples, venue_actuals
 from rainmaker.config import (
     CONFIDENCE_FLOOR,
+    MAX_EDGE,
     MIN_CAL_SAMPLES,
     MIN_EDGE,
     MIN_SIGMA_F,
@@ -496,7 +497,7 @@ def backtest_pnl(
     city: str | None = None,
     spread: float = 0.0,
     ask_source: Literal["mid", "trades"] = "mid",
-    max_edge: float | None = None,
+    max_edge: float | None = MAX_EDGE,
     max_p_win: float | None = None,
     calibration_lookup: Callable[[str, int], Calibration | None] | None = None,
 ) -> PnlBacktestResult | None:
@@ -507,7 +508,8 @@ def backtest_pnl(
     buckets that could clear the confidence floor (on either side) and replays
     each lead. Returns None when nothing scorable remains. min_sources defaults
     to 1 because the archive is a single source; recommended here is therefore a
-    superset of the live two-source gate.
+    superset of the live two-source gate. max_edge defaults to MAX_EDGE (#356),
+    matching the live cap; pass None to replay uncapped.
 
     When ask_source="trades", real BUY fills from data-api.polymarket.com are
     fetched for each candidate bucket and used as the ask in place of mid+spread
