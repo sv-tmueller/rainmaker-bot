@@ -26,18 +26,21 @@ tracking's `_best_per_market_run` tie-break and scored at the stored ask via
 The max_edge cap compares against the raw stored `edge`, not the
 delta-adjusted effective min_edge threshold: it matches the #205
 backtest-pnl `--max-edge` precedent, so a KSFO TMAX row can clear its
-delta-raised effective min_edge and still be dropped by the cap. A cap is a
-pure tightening (it only ever removes bets from the population-pinned set,
-never adds one), so it needs no `is_loosening` change and `max_edge=None`
-(no cap) is the loosest value.
+delta-raised effective min_edge and still be dropped by the cap. Since
+`LIVE_POLICY.max_edge` defaults to `MAX_EDGE` (#356, live ships the cap), a
+grid row can loosen the cap relative to live by raising it or dropping it
+entirely: `is_loosening` treats `max_edge is None` or `max_edge > MAX_EDGE`
+as a loosening, the same population-pin caveat below as the NO floor.
 
-Consequence (also a report footnote): loosening a gate (e.g. the NO floor)
-only ever surfaces markets that produced at least one recommended bet at run
-time, so a loosened row's bet count is a lower bound, not the true count a
-permanently-loosened policy would have produced. Every named candidate in the
-originating discussion (raising min_edge, excluding lead 0, a venue tilt) is a
-tightening, so this only matters for the one loosening row in the NO-floor
-grid (0.70 < the live 0.75).
+Consequence (also a report footnote): loosening a gate (e.g. the NO floor, or
+the max_edge cap) only ever surfaces markets that produced at least one
+recommended bet at run time, so a loosened row's bet count is a lower bound,
+not the true count a permanently-loosened policy would have produced. Every
+named candidate in the originating discussion (raising min_edge, excluding
+lead 0, a venue tilt) is a tightening, so among those axes this only matters
+for the one loosening row in the NO-floor grid (0.70 < the live 0.75); the
+max_edge grid separately carries its own loosening rows (0.30 and "none",
+both looser than the live 0.25 cap).
 
 Two anchor rows reconcile the sweep with `tracking.compute_pnl`:
 - "live (as recorded)" (`as_recorded`): the stored recommended flags, exactly
@@ -59,6 +62,7 @@ from rainmaker.config import (
     CONFIDENCE_FLOOR,
     CONFIDENCE_FLOOR_NO,
     KALSHI_STATIONS,
+    MAX_EDGE,
     MIN_EDGE,
     STATION_EDGE_DELTA,
     STATIONS,
@@ -83,7 +87,7 @@ class Policy:
 
     label: str
     min_edge: float = MIN_EDGE
-    max_edge: float | None = None
+    max_edge: float | None = MAX_EDGE
     floor: float = CONFIDENCE_FLOOR
     floor_no: float = CONFIDENCE_FLOOR_NO
     lead: LeadFilter = "all"
@@ -96,6 +100,8 @@ class Policy:
             self.min_edge < MIN_EDGE
             or self.floor < CONFIDENCE_FLOOR
             or self.floor_no < CONFIDENCE_FLOOR_NO
+            or self.max_edge is None
+            or self.max_edge > MAX_EDGE
         )
 
 

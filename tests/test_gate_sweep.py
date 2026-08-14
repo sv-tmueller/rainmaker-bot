@@ -415,17 +415,34 @@ def test_max_edge_is_a_pure_tightening_not_a_loosening():
     assert Policy(label="cap 0.20", max_edge=0.20).is_loosening is False
 
 
-def test_max_edge_ofat_none_row_matches_replayed_live_anchor():
+def test_max_edge_ofat_025_row_matches_replayed_live_anchor():
+    """LIVE_POLICY carries MAX_EDGE (#356), so the grid row at the same value
+    (not the uncapped "none" row) is the one that must reconcile with the
+    live-replayed anchor."""
     rows = [
         _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.20, recommended=1, ask=0.60),
     ]
     result = run_sweep(rows)
-    none_row = next(r for r in result["max_edge"] if r["label"] == "none")
+    cap_row = next(r for r in result["max_edge"] if r["label"] == "0.25")
     anchor = result["anchors"]["replayed_live"]
     for key, value in anchor.items():
         if key in ("label", "lower_bound"):
             continue
-        assert none_row[key] == value
+        assert cap_row[key] == value
+
+
+def test_max_edge_none_row_diverges_from_replayed_live_above_the_cap():
+    """Regression pin that LIVE_POLICY carries the cap: a row whose stored
+    edge (0.30) clears the live cap's sibling "none" (no cap) but not the
+    live-replayed anchor, which now applies MAX_EDGE."""
+    rows = [
+        _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.30, recommended=1, ask=0.40),
+    ]
+    result = run_sweep(rows)
+    none_row = next(r for r in result["max_edge"] if r["label"] == "none")
+    anchor = result["anchors"]["replayed_live"]
+    assert none_row["n_bets"] == 1
+    assert anchor["n_bets"] == 0
 
 
 def test_max_edge_and_combined_grid_shapes():
