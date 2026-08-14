@@ -402,7 +402,7 @@ def _backtest_pnl(
     spread: float,
     reports_dir: str,
     ask_source: str = "mid",
-    max_edge: float | None = None,
+    max_edge: float | None = MAX_EDGE,
     max_p_win: float | None = None,
     db_path: str = DB_PATH,
     floor_no: float = CONFIDENCE_FLOOR_NO,
