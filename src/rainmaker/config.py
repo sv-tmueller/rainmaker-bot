@@ -401,7 +401,9 @@ CONFIDENCE_FLOOR = 0.80
 # See docs/architecture/recommendation-gate.md for the sweep table.
 CONFIDENCE_FLOOR_NO = 0.75
 MIN_SOURCES = 2
-MIN_EDGE = 0.05
+# Raised from 0.05 (#350): see the 2026-08-13 dated update in
+# docs/architecture/recommendation-gate.md for the gate-sweep evidence.
+MIN_EDGE = 0.07
 
 # Per-station recommendation-gate overrides (#302), keyed by ICAO. See
 # docs/architecture/recommendation-gate.md for the dated decision record.
