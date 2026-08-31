@@ -1,0 +1,110 @@
+[
+  {
+    "id": "533361",
+    "title": "Highest temperature in Dallas on August 31?",
+    "slug": "highest-temperature-in-dallas-on-august-31-2026",
+    "endDate": "2026-08-31T12:00:00Z",
+    "description": "This market will resolve to the temperature range that contains the highest temperature recorded at the Dallas Love Field Station in degrees Fahrenheit on 31 Aug '26.\n\nThe resolution source for this market will be information from the National Weather Service, specifically the highest temperature recorded for all times on this day for the Dallas Love Field Station, available here: https://www.weather.gov/wrh/timeseries?site=kdal.\n\nThis market can not resolve until the first data point for the following date has been published on the resolution source.\n\nThe resolution source for this market measures temperatures to whole degrees Fahrenheit (eg, 21\u00b0F). Thus, this is the level of precision that will be used when resolving the market.\n\nRevisions to temperatures recorded within this market's timeframe will be considered until the first datapoint for the following date has been published, after which any alterations will not be considered.",
+    "markets": [
+      {
+        "question": "Will the highest temperature in Dallas be 95\u00b0F or below on August 31?",
+        "groupItemTitle": "95\u00b0F or below",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.02\", \"0.98\"]",
+        "bestAsk": 0.03,
+        "bestBid": 0.01,
+        "clobTokenIds": "[\"0000000000000000000000000000000000000000000000000000000000000000\", \"0000000000000000000000000000000000000000000000000000000000000001\"]"
+      },
+      {
+        "question": "Will the highest temperature in Dallas be 96\u00b0F or below on August 31?",
+        "groupItemTitle": "96\u00b0F or below",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.02\", \"0.98\"]",
+        "bestAsk": 0.03,
+        "bestBid": 0.01,
+        "clobTokenIds": "[\"0000000000000000000000000000000000000000000000000000000000000001\", \"0000000000000000000000000000000000000000000000000000000000000002\"]"
+      },
+      {
+        "question": "Will the highest temperature in Dallas be 97\u00b0F or below on August 31?",
+        "groupItemTitle": "97\u00b0F or below",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.02\", \"0.98\"]",
+        "bestAsk": 0.03,
+        "bestBid": 0.01,
+        "clobTokenIds": "[\"0000000000000000000000000000000000000000000000000000000000000002\", \"0000000000000000000000000000000000000000000000000000000000000003\"]"
+      },
+      {
+        "question": "Will the highest temperature in Dallas be 98\u00b0F or below on August 31?",
+        "groupItemTitle": "98\u00b0F or below",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.02\", \"0.98\"]",
+        "bestAsk": 0.03,
+        "bestBid": 0.01,
+        "clobTokenIds": "[\"0000000000000000000000000000000000000000000000000000000000000003\", \"0000000000000000000000000000000000000000000000000000000000000004\"]"
+      },
+      {
+        "question": "Will the highest temperature in Dallas be 99\u00b0F or below on August 31?",
+        "groupItemTitle": "99\u00b0F or below",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.02\", \"0.98\"]",
+        "bestAsk": 0.03,
+        "bestBid": 0.01,
+        "clobTokenIds": "[\"0000000000000000000000000000000000000000000000000000000000000004\", \"0000000000000000000000000000000000000000000000000000000000000005\"]"
+      },
+      {
+        "question": "Will the highest temperature in Dallas be 100\u00b0F or below on August 31?",
+        "groupItemTitle": "100\u00b0F or below",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.02\", \"0.98\"]",
+        "bestAsk": 0.03,
+        "bestBid": 0.01,
+        "clobTokenIds": "[\"0000000000000000000000000000000000000000000000000000000000000005\", \"0000000000000000000000000000000000000000000000000000000000000006\"]"
+      },
+      {
+        "question": "Will the highest temperature in Dallas be 101\u00b0F or below on August 31?",
+        "groupItemTitle": "101\u00b0F or below",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.02\", \"0.98\"]",
+        "bestAsk": 0.03,
+        "bestBid": 0.01,
+        "clobTokenIds": "[\"0000000000000000000000000000000000000000000000000000000000000006\", \"0000000000000000000000000000000000000000000000000000000000000007\"]"
+      },
+      {
+        "question": "Will the highest temperature in Dallas be 102\u00b0F or below on August 31?",
+        "groupItemTitle": "102\u00b0F or below",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.02\", \"0.98\"]",
+        "bestAsk": 0.03,
+        "bestBid": 0.01,
+        "clobTokenIds": "[\"0000000000000000000000000000000000000000000000000000000000000007\", \"0000000000000000000000000000000000000000000000000000000000000008\"]"
+      },
+      {
+        "question": "Will the highest temperature in Dallas be 103\u00b0F or below on August 31?",
+        "groupItemTitle": "103\u00b0F or below",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.02\", \"0.98\"]",
+        "bestAsk": 0.03,
+        "bestBid": 0.01,
+        "clobTokenIds": "[\"0000000000000000000000000000000000000000000000000000000000000008\", \"0000000000000000000000000000000000000000000000000000000000000009\"]"
+      },
+      {
+        "question": "Will the highest temperature in Dallas be 104\u00b0F or below on August 31?",
+        "groupItemTitle": "104\u00b0F or below",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.02\", \"0.98\"]",
+        "bestAsk": 0.03,
+        "bestBid": 0.01,
+        "clobTokenIds": "[\"0000000000000000000000000000000000000000000000000000000000000009\", \"0000000000000000000000000000000000000000000000000000000000000010\"]"
+      },
+      {
+        "question": "Will the highest temperature in Dallas be 105\u00b0F or below on August 31?",
+        "groupItemTitle": "105\u00b0F or below",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.02\", \"0.98\"]",
+        "bestAsk": 0.03,
+        "bestBid": 0.01,
+        "clobTokenIds": "[\"0000000000000000000000000000000000000000000000000000000000000010\", \"0000000000000000000000000000000000000000000000000000000000000011\"]"
+      }
+    ]
+  }
+]

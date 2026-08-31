@@ -134,3 +134,60 @@ def test_parse_bucket_label_zero_width_range_raises():
     # degenerate bucket.  Post-fix: lo >= hi triggers ValueError.
     with pytest.raises(ValueError, match="inverted range"):
         parse_bucket_label("70-70°F")
+
+
+def _dallas_newfmt_event() -> dict[str, Any]:
+    """New Polymarket description format: station name, no uppercase ICAO, but a
+    lowercase ICAO embedded in a weather.gov URL."""
+    events = json.loads((FIXTURES / "polymarket_weather_dallas_newfmt.json").read_text())
+    return events[0]
+
+
+def test_parse_market_accepts_new_description_format_by_name():
+    # New format names the station ("Dallas Love Field Station") without the
+    # parenthesized uppercase ICAO; the guard should accept it via the station
+    # name substring match.
+    m = parse_market(_dallas_newfmt_event())
+    assert m.target.station.icao == "KDAL"
+    assert m.target.station.city == "Dallas"
+    assert m.target.variable == "TMAX"
+
+
+def test_parse_market_accepts_lowercase_icao_in_weather_gov_url():
+    # Even if the station name were stripped, the lowercase ICAO in the
+    # weather.gov URL (site=kdal) should satisfy the guard case-insensitively.
+    event = _dallas_newfmt_event()
+    event["description"] = (
+        "Resolves at some station. See "
+        "https://www.weather.gov/wrh/timeseries?site=kdal for details."
+    )
+    m = parse_market(event)
+    assert m.target.station.icao == "KDAL"
+
+
+def test_parse_market_old_format_still_accepted():
+    # Regression: the old format embeds the uppercase ICAO in parentheses and
+    # must continue to parse.
+    m = parse_market(_nyc_event())
+    assert m.target.station.icao == "KLGA"
+
+
+def test_parse_market_guard_still_rejects_wrong_station():
+    # Relaxing the guard must not let an unrelated market through. A description
+    # naming neither the station nor its ICAO should still fail.
+    event = _dallas_newfmt_event()
+    event["description"] = (
+        "Resolves at a totally unrelated station somewhere far away, with no "
+        "matching name or code whatsoever."
+    )
+    with pytest.raises(ValueError, match="resolution station"):
+        parse_market(event)
+
+
+def test_parse_market_guard_rejects_different_icase_insensitive_match_required():
+    # An uppercase ICAO that does not belong to this station (but belongs to a
+    # different city) should not accidentally satisfy the name guard.
+    event = _dallas_newfmt_event()
+    event["description"] = "Resolves at the LaGuardia Airport Station (KLGA) in New York."
+    with pytest.raises(ValueError, match="resolution station"):
+        parse_market(event)
