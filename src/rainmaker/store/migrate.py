@@ -86,6 +86,30 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
     ),
 ]
 
+# Tables created by the base schema. Every one gets RLS enabled on Postgres so
+# the public anon key cannot read or mutate rows through the PostgREST API.
+# No policies are granted: anon and authenticated roles are denied by default,
+# while the service-role key and the postgres owner (used by the scheduled run
+# via DATABASE_URL) bypass RLS and keep working unchanged. FORCE ROW LEVEL
+# SECURITY is deliberately NOT set, so the table owner stays exempt. SQLite has
+# no RLS concept and skips this migration (see the 0013 dialect gate below).
+_RLS_TABLES: list[str] = [
+    "runs",
+    "markets",
+    "prices",
+    "forecasts",
+    "predictions",
+    "outcomes",
+    "calibration",
+    "forecast_accuracy",
+    "tracking_snapshot",
+]
+
+
+def _enable_rls_statements() -> list[str]:
+    """ENABLE ROW LEVEL SECURITY for every table, Postgres-flavored SQL."""
+    return [f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY" for t in _RLS_TABLES]
+
 
 # Corrective ALTERs for the six columns that landed as float4 on Postgres before
 # the REAL -> DOUBLE PRECISION substitution existed (0008 var_a/var_b, 0009
@@ -205,5 +229,23 @@ def apply_migrations(conn: Conn) -> None:
         conn.execute(
             "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
             ("0010_widen_float4_columns", datetime.now(UTC).isoformat()),
+        )
+        conn.commit()
+
+    # 0013: enable Row Level Security on every table (Postgres only). Supabase
+    # flags rls_disabled_in_public because, without RLS, the public anon key can
+    # read and mutate all rows via PostgREST. Enabling RLS with no policies
+    # denies anon/authenticated by default; the service-role key and the postgres
+    # owner (scheduled run via DATABASE_URL) bypass RLS and keep working. SQLite
+    # has no RLS and records the migration as a no-op. ENABLE ROW LEVEL SECURITY
+    # is idempotent, so a crash before the record commits is recovered naturally
+    # on the next run (the statement re-enables harmlessly).
+    if "0013_enable_rls" not in applied:
+        if conn.backend == "postgres":
+            for statement in _enable_rls_statements():
+                conn.execute(statement)
+        conn.execute(
+            "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
+            ("0013_enable_rls", datetime.now(UTC).isoformat()),
         )
         conn.commit()
