@@ -31,21 +31,32 @@ MVP 1.0 and supports the single-city start the spec calls for.
 ## Resolution rules (the part that settles the market)
 
 Each city's market resolves against the daily extreme recorded at one fixed
-airport station, sourced from the Weather Underground history page for that
-station, rounded to whole degrees Fahrenheit.
+airport station. As of 2026-08, Polymarket switched the stated resolution
+source from Weather Underground to **NOAA/weather.gov hourly** (the
+`wrh/timeseries` page, e.g. `https://www.weather.gov/wrh/timeseries?site=kdal`),
+with Wunderground as fallback. Temperatures are measured to whole degrees
+Fahrenheit.
 
-| City          | Station                          | ICAO  | Weather Underground resolution page |
-|---------------|----------------------------------|-------|-------------------------------------|
-| NYC           | LaGuardia Airport                | KLGA  | wunderground.com/history/daily/us/ny/new-york-city/KLGA |
-| Miami         | Miami Intl Airport               | KMIA  | .../us/fl/miami/KMIA |
-| Chicago       | Chicago O'Hare Intl Airport      | KORD  | .../us/il/chicago/KORD |
-| Dallas        | Dallas Love Field                | KDAL  | .../us/tx/dallas/KDAL |
-| Houston       | Houston (William P. Hobby)       | KHOU  | .../us/tx/houston/KHOU |
-| Los Angeles   | Los Angeles Intl Airport         | KLAX  | .../us/ca/los-angeles/KLAX |
-| San Francisco | San Francisco Intl Airport       | KSFO  | .../us/ca/san-francisco/KSFO |
-| Seattle       | Seattle-Tacoma Intl Airport      | KSEA  | .../us/wa/seatac/KSEA |
-| Austin        | Austin-Bergstrom Intl Airport    | KAUS  | .../us/tx/austin/KAUS |
-| Atlanta       | Hartsfield-Jackson Intl Airport  | KATL  | .../us/ga/atlanta/KATL |
+The wrh/timeseries page is backed by the Synoptic Data API
+(`api.synopticdata.com/v2/stations/timeseries`) using a token embedded in
+weather.gov's `apiKey.js`. It returns all observations (5-minute resolution,
+including SPECI) and uses local-day bucketing (`obtimezone=local`). See
+`docs/architecture/noaa-wrh-vs-asos-comparison.md` for the full comparison
+of this source against our current ASOS (Iowa State Mesonet) settlement path.
+
+| City          | Station                          | ICAO  | wrh/timeseries URL |
+|---------------|----------------------------------|-------|--------------------|
+| NYC           | LaGuardia Airport                | KLGA  | weather.gov/wrh/timeseries?site=klga |
+| Miami         | Miami Intl Airport               | KMIA  | weather.gov/wrh/timeseries?site=kmia |
+| Chicago       | Chicago O'Hare Intl Airport      | KORD  | weather.gov/wrh/timeseries?site=kord |
+| Dallas        | Dallas Love Field                | KDAL  | weather.gov/wrh/timeseries?site=kdal |
+| Houston       | Houston (William P. Hobby)       | KHOU  | weather.gov/wrh/timeseries?site=khou |
+| Los Angeles   | Los Angeles Intl Airport         | KLAX  | weather.gov/wrh/timeseries?site=klax |
+| San Francisco | San Francisco Intl Airport       | KSFO  | weather.gov/wrh/timeseries?site=ksfo |
+| Seattle       | Seattle-Tacoma Intl Airport      | KSEA  | weather.gov/wrh/timeseries?site=ksea |
+| Austin        | Austin-Bergstrom Intl Airport    | KAUS  | weather.gov/wrh/timeseries?site=kaus |
+| Atlanta       | Hartsfield-Jackson Intl Airport  | KATL  | weather.gov/wrh/timeseries?site=katl |
+| Denver        | Buckley Space Force Base         | KBKF  | weather.gov/wrh/timeseries?site=bkf |
 
 Resolution rule text, verbatim essence (NYC example):
 
@@ -110,19 +121,16 @@ No credentials, no wallet, no signing needed for any of this. Consistent with th
 
 ## Risks and decisions this raises
 
-1. **Resolution source is Weather Underground, not NWS/NOAA (decision needed).**
-   The spec and CLAUDE.md name NWS/NOAA and Open-Meteo. The markets settle on
-   Weather Underground's reading of a named station. The stations are real
-   ASOS/METAR airport sites, so NWS and Open-Meteo can still serve as forecast
-   inputs for the same locations. But the quantity that settles the market is
-   "what Weather Underground reports for station KXXX, in whole deg F". For the
-   advisory MVP 1.0 we only forecast and compare to price, so we do not strictly
-   need to read Weather Underground yet. For MVP 2.0 (settling against actuals)
-   we do. Decision to make: settle 2.0 against Weather Underground (which has no
-   free official API, so the history page would be scraped), or first prove that
-   the NWS/NOAA daily extreme for these stations matches Weather Underground
-   closely enough to settle against NOAA. This touches the "free sources only,
-   no new source without an explicit decision" rule, so it is a maintainer call.
+1. **Resolution source is NOAA/weather.gov hourly (updated 2026-08).** The
+   spec originally assumed NWS/NOAA. Then Polymarket resolved against Weather
+   Underground. As of 2026-08, Polymarket switched to NOAA/weather.gov hourly
+   (the `wrh/timeseries` page), with Wunderground as fallback. Our settlement
+   currently uses ASOS (Iowa State Mesonet) as a Wunderground proxy. The
+   comparison in `docs/architecture/noaa-wrh-vs-asos-comparison.md` found
+   material divergence (>=1 deg F on 33.4% of station-days), driven by
+   observational frequency (5-min vs hourly METAR), SPECI inclusion, and
+   local-day vs UTC-day bucketing. Implementation of a dedicated wrh/
+   timeseries fetcher is tracked in issue #362 (Checkpoint 3b).
 
 2. **Forecast the exact station, in whole deg F.** Tie NWS and Open-Meteo
    forecasts to each station's coordinates, produce a daily max (or min)
