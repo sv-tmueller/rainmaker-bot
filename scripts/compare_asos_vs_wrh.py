@@ -13,7 +13,7 @@ using a hardcoded token embedded in weather.gov's apiKey.js. The API requires a
 Referer header matching weather.gov.
 
 Both sources ultimately read the same ASOS station observations, but differ in:
-  - Temporal granularity: Synaptic returns all obs (incl. SPECI); our ASOS path
+  - Temporal granularity: Synoptic returns all obs (incl. SPECI); our ASOS path
     sends report_type=3 (routine hourly METAR only).
   - Day bucketing: wrh/timeseries uses local-day (obtimezone=local); our ASOS
     US path uses UTC-day bucketing.

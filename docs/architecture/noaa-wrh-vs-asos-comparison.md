@@ -121,7 +121,7 @@ hourly METAR misses.
 | Denver        | KBKF | 28      | 3    | 10.7% | 0.26       | 2.6       |
 
 Denver (KBKF) is the only station below threshold (10.7%). All others exceed
-15%. San Francisco (50%) and LA/Austin (both 46.4%) are worst affected --
+15%. San Francisco (50%) and LA/Austin (both 46.4%) are worst affected:
 coastal diurnal patterns and marine-layer transitions produce rapid
 short-duration temperature swings that 5-minute sampling captures but hourly
 METAR does not.
@@ -130,7 +130,7 @@ METAR does not.
 
 | Band (deg F) | Count |
 |--------------|-------|
-| 0.0          | 65    |
+| 0.0          | 119   |
 | 0.5          | 60    |
 | 1.0          | 59    |
 | 1.5          | 30    |
@@ -139,6 +139,10 @@ METAR does not.
 | 3.0          | 2     |
 | 3.5          | 1     |
 | 4.5          | 2     |
+
+The 0.0 band includes 54 exact-zero deltas (sources agree to the tenth) and 65
+non-zero deltas that round down to 0.0F for display (e.g. 0.1F). The table
+covers all 308 comparisons.
 
 Deltas cluster around half-degree increments, consistent with the
 Celsius-to-Fahrenheit conversion producing 0.5F steps (0.1C ~= 0.18F, but
