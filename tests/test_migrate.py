@@ -6,8 +6,10 @@ import pytest
 from rainmaker.store.db import _SQLITE_SCHEMA, connect, init_schema
 from rainmaker.store.migrate import (
     _MIGRATIONS,
+    _RLS_TABLES,
     _WIDEN_FLOAT4_COLUMNS,
     _backfill_venue,
+    _enable_rls_statements,
     _for_backend,
     _is_duplicate_column,
     apply_migrations,
@@ -73,10 +75,10 @@ def test_apply_migrations_is_idempotent():
     apply_migrations(conn)  # second pass must not error
     n = conn.execute("SELECT count(*) AS n FROM schema_migrations").fetchone()["n"]
     conn.close()
-    # _MIGRATIONS holds DDL steps; 0007_backfill_venue and 0010_widen_float4_columns
-    # are recorded as separate Python steps outside that list, so the total count
-    # is len(_MIGRATIONS) + 2.
-    assert n == len(_MIGRATIONS) + 2
+    # _MIGRATIONS holds DDL steps; 0007_backfill_venue, 0010_widen_float4_columns,
+    # and 0013_enable_rls are recorded as separate Python steps outside that list,
+    # so the total count is len(_MIGRATIONS) + 3.
+    assert n == len(_MIGRATIONS) + 3
 
 
 def test_migration_statements_render_real_as_double_precision_for_postgres():
@@ -237,11 +239,12 @@ def test_apply_migrations_crash_safe_when_alter_already_applied():
 
     rows = {r["id"] for r in conn.execute("SELECT id FROM schema_migrations").fetchall()}
     conn.close()
-    # _MIGRATIONS holds DDL steps; 0007_backfill_venue and 0010_widen_float4_columns
-    # are recorded outside that list.
+    # _MIGRATIONS holds DDL steps; 0007_backfill_venue, 0010_widen_float4_columns,
+    # and 0013_enable_rls are recorded outside that list.
     assert rows == {mid for mid, _ in _MIGRATIONS} | {
         "0007_backfill_venue",
         "0010_widen_float4_columns",
+        "0013_enable_rls",
     }
 
 
@@ -306,6 +309,7 @@ def test_migration_0012_backfills_venue_all_for_legacy_row():
     already_applied = [m for m, _ in _MIGRATIONS if m != "0012_tracking_snapshot_venue"] + [
         "0007_backfill_venue",
         "0010_widen_float4_columns",
+        "0013_enable_rls",
     ]
     for mid in already_applied:
         conn.execute("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)", (mid, "t"))
@@ -352,6 +356,7 @@ def test_migration_0012_second_apply_is_a_noop():
     already_applied = [m for m, _ in _MIGRATIONS if m != "0012_tracking_snapshot_venue"] + [
         "0007_backfill_venue",
         "0010_widen_float4_columns",
+        "0013_enable_rls",
     ]
     for mid in already_applied:
         conn.execute("INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)", (mid, "t"))
@@ -408,3 +413,49 @@ def test_backfill_venue_is_idempotent():
     conn.close()
     assert rows["700001"] == "polymarket"
     assert rows["KXHIGHNY-26JUN08"] == "kalshi"
+
+
+def test_rls_tables_match_base_schema_tables():
+    """_RLS_TABLES must name exactly the tables the base schema creates, so
+    every table gets RLS enabled and no drift sneaks in when a table is added.
+    """
+    # Parse table names out of the shared base schema (works for both backends;
+    # the table set is identical, only column types differ).
+    table_names = re.findall(r"CREATE TABLE IF NOT EXISTS (\w+) \(", _SQLITE_SCHEMA)
+    assert sorted(table_names) == sorted(_RLS_TABLES)
+
+
+def test_enable_rls_statements_shape():
+    """Exact ENABLE ROW LEVEL SECURITY statements, one per table, Postgres syntax.
+    Mirrors test_widen_float4_columns_statements_are_exact: pins the emitted SQL
+    so a typo or stray policy can't sneak in.
+    """
+    assert _enable_rls_statements() == [
+        "ALTER TABLE runs ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE markets ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE prices ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE forecasts ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE predictions ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE outcomes ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE calibration ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE forecast_accuracy ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE tracking_snapshot ENABLE ROW LEVEL SECURITY",
+    ]
+
+
+def test_migration_0013_records_on_sqlite_without_error():
+    """On SQLite (no RLS concept) 0013 records itself as a no-op and is skipped
+    on a second pass. Mirrors test_apply_migrations_records_0010_once_on_sqlite.
+    """
+    conn = connect(":memory:")
+    init_schema(conn)
+    ids = {r["id"] for r in conn.execute("SELECT id FROM schema_migrations").fetchall()}
+    assert "0013_enable_rls" in ids
+
+    apply_migrations(conn)  # second pass: must not re-record
+
+    n = conn.execute(
+        "SELECT count(*) AS n FROM schema_migrations WHERE id = ?", ("0013_enable_rls",)
+    ).fetchone()["n"]
+    conn.close()
+    assert n == 1

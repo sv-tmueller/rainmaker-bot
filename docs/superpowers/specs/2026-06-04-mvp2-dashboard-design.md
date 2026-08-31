@@ -24,7 +24,9 @@ browser, without running the CLI.
   app has no auth code and treats requests as already authenticated.
 - **Data access: server-side reads with the Supabase service-role key.** Next.js
   server components query Supabase with the service key held only in Vercel env;
-  it never reaches the browser. No Supabase RLS policies are needed.
+  it never reaches the browser. RLS is enabled on every table with no policies
+  (denying the anon/authenticated roles by default); the service key bypasses
+  RLS, so the dashboard keeps working. See migration 0013_enable_rls.
 - **Repo: a `dashboard/` subdir.** The Next.js app lives in `dashboard/` in this
   repo; Vercel's root directory is set to `dashboard/`.
 
@@ -113,7 +115,8 @@ Access.
 
 - The service-role key bypasses RLS, so it must stay server-only (Vercel env,
   server components). The design keeps all queries server-side; the key is never
-  referenced in client code.
+  referenced in client code. RLS is enabled with no policies, so the anon key
+  alone cannot read or mutate data (migration 0013_enable_rls).
 - Early on the dashboard shows few or zero settled results (settlement is still
   catching up); the panels handle the empty/null case explicitly.
 
