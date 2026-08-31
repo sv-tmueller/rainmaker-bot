@@ -140,17 +140,19 @@ def compute_wrh_daily_extremes(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=14, help="Number of recent days to compare")
-    parser.add_argument("--output", type=str, default="scripts/comparison_results.json",
-                        help="Output JSON file path")
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="scripts/comparison_results.json",
+        help="Output JSON file path",
+    )
     args = parser.parse_args()
 
     # Date range: most recent N settled days (excluding today since data may be incomplete)
     today = date.today()
     end_date = today - timedelta(days=1)
     start_date = end_date - timedelta(days=args.days - 1)
-    target_dates = [
-        start_date + timedelta(days=i) for i in range(args.days)
-    ]
+    target_dates = [start_date + timedelta(days=i) for i in range(args.days)]
 
     print(f"Comparing ASOS vs wrh/timeseries for {args.days} days: {start_date} to {end_date}")
     print(f"Stations: {len(STATIONS)} US Polymarket stations")
@@ -174,13 +176,9 @@ def main() -> int:
         asos_start = start_date - timedelta(days=1)
         asos_end = end_date + timedelta(days=1)
         try:
-            asos_max = fetch_asos_daily_extreme(
-                asos_code, asos_start, asos_end, client, "TMAX"
-            )
+            asos_max = fetch_asos_daily_extreme(asos_code, asos_start, asos_end, client, "TMAX")
             time.sleep(REQUEST_DELAY_S)
-            asos_min = fetch_asos_daily_extreme(
-                asos_code, asos_start, asos_end, client, "TMIN"
-            )
+            asos_min = fetch_asos_daily_extreme(asos_code, asos_start, asos_end, client, "TMIN")
             time.sleep(REQUEST_DELAY_S)
         except Exception as e:
             print(f"  ASOS fetch failed: {e}", file=sys.stderr)
@@ -218,17 +216,19 @@ def main() -> int:
                 else None
             )
 
-            station_results.append({
-                "city": city,
-                "icao": icao,
-                "date": d.isoformat(),
-                "asos_tmax": round(asos_tmax, 1) if asos_tmax is not None else None,
-                "wrh_tmax": round(wrh_tmax, 1) if wrh_tmax is not None else None,
-                "tmax_delta": round(tmax_delta, 1) if tmax_delta is not None else None,
-                "asos_tmin": round(asos_tmin, 1) if asos_tmin is not None else None,
-                "wrh_tmin": round(wrh_tmin, 1) if wrh_tmin is not None else None,
-                "tmin_delta": round(tmin_delta, 1) if tmin_delta is not None else None,
-            })
+            station_results.append(
+                {
+                    "city": city,
+                    "icao": icao,
+                    "date": d.isoformat(),
+                    "asos_tmax": round(asos_tmax, 1) if asos_tmax is not None else None,
+                    "wrh_tmax": round(wrh_tmax, 1) if wrh_tmax is not None else None,
+                    "tmax_delta": round(tmax_delta, 1) if tmax_delta is not None else None,
+                    "asos_tmin": round(asos_tmin, 1) if asos_tmin is not None else None,
+                    "wrh_tmin": round(wrh_tmin, 1) if wrh_tmin is not None else None,
+                    "tmin_delta": round(tmin_delta, 1) if tmin_delta is not None else None,
+                }
+            )
 
         all_results.extend(station_results)
 
@@ -261,10 +261,9 @@ def main() -> int:
     client.close()
 
     # Overall summary
-    all_deltas_flat = (
-        [r["tmax_delta"] for r in all_results if r["tmax_delta"] is not None] +
-        [r["tmin_delta"] for r in all_results if r["tmin_delta"] is not None]
-    )
+    all_deltas_flat = [r["tmax_delta"] for r in all_results if r["tmax_delta"] is not None] + [
+        r["tmin_delta"] for r in all_results if r["tmin_delta"] is not None
+    ]
     total = len(all_deltas_flat)
     ge1 = sum(1 for d in all_deltas_flat if d >= 1.0)
     overall_pct = round(100.0 * ge1 / total, 1) if total else 0
