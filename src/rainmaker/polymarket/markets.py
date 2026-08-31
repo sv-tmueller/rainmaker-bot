@@ -4,12 +4,26 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from rainmaker.config import INTL_STATIONS, STATIONS, Target, Variable
+from rainmaker.config import INTL_STATIONS, STATIONS, Station, Target, Variable
 from rainmaker.domain import Bucket, Market, parse_bucket_label
 
 _ALL_TEMP_STATIONS = {**STATIONS, **INTL_STATIONS}
 
 _TITLE_RE = re.compile(r"(highest|lowest) temperature in (.+?) on .+", re.IGNORECASE)
+
+
+def _names_resolution_station(description: str, station: Station) -> bool:
+    """Confirm the market rules resolve on ``station`` before trusting it.
+
+    Polymarket switched description formats around 2026-08-23: the old text
+    embedded the uppercase ICAO in parentheses (e.g. "(KLGA)"), while the new
+    text drops the parens and names the station (e.g. "Dallas Love Field
+    Station") with a lowercase ICAO tucked into a weather.gov URL
+    (e.g. "...?site=kdal"). Match either way, case-insensitively, so both
+    formats satisfy the guard while an unrelated station still fails.
+    """
+    lowered = description.lower()
+    return station.icao.lower() in lowered or station.name.lower() in lowered
 
 
 def parse_bucket(market: dict[str, Any]) -> Bucket:
@@ -56,9 +70,10 @@ def parse_market(event: dict[str, Any]) -> Market:
     variable: Variable = "TMAX" if match.group(1).lower() == "highest" else "TMIN"
     city = match.group(2).strip()
     station = _ALL_TEMP_STATIONS[city]  # KeyError for an unknown city is intended
-    if station.icao not in event["description"]:
+    if not _names_resolution_station(event["description"], station):
         raise ValueError(
-            f"resolution station {station.icao} not named in market {event['id']} rules"
+            f"resolution station {station.icao}/{station.name} not named in "
+            f"market {event['id']} rules"
         )
     end = datetime.fromisoformat(event["endDate"])
     # These daily markets publish endDate at ~12:00 UTC, which is mid-morning in
