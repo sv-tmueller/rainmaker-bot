@@ -1109,6 +1109,26 @@ def main(argv: list[str] | None = None) -> None:
         help="restrict to predictions whose run started on or after this date (YYYY-MM-DD)",
     )
 
+    recover_gap_cmd = sub.add_parser(
+        "recover-gap",
+        help="rediscover, reprice, and persist US TMAX/TMIN markets missed during a date range",
+    )
+    recover_gap_cmd.add_argument(
+        "--from",
+        dest="from_date",
+        type=date.fromisoformat,
+        required=True,
+        help="earliest settlement date to recover (YYYY-MM-DD)",
+    )
+    recover_gap_cmd.add_argument(
+        "--to",
+        dest="to_date",
+        type=date.fromisoformat,
+        required=True,
+        help="latest settlement date to recover (YYYY-MM-DD)",
+    )
+    recover_gap_cmd.add_argument("--db", default=DB_PATH, help="SQLite database path")
+
     args = parser.parse_args(argv)
 
     if args.command == "backtest":
@@ -1163,3 +1183,22 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "gate-sweep":
         since = args.since.isoformat() if args.since is not None else None
         _gate_sweep(db, since)
+    elif args.command == "recover-gap":
+        _recover_gap(args.from_date, args.to_date, db)
+
+
+def _recover_gap(from_date: date, to_date: date, db_path: str) -> None:
+    from rainmaker.recover_gap import recover_gap
+
+    if "://" not in db_path:
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    init_schema(conn)
+    client = build_client(30.0)
+    try:
+        events = fetch_closed_weather_events(client)
+        recorded = recover_gap(conn, client, events, from_date=from_date, to_date=to_date)
+        print(f"recovered {recorded} run(s) for {from_date} to {to_date}")
+    finally:
+        conn.close()
+        client.close()
