@@ -1,23 +1,30 @@
 @import "tailwindcss";
 
 :root {
-  --background: #0c0f13;
-  --foreground: #e3e6ea;
-  --panel: #0e1217;
-  --line: #1f242b;
-  --line-soft: #1a1f26;
-  --muted: #7d8590;
-  --faint: #586069;
+  --bg: #0c0b0a;
+  --fg: #e8eae6;
+  --panel: #1a1713;
+  --line: #211e1a;
+  --line-soft: #1a1713;
+  --muted: #8a847a;
+  --faint: #5a544a;
   --pos: #3fb950;
   --neg: #f85149;
   --warn: #d29922;
-  --warm: #e3893d;
-  --cool: #6cb6ff;
+  --warm: #e8b05a;
+  --cool: #6cb6c4;
+  --accent: #e8b05a;
+  --accent-border: #3a3025;
+  --fg-2: #bdb8af;
+  --dot-dim: #3a352d;
+  --bg-glow: #1a1713;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-bg: var(--bg);
+  --color-background: var(--bg);
+  --color-fg: var(--fg);
+  --color-foreground: var(--fg);
   --color-panel: var(--panel);
   --color-line: var(--line);
   --color-line-soft: var(--line-soft);
@@ -28,8 +35,13 @@
   --color-warn: var(--warn);
   --color-warm: var(--warm);
   --color-cool: var(--cool);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-accent: var(--accent);
+  --color-accent-border: var(--accent-border);
+  --color-fg-2: var(--fg-2);
+  --color-dot-dim: var(--dot-dim);
+  --color-bg-glow: var(--bg-glow);
+  --font-sans: var(--font-display);
+  --font-mono: var(--font-jb-mono);
 }
 
 html {
@@ -37,7 +49,13 @@ html {
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background:
+    radial-gradient(
+      130% 90% at 18% -10%,
+      var(--bg-glow) 0%,
+      rgba(26, 23, 19, 0) 55%
+    ),
+    var(--bg);
+  color: var(--fg);
   font-family: var(--font-sans), system-ui, sans-serif;
 }
