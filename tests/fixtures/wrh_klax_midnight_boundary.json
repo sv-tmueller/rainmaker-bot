@@ -1,0 +1,31 @@
+{
+  "SUMMARY": {
+    "RESPONSE_CODE": 1,
+    "RESPONSE_MESSAGE": "OK"
+  },
+  "STATION": [
+    {
+      "STID": "KLAX",
+      "NAME": "Los Angeles Intl Airport",
+      "LATITUDE": 33.9382,
+      "LONGITUDE": -118.3866,
+      "TIMEZONE": "America/Los_Angeles",
+      "OBSERVATIONS": {
+        "date_time": [
+          "2026-08-20T23:55:00-0700",
+          "2026-08-21T00:30:00-0700",
+          "2026-08-21T14:55:00-0700",
+          "2026-08-22T00:30:00-0700",
+          "2026-08-22T14:55:00-0700"
+        ],
+        "air_temp_set_1": [
+          70.0,
+          65.0,
+          85.0,
+          63.0,
+          87.0
+        ]
+      }
+    }
+  ]
+}
