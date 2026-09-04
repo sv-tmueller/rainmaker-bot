@@ -1,11 +1,14 @@
 """TDD tests for per-venue settlement routing and re-grade.
 
-Polymarket TMAX/TMIN -> ASOS (Iowa State Mesonet).
-Polymarket PRCP      -> NCEI (unchanged).
-Kalshi (all)         -> NCEI (unchanged).
+Polymarket TMAX/TMIN (US)  -> wrh (Synoptic Data API, weather.gov): Fahrenheit,
+                              local-day bucketing. ASOS fallback on fetch failure.
+Polymarket TMAX/TMIN (intl)-> ASOS (Iowa State Mesonet): Celsius, local-day bucketing.
+Polymarket PRCP            -> NCEI (unchanged).
+Kalshi (all)              -> NCEI (unchanged).
 
 Re-grade: regrade_polymarket_settlements re-settles existing Polymarket
-TMAX/TMIN outcomes using ASOS and re-grades predictions.won.
+TMAX/TMIN outcomes using wrh (primary) with ASOS fallback, and re-grades
+predictions.won.
 """
 
 import json
@@ -18,6 +21,7 @@ import pytest
 
 from rainmaker.backfill import NCEI_URL
 from rainmaker.forecasts.asos import MESONET_ASOS_URL
+from rainmaker.forecasts.wrh import SYNOPTIC_API_URL
 from rainmaker.settle import regrade_polymarket_settlements, run_settlement
 from rainmaker.store.db import connect, init_schema
 from rainmaker.store.migrate import _backfill_venue
@@ -30,19 +34,44 @@ from rainmaker.store.record import record_outcome
 _FIXTURES = Path(__file__).parent / "fixtures"
 
 _TMAX_SPEC = [
-    {"label": "59°F or below", "kind": "below", "lo": None, "hi": None, "threshold": 59},
-    {"label": "60-64°F", "kind": "range", "lo": 60, "hi": 64, "threshold": None},
-    {"label": "65°F or higher", "kind": "above", "lo": None, "hi": None, "threshold": 65},
+    {"label": "59\u00b0F or below", "kind": "below", "lo": None, "hi": None, "threshold": 59},
+    {"label": "60-64\u00b0F", "kind": "range", "lo": 60, "hi": 64, "threshold": None},
+    {"label": "65\u00b0F or higher", "kind": "above", "lo": None, "hi": None, "threshold": 65},
 ]
 
-# ASOS mesonet CSV for KLGA (LGA): one hour at 20.0C = 68.0F
-_ASOS_CSV_68F = "station,valid,tmpc\nLGA,2026-05-30 12:00,20.0\n"
+# wrh JSON for KLGA: one observation at 68.0F on 2026-05-30
+_WRH_KLGA_68F = (_FIXTURES / "wrh_klga_2026-05-30_68f.json").read_text()
 
-# ASOS mesonet CSV for KLGA: one hour at 18.0C = 64.4F -> rounds to 64
-# This lands in "60-64°F" when the NCEI value would land in "65°F or higher"
-_ASOS_CSV_64F = "station,valid,tmpc\nLGA,2026-05-30 12:00,18.0\n"
+# wrh JSON for KLGA: one observation at 64.4F on 2026-05-30
+_WRH_KLGA_64F = (_FIXTURES / "wrh_klga_2026-05-30_64f.json").read_text()
 
-# NCEI JSON: 65F (in "65°F or higher")
+# wrh JSON for KMIA: one observation at 68.0F on 2026-05-30
+_WRH_KMIA_68F = (_FIXTURES / "wrh_kmia_2026-05-30_68f.json").read_text()
+
+# wrh JSON for KLGA: June 2026 data (multiple days)
+_WRH_KLGA_JUNE = (_FIXTURES / "wrh_klga_2026-06.json").read_text()
+
+# wrh JSON: empty STATION list (no data)
+_WRH_EMPTY = (_FIXTURES / "wrh_empty.json").read_text()
+
+# ASOS mesonet CSV for intl tests (kept for the intl path)
+_INTL_EGLC_CSV = (
+    "station,valid,tmpc\n"
+    "EGLC,2026-06-08 23:20,14.0\n"
+    "EGLC,2026-06-09 10:50,18.0\n"
+    "EGLC,2026-06-09 11:20,19.0\n"
+    "EGLC,2026-06-09 11:50,18.0\n"
+    "EGLC,2026-06-09 22:50,11.0\n"
+    "EGLC,2026-06-09 23:20,10.0\n"
+)
+
+_INTL_TMAX_SPEC = [
+    {"label": "17\u00b0C or below", "kind": "below", "lo": None, "hi": None, "threshold": 17},
+    {"label": "18-21\u00b0C", "kind": "range", "lo": 18, "hi": 21, "threshold": None},
+    {"label": "22\u00b0C or higher", "kind": "above", "lo": None, "hi": None, "threshold": 22},
+]
+
+# NCEI JSON: 65F (in "65\u00b0F or higher")
 _NCEI_JSON_65F = [{"DATE": "2026-05-30", "TMAX": "65"}]
 
 
@@ -75,20 +104,19 @@ def _prediction(conn, run_id, market_id, bucket, side, p_win, recommended=1):
 
 
 # ---------------------------------------------------------------------------
-# per-venue routing: Polymarket TMAX -> ASOS
+# per-venue routing: Polymarket TMAX -> wrh (primary), ASOS fallback
 # ---------------------------------------------------------------------------
 
 
-def test_polymarket_tmax_uses_asos(httpx_mock):
-    """A Polymarket TMAX market must be settled via ASOS (Mesonet), not NCEI."""
+def test_polymarket_tmax_uses_wrh(httpx_mock):
+    """A US Polymarket TMAX market must be settled via wrh, not NCEI or ASOS."""
     conn = connect(":memory:")
     init_schema(conn)
-    # venue=polymarket (explicit; default is also polymarket)
     _market(conn, "poly-tmax", "NYC", "TMAX", "2026-05-30", venue="polymarket")
 
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text=_ASOS_CSV_68F,
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_KLGA_68F,
     )
     with httpx.Client() as client:
         settled, waiting = run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
@@ -97,20 +125,18 @@ def test_polymarket_tmax_uses_asos(httpx_mock):
     ).fetchone()
     conn.close()
     assert (settled, waiting) == (1, 0)
-    # 20.0C = 68.0F
     assert row["actual_value"] == pytest.approx(68.0, abs=0.1)
 
 
-def test_polymarket_tmin_uses_asos(httpx_mock):
-    """A Polymarket TMIN market must be settled via ASOS (Mesonet)."""
+def test_polymarket_tmin_uses_wrh(httpx_mock):
+    """A US Polymarket TMIN market must be settled via wrh."""
     conn = connect(":memory:")
     init_schema(conn)
     _market(conn, "poly-tmin", "NYC", "TMIN", "2026-05-30", venue="polymarket")
 
-    # Single ASOS reading; TMIN and TMAX both come from hourly tmpc extremes
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text=_ASOS_CSV_68F,
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_KLGA_68F,
     )
     with httpx.Client() as client:
         settled, waiting = run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
@@ -124,7 +150,7 @@ def test_polymarket_tmin_uses_asos(httpx_mock):
 
 
 def test_polymarket_tmax_does_not_call_ncei(httpx_mock):
-    """No NCEI call when settling a Polymarket TMAX market."""
+    """No NCEI call when settling a US Polymarket TMAX market."""
     conn = connect(":memory:")
     init_schema(conn)
     _market(conn, "poly-tmax", "NYC", "TMAX", "2026-05-30", venue="polymarket")
@@ -136,16 +162,39 @@ def test_polymarket_tmax_does_not_call_ncei(httpx_mock):
         return httpx.Response(200, json=[])
 
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text=_ASOS_CSV_68F,
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_KLGA_68F,
     )
-    # If NCEI were called it would also need a mock, so any NCEI call would 404.
-    # We register a callback to detect accidental NCEI calls.
-    # (httpx_mock raises if an unmocked URL is called)
     with httpx.Client() as client:
         run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
     conn.close()
     assert not ncei_called
+
+
+def test_polymarket_tmax_falls_back_to_asos_on_wrh_failure(httpx_mock):
+    """If wrh fetch fails, US Polymarket TMAX falls back to ASOS."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    _market(conn, "poly-tmax", "NYC", "TMAX", "2026-05-30", venue="polymarket")
+
+    # wrh returns 503; ASOS succeeds with 68F
+    httpx_mock.add_response(
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        status_code=503,
+    )
+    httpx_mock.add_response(
+        url=re.compile(re.escape(MESONET_ASOS_URL)),
+        text="station,valid,tmpc\nLGA,2026-05-30 12:00,20.0\n",
+    )
+    with httpx.Client() as client:
+        settled, waiting = run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
+    row = conn.execute(
+        "SELECT actual_value FROM outcomes WHERE market_id = ?", ("poly-tmax",)
+    ).fetchone()
+    conn.close()
+    assert (settled, waiting) == (1, 0)
+    # 20.0C = 68.0F from ASOS fallback
+    assert row["actual_value"] == pytest.approx(68.0, abs=0.1)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +203,7 @@ def test_polymarket_tmax_does_not_call_ncei(httpx_mock):
 
 
 def test_kalshi_tmax_uses_ncei(httpx_mock):
-    """A Kalshi TMAX market must continue to be settled via NCEI, not ASOS."""
+    """A Kalshi TMAX market must continue to be settled via NCEI."""
     conn = connect(":memory:")
     init_schema(conn)
     _market(conn, "kalshi-tmax", "NYC", "TMAX", "2026-05-30", venue="kalshi")
@@ -173,8 +222,8 @@ def test_kalshi_tmax_uses_ncei(httpx_mock):
     assert row["actual_value"] == pytest.approx(65.0)
 
 
-def test_kalshi_tmax_does_not_call_asos(httpx_mock):
-    """No ASOS call when settling a Kalshi market."""
+def test_kalshi_tmax_does_not_call_wrh_or_asos(httpx_mock):
+    """No wrh or ASOS call when settling a Kalshi market."""
     conn = connect(":memory:")
     init_schema(conn)
     _market(conn, "kalshi-tmax", "NYC", "TMAX", "2026-05-30", venue="kalshi")
@@ -183,7 +232,7 @@ def test_kalshi_tmax_does_not_call_asos(httpx_mock):
         url=re.compile(re.escape(NCEI_URL)),
         json=_NCEI_JSON_65F,
     )
-    # ASOS would fail if called (no mock registered for it)
+    # Neither wrh nor ASOS should be called (no mock registered for them)
     with httpx.Client() as client:
         settled, waiting = run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
     conn.close()
@@ -199,7 +248,6 @@ def test_null_venue_falls_back_to_ncei(httpx_mock):
     """Markets with venue IS NULL (legacy rows) fall back to NCEI (safe default)."""
     conn = connect(":memory:")
     init_schema(conn)
-    # venue=None simulates a legacy row that predates the venue column
     _market(conn, "legacy", "NYC", "TMAX", "2026-05-30", venue=None)
 
     httpx_mock.add_response(
@@ -222,7 +270,7 @@ def test_null_venue_falls_back_to_ncei(httpx_mock):
 
 
 def test_polymarket_prcp_still_uses_ncei(httpx_mock):
-    """Polymarket PRCP (monthly) stays on NCEI GSOM; ASOS has no precip data."""
+    """Polymarket PRCP (monthly) stays on NCEI GSOM; wrh has no precip data."""
     conn = connect(":memory:")
     init_schema(conn)
     _market(conn, "poly-prcp", "NYC", "PRCP", "2026-06-30", venue="polymarket")
@@ -242,15 +290,14 @@ def test_polymarket_prcp_still_uses_ncei(httpx_mock):
 
 
 # ---------------------------------------------------------------------------
-# ASOS waits when station unmapped (city not in ICAO_TO_ASOS_STATION)
+# wrh waits when station unmapped (city not in STATIONS)
 # ---------------------------------------------------------------------------
 
 
-def test_polymarket_tmax_waits_when_asos_station_unknown():
-    """If no ASOS code exists for the city, the market waits (not crash)."""
+def test_polymarket_tmax_waits_when_station_unknown():
+    """If no station exists for the city, the market waits (not crash)."""
     conn = connect(":memory:")
     init_schema(conn)
-    # "Atlantis" has no ICAO -> no ASOS code
     _market(conn, "poly-atlantis", "Atlantis", "TMAX", "2026-05-30", venue="polymarket")
 
     with httpx.Client() as client:
@@ -260,21 +307,24 @@ def test_polymarket_tmax_waits_when_asos_station_unknown():
 
 
 # ---------------------------------------------------------------------------
-# ASOS HTTP error: market waits, loop continues
+# wrh HTTP error: market waits, loop continues
 # ---------------------------------------------------------------------------
 
 
-def test_polymarket_tmax_waits_on_asos_http_error_same_station(httpx_mock):
-    """An ASOS HTTP error for a (station, variable) group puts ALL markets in that
-    group in waiting. Same-station markets share one batch request; if it fails,
-    all markets in the batch wait together."""
+def test_polymarket_tmax_waits_on_fetch_error_same_station(httpx_mock):
+    """A fetch error (wrh + ASOS both fail) for a (station, variable) group puts
+    ALL markets in that group in waiting. Same-station markets share one batch
+    request; if it fails, all markets in the batch wait together."""
     conn = connect(":memory:")
     init_schema(conn)
-    # Two NYC TMAX markets on different dates; same station (LGA) -> one batch
     _market(conn, "poly-err1", "NYC", "TMAX", "2026-05-30", venue="polymarket")
     _market(conn, "poly-err2", "NYC", "TMAX", "2026-05-31", venue="polymarket")
 
-    # One 503 for the LGA/TMAX batch; both markets wait
+    # wrh 503, ASOS 503 -> both fail
+    httpx_mock.add_response(
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        status_code=503,
+    )
     httpx_mock.add_response(
         url=re.compile(re.escape(MESONET_ASOS_URL)),
         status_code=503,
@@ -285,22 +335,27 @@ def test_polymarket_tmax_waits_on_asos_http_error_same_station(httpx_mock):
     assert (settled, waiting) == (0, 2)
 
 
-def test_polymarket_tmax_waits_on_asos_http_error_different_stations(httpx_mock):
-    """An ASOS HTTP error for one station/variable group does not prevent other
-    station groups from settling. NYC (LGA) fails; Miami (MIA) succeeds."""
+def test_polymarket_tmax_waits_on_fetch_error_different_stations(httpx_mock):
+    """A fetch error for one station/variable group does not prevent other
+    station groups from settling. NYC (KLGA) fails; Miami (KMIA) succeeds."""
     conn = connect(":memory:")
     init_schema(conn)
     _market(conn, "poly-nyc", "NYC", "TMAX", "2026-05-30", venue="polymarket")
     _market(conn, "poly-mia", "Miami", "TMAX", "2026-05-30", venue="polymarket")
 
-    # LGA batch fails; MIA batch succeeds. Two requests: one per station.
+    # NYC: wrh 503, ASOS 503 -> fail
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
         status_code=503,
     )
     httpx_mock.add_response(
         url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text=_ASOS_CSV_68F,
+        status_code=503,
+    )
+    # Miami: wrh succeeds
+    httpx_mock.add_response(
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_KMIA_68F,
     )
     with httpx.Client() as client:
         settled, waiting = run_settlement(conn, client, date(2026, 6, 3), "2026-06-03T00:00:00Z")
@@ -313,15 +368,12 @@ def test_polymarket_tmax_waits_when_batch_returns_no_data_for_date(httpx_mock):
     """Batch succeeds but a specific date has no data; that market waits."""
     conn = connect(":memory:")
     init_schema(conn)
-    # NYC TMAX on June 01 (has data in fixture) and June 03 (not in fixture)
     _market(conn, "poly-june01", "NYC", "TMAX", "2026-06-01", venue="polymarket")
     _market(conn, "poly-june03", "NYC", "TMAX", "2026-06-03", venue="polymarket")
 
-    # The June fixture has data for June 01 and 02 only, not June 03
-    fixture = (_FIXTURES / "mesonet_asos_klga_2026-06.csv").read_text()
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text=fixture,
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_KLGA_JUNE,
     )
     with httpx.Client() as client:
         settled, waiting = run_settlement(conn, client, date(2026, 6, 5), "2026-06-05T00:00:00Z")
@@ -331,65 +383,57 @@ def test_polymarket_tmax_waits_when_batch_returns_no_data_for_date(httpx_mock):
 
 
 # ---------------------------------------------------------------------------
-# Batching: N markets at same station/variable -> 1 ASOS request
+# Batching: N markets at same station/variable -> 1 wrh request
 # ---------------------------------------------------------------------------
 
 
-def test_same_station_variable_uses_single_asos_request(httpx_mock):
+def test_same_station_variable_uses_single_wrh_request(httpx_mock):
     """Multiple Polymarket TMAX markets for the same city/date-range issue ONE
-    ASOS request (not one per market)."""
+    wrh request (not one per market)."""
     conn = connect(":memory:")
     init_schema(conn)
-    # Three NYC TMAX markets on different dates; same station -> one batch
     _market(conn, "m1", "NYC", "TMAX", "2026-06-01", venue="polymarket")
     _market(conn, "m2", "NYC", "TMAX", "2026-06-02", venue="polymarket")
 
-    fixture = (_FIXTURES / "mesonet_asos_klga_2026-06.csv").read_text()
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text=fixture,
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_KLGA_JUNE,
     )
     with httpx.Client() as client:
         settled, waiting = run_settlement(conn, client, date(2026, 6, 5), "2026-06-05T00:00:00Z")
     conn.close()
     # Both dates in the June fixture -> both settle
     assert (settled, waiting) == (2, 0)
-    # Only ONE Mesonet request was made (the batch)
-    asos_requests = [r for r in httpx_mock.get_requests() if MESONET_ASOS_URL in str(r.url)]
-    assert len(asos_requests) == 1
-    # The batch request must span the full date range (min to max across all markets)
-    params = dict(asos_requests[0].url.params)
-    assert params["year1"] == "2026" and params["month1"] == "6" and params["day1"] == "1"
-    assert params["year2"] == "2026" and params["month2"] == "6" and params["day2"] == "2"
+    # Only ONE wrh request was made (the batch)
+    wrh_requests = [r for r in httpx_mock.get_requests() if SYNOPTIC_API_URL in str(r.url)]
+    assert len(wrh_requests) == 1
 
 
 def test_different_variables_use_separate_requests(httpx_mock):
     """TMAX and TMIN for the same station are separate batches (different variable)."""
     conn = connect(":memory:")
     init_schema(conn)
-    # Settlement date matches _ASOS_CSV_68F which has data for 2026-05-30
     _market(conn, "tmax-m", "NYC", "TMAX", "2026-05-30", venue="polymarket")
     _market(conn, "tmin-m", "NYC", "TMIN", "2026-05-30", venue="polymarket")
 
-    # One-row CSV gives both TMAX==TMIN==68.0F (only one reading)
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text=_ASOS_CSV_68F,
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_KLGA_68F,
     )
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text=_ASOS_CSV_68F,
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_KLGA_68F,
     )
     with httpx.Client() as client:
         settled, _waiting = run_settlement(conn, client, date(2026, 6, 5), "2026-06-05T00:00:00Z")
     conn.close()
     assert settled == 2
-    asos_requests = [r for r in httpx_mock.get_requests() if MESONET_ASOS_URL in str(r.url)]
+    wrh_requests = [r for r in httpx_mock.get_requests() if SYNOPTIC_API_URL in str(r.url)]
     # Two batches: one TMAX, one TMIN
-    assert len(asos_requests) == 2
+    assert len(wrh_requests) == 2
 
 
-def test_regrade_same_station_uses_single_asos_request(httpx_mock):
+def test_regrade_same_station_uses_single_wrh_request(httpx_mock):
     """regrade_polymarket_settlements: N markets at same station/variable -> 1 request."""
     conn = connect(":memory:")
     init_schema(conn)
@@ -398,17 +442,16 @@ def test_regrade_same_station_uses_single_asos_request(httpx_mock):
     record_outcome(conn, "m1", 65.0, "2026-06-02T00:00:00Z")
     record_outcome(conn, "m2", 65.0, "2026-06-03T00:00:00Z")
 
-    fixture = (_FIXTURES / "mesonet_asos_klga_2026-06.csv").read_text()
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text=fixture,
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_KLGA_JUNE,
     )
     with httpx.Client() as client:
         regraded = regrade_polymarket_settlements(conn, client, "2026-06-15T00:00:00Z")
     conn.close()
     assert regraded == 2
-    asos_requests = [r for r in httpx_mock.get_requests() if MESONET_ASOS_URL in str(r.url)]
-    assert len(asos_requests) == 1
+    wrh_requests = [r for r in httpx_mock.get_requests() if SYNOPTIC_API_URL in str(r.url)]
+    assert len(wrh_requests) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -417,17 +460,16 @@ def test_regrade_same_station_uses_single_asos_request(httpx_mock):
 
 
 def test_regrade_updates_outcome_for_polymarket_tmax(httpx_mock):
-    """regrade_polymarket_settlements overwrites outcomes.actual_value with ASOS data."""
+    """regrade_polymarket_settlements overwrites outcomes.actual_value with wrh data."""
     conn = connect(":memory:")
     init_schema(conn)
     _market(conn, "poly-m", "NYC", "TMAX", "2026-05-30", _TMAX_SPEC, venue="polymarket")
-    # Pre-seed with NCEI value (65F lands in "65°F or higher")
     record_outcome(conn, "poly-m", 65.0, "2026-05-31T00:00:00Z")
 
-    # ASOS returns 64.4F -> rounds to 64 -> lands in "60-64°F"
+    # wrh returns 64.4F -> lands in "60-64\u00b0F"
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text=_ASOS_CSV_64F,
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_KLGA_64F,
     )
     with httpx.Client() as client:
         regraded = regrade_polymarket_settlements(conn, client, "2026-06-15T00:00:00Z")
@@ -436,28 +478,25 @@ def test_regrade_updates_outcome_for_polymarket_tmax(httpx_mock):
     ).fetchone()
     conn.close()
     assert regraded == 1
-    # 18.0C = 64.4F
-    assert row["actual_value"] == pytest.approx(18.0 * 9 / 5 + 32, abs=0.1)
+    assert row["actual_value"] == pytest.approx(64.4, abs=0.1)
 
 
 def test_regrade_updates_predictions_won(httpx_mock):
-    """regrade flips predictions.won when the ASOS bucket differs from NCEI."""
+    """regrade flips predictions.won when the wrh bucket differs from NCEI."""
     conn = connect(":memory:")
     init_schema(conn)
     _market(conn, "poly-m", "NYC", "TMAX", "2026-05-30", _TMAX_SPEC, venue="polymarket")
-    # NCEI settled at 65F -> "65°F or higher"; YES on "65°F or higher" was graded won=1
     record_outcome(conn, "poly-m", 65.0, "2026-05-31T00:00:00Z")
-    _prediction(conn, "run-1", "poly-m", "65°F or higher", "YES", 0.6, recommended=1)
-    _prediction(conn, "run-1", "poly-m", "60-64°F", "YES", 0.3, recommended=1)
-    # Simulate NCEI grading: "65°F or higher" won=1, "60-64°F" won=0
-    conn.execute("UPDATE predictions SET won = 1 WHERE bucket = '65°F or higher'")
-    conn.execute("UPDATE predictions SET won = 0 WHERE bucket = '60-64°F'")
+    _prediction(conn, "run-1", "poly-m", "65\u00b0F or higher", "YES", 0.6, recommended=1)
+    _prediction(conn, "run-1", "poly-m", "60-64\u00b0F", "YES", 0.3, recommended=1)
+    conn.execute("UPDATE predictions SET won = 1 WHERE bucket = '65\u00b0F or higher'")
+    conn.execute("UPDATE predictions SET won = 0 WHERE bucket = '60-64\u00b0F'")
     conn.commit()
 
-    # ASOS returns 18.0C = 64.4F -> rounds to 64 -> "60-64°F" settles instead
+    # wrh returns 64.4F -> "60-64\u00b0F" settles instead
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text=_ASOS_CSV_64F,
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_KLGA_64F,
     )
     with httpx.Client() as client:
         regrade_polymarket_settlements(conn, client, "2026-06-15T00:00:00Z")
@@ -468,9 +507,8 @@ def test_regrade_updates_predictions_won(httpx_mock):
         ).fetchall()
     }
     conn.close()
-    # After ASOS re-grade: "60-64°F" lands -> YES wins; "65°F or higher" does not -> YES loses
-    assert rows["60-64°F"] == 1
-    assert rows["65°F or higher"] == 0
+    assert rows["60-64\u00b0F"] == 1
+    assert rows["65\u00b0F or higher"] == 0
 
 
 def test_regrade_does_not_touch_kalshi_markets(httpx_mock):
@@ -479,11 +517,11 @@ def test_regrade_does_not_touch_kalshi_markets(httpx_mock):
     init_schema(conn)
     _market(conn, "kalshi-m", "NYC", "TMAX", "2026-05-30", _TMAX_SPEC, venue="kalshi")
     record_outcome(conn, "kalshi-m", 65.0, "2026-05-31T00:00:00Z")
-    _prediction(conn, "run-1", "kalshi-m", "65°F or higher", "YES", 0.6, recommended=1)
-    conn.execute("UPDATE predictions SET won = 1 WHERE bucket = '65°F or higher'")
+    _prediction(conn, "run-1", "kalshi-m", "65\u00b0F or higher", "YES", 0.6, recommended=1)
+    conn.execute("UPDATE predictions SET won = 1 WHERE bucket = '65\u00b0F or higher'")
     conn.commit()
 
-    # No ASOS mock: any call to ASOS would raise (unmocked URL)
+    # No wrh mock: any call to wrh would raise (unmocked URL)
     with httpx.Client() as client:
         regraded = regrade_polymarket_settlements(conn, client, "2026-06-15T00:00:00Z")
 
@@ -492,19 +530,18 @@ def test_regrade_does_not_touch_kalshi_markets(httpx_mock):
     ).fetchone()
     won = conn.execute("SELECT won FROM predictions WHERE market_id = ?", ("kalshi-m",)).fetchone()
     conn.close()
-    assert regraded == 0  # nothing regraded
-    assert row["actual_value"] == pytest.approx(65.0)  # unchanged
-    assert won["won"] == 1  # unchanged
+    assert regraded == 0
+    assert row["actual_value"] == pytest.approx(65.0)
+    assert won["won"] == 1
 
 
 def test_regrade_does_not_touch_prcp_markets(httpx_mock):
-    """regrade_polymarket_settlements must not re-settle PRCP markets (ASOS has no precip)."""
+    """regrade_polymarket_settlements must not re-settle PRCP markets."""
     conn = connect(":memory:")
     init_schema(conn)
     _market(conn, "poly-prcp", "NYC", "PRCP", "2026-06-30", venue="polymarket")
     record_outcome(conn, "poly-prcp", 3.50, "2026-07-01T00:00:00Z")
 
-    # No ASOS mock: any call would raise
     with httpx.Client() as client:
         regraded = regrade_polymarket_settlements(conn, client, "2026-06-15T00:00:00Z")
     conn.close()
@@ -512,20 +549,20 @@ def test_regrade_does_not_touch_prcp_markets(httpx_mock):
 
 
 def test_regrade_is_idempotent(httpx_mock):
-    """Running regrade twice on the same row converges to the same ASOS value."""
+    """Running regrade twice on the same row converges to the same wrh value."""
     conn = connect(":memory:")
     init_schema(conn)
     _market(conn, "poly-m", "NYC", "TMAX", "2026-05-30", _TMAX_SPEC, venue="polymarket")
     record_outcome(conn, "poly-m", 65.0, "2026-05-31T00:00:00Z")
-    _prediction(conn, "run-1", "poly-m", "60-64°F", "YES", 0.3, recommended=1)
+    _prediction(conn, "run-1", "poly-m", "60-64\u00b0F", "YES", 0.3, recommended=1)
 
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text=_ASOS_CSV_64F,
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_KLGA_64F,
     )
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text=_ASOS_CSV_64F,
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_KLGA_64F,
     )
     with httpx.Client() as client:
         r1 = regrade_polymarket_settlements(conn, client, "2026-06-15T00:00:00Z")
@@ -535,21 +572,20 @@ def test_regrade_is_idempotent(httpx_mock):
     ).fetchone()
     conn.close()
     assert r1 == 1
-    assert r2 == 1  # re-runnable: same row is regraded again
-    assert row["actual_value"] == pytest.approx(18.0 * 9 / 5 + 32, abs=0.1)
+    assert r2 == 1
+    assert row["actual_value"] == pytest.approx(64.4, abs=0.1)
 
 
-def test_regrade_waits_when_asos_returns_empty(httpx_mock):
-    """If ASOS returns no data for a day, the outcome is left unchanged."""
+def test_regrade_waits_when_wrh_returns_empty(httpx_mock):
+    """If wrh returns no data for a day, the outcome is left unchanged."""
     conn = connect(":memory:")
     init_schema(conn)
     _market(conn, "poly-m", "NYC", "TMAX", "2026-05-30", _TMAX_SPEC, venue="polymarket")
     record_outcome(conn, "poly-m", 65.0, "2026-05-31T00:00:00Z")
 
-    # Empty CSV (header only)
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text="station,valid,tmpc\n",
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_EMPTY,
     )
     with httpx.Client() as client:
         regraded = regrade_polymarket_settlements(conn, client, "2026-06-15T00:00:00Z")
@@ -557,42 +593,37 @@ def test_regrade_waits_when_asos_returns_empty(httpx_mock):
         "SELECT actual_value FROM outcomes WHERE market_id = ?", ("poly-m",)
     ).fetchone()
     conn.close()
-    assert regraded == 0  # not regraded (no data)
-    assert row["actual_value"] == pytest.approx(65.0)  # unchanged
+    assert regraded == 0
+    assert row["actual_value"] == pytest.approx(65.0)
 
 
 # ---------------------------------------------------------------------------
 # finding 1: backfill_venue ensures legacy NULL-venue numeric rows are
-# re-graded onto ASOS; Kalshi-ticker rows are NOT re-graded
+# re-graded onto wrh; Kalshi-ticker rows are NOT re-graded
 # ---------------------------------------------------------------------------
 
 
 def test_legacy_numeric_id_backfilled_and_regraded(httpx_mock):
     """A legacy NULL-venue market with a numeric id is backfilled to 'polymarket'
-    and subsequently re-graded onto ASOS by regrade_polymarket_settlements."""
+    and subsequently re-graded onto wrh by regrade_polymarket_settlements."""
     conn = connect(":memory:")
     init_schema(conn)
-    # Simulate a pre-0005 row: numeric Polymarket-style id, venue IS NULL
-    # Use raw SQL to bypass record_market (which would set venue).
     conn.execute(
         "INSERT INTO markets (id, city, variable, settlement_date, outcome_spec) "
         "VALUES (?, ?, ?, ?, ?)",
         ("700001", "NYC", "TMAX", "2026-05-30", json.dumps(_TMAX_SPEC)),
     )
     conn.commit()
-    # Pre-seed with an old NCEI value (65F -> "65°F or higher")
     record_outcome(conn, "700001", 65.0, "2026-05-31T00:00:00Z")
 
-    # Backfill venue: 700001 is numeric -> 'polymarket'
     _backfill_venue(conn)
 
     row_venue = conn.execute("SELECT venue FROM markets WHERE id = ?", ("700001",)).fetchone()
     assert row_venue["venue"] == "polymarket", "backfill did not set venue"
 
-    # ASOS returns 64.4F -> rounds to 64 -> "60-64°F"
     httpx_mock.add_response(
-        url=re.compile(re.escape(MESONET_ASOS_URL)),
-        text=_ASOS_CSV_64F,
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        text=_WRH_KLGA_64F,
     )
     with httpx.Client() as client:
         regraded = regrade_polymarket_settlements(conn, client, "2026-06-15T00:00:00Z")
@@ -602,8 +633,7 @@ def test_legacy_numeric_id_backfilled_and_regraded(httpx_mock):
     ).fetchone()
     conn.close()
     assert regraded == 1
-    # ASOS value overwrites the old NCEI value
-    assert row["actual_value"] == pytest.approx(18.0 * 9 / 5 + 32, abs=0.1)
+    assert row["actual_value"] == pytest.approx(64.4, abs=0.1)
 
 
 def test_legacy_kalshi_ticker_not_regraded(httpx_mock):
@@ -611,7 +641,6 @@ def test_legacy_kalshi_ticker_not_regraded(httpx_mock):
     'kalshi' and NOT touched by regrade_polymarket_settlements."""
     conn = connect(":memory:")
     init_schema(conn)
-    # Simulate a pre-0005 Kalshi row: alphanumeric ticker, venue IS NULL
     conn.execute(
         "INSERT INTO markets (id, city, variable, settlement_date, outcome_spec) "
         "VALUES (?, ?, ?, ?, ?)",
@@ -620,7 +649,6 @@ def test_legacy_kalshi_ticker_not_regraded(httpx_mock):
     conn.commit()
     record_outcome(conn, "KXHIGHNY-26JUN08", 79.0, "2026-06-09T00:00:00Z")
 
-    # Backfill venue: ticker is non-numeric -> 'kalshi'
     _backfill_venue(conn)
 
     row_venue = conn.execute(
@@ -628,7 +656,6 @@ def test_legacy_kalshi_ticker_not_regraded(httpx_mock):
     ).fetchone()
     assert row_venue["venue"] == "kalshi", "backfill did not set venue"
 
-    # No ASOS mock: any ASOS call would raise (unmocked URL)
     with httpx.Client() as client:
         regraded = regrade_polymarket_settlements(conn, client, "2026-06-15T00:00:00Z")
 
@@ -636,38 +663,19 @@ def test_legacy_kalshi_ticker_not_regraded(httpx_mock):
         "SELECT actual_value FROM outcomes WHERE market_id = ?", ("KXHIGHNY-26JUN08",)
     ).fetchone()
     conn.close()
-    assert regraded == 0  # Kalshi row must not be regraded
-    assert row["actual_value"] == pytest.approx(79.0)  # unchanged
+    assert regraded == 0
+    assert row["actual_value"] == pytest.approx(79.0)
 
 
 # ---------------------------------------------------------------------------
-# International settlement via IEM METAR (#190)
+# International settlement via IEM METAR (#190, unchanged ASOS path)
 # ---------------------------------------------------------------------------
-
-# EGLC intl fixture: 2026-06-09 local (Europe/London, UTC+1).
-# TMAX = 19C (from SPECI at 11:20 UTC = 12:20 local).
-_INTL_EGLC_CSV = (
-    "station,valid,tmpc\n"
-    "EGLC,2026-06-08 23:20,14.0\n"  # UTC 23:20 on Jun-08 = 00:20 local Jun-09 (in window)
-    "EGLC,2026-06-09 10:50,18.0\n"
-    "EGLC,2026-06-09 11:20,19.0\n"  # SPECI: highest obs
-    "EGLC,2026-06-09 11:50,18.0\n"
-    "EGLC,2026-06-09 22:50,11.0\n"
-    "EGLC,2026-06-09 23:20,10.0\n"  # UTC 23:20 on Jun-09 = 00:20 local Jun-10 (out of window)
-)
-
-_INTL_TMAX_SPEC = [
-    {"label": "17°C or below", "kind": "below", "lo": None, "hi": None, "threshold": 17},
-    {"label": "18-21°C", "kind": "range", "lo": 18, "hi": 21, "threshold": None},
-    {"label": "22°C or higher", "kind": "above", "lo": None, "hi": None, "threshold": 22},
-]
 
 
 def test_intl_polymarket_tmax_settles_in_celsius(httpx_mock):
     """An intl Polymarket TMAX market (London EGLC) settles in Celsius via ASOS."""
     conn = connect(":memory:")
     init_schema(conn)
-    # London market: city="London", venue="polymarket", settlement_date="2026-06-09"
     _market(conn, "eglc-tmax-0609", "London", "TMAX", "2026-06-09", venue="polymarket")
 
     httpx_mock.add_response(
@@ -681,7 +689,6 @@ def test_intl_polymarket_tmax_settles_in_celsius(httpx_mock):
     ).fetchone()
     conn.close()
     assert (settled, waiting) == (1, 0)
-    # 19C from the SPECI obs (not converted to F)
     assert row["actual_value"] == pytest.approx(19.0, abs=0.01)
 
 
@@ -702,7 +709,6 @@ def test_intl_polymarket_tmin_settles_in_celsius(httpx_mock):
     ).fetchone()
     conn.close()
     assert (settled, waiting) == (1, 0)
-    # TMIN from obs that fall on 2026-06-09 local: min is 11.0C (22:50 UTC = 23:50 local on Jun-09)
     assert row["actual_value"] == pytest.approx(11.0, abs=0.01)
 
 
@@ -718,7 +724,6 @@ def test_intl_settlement_is_idempotent(httpx_mock):
     )
     with httpx.Client() as client:
         r1_settled, _ = run_settlement(conn, client, date(2026, 6, 12), "t")
-        # Second pass: market already settled, no new request needed
         r2_settled, r2_waiting = run_settlement(conn, client, date(2026, 6, 12), "t")
     conn.close()
     assert r1_settled == 1
@@ -748,7 +753,7 @@ def test_intl_settlement_does_not_call_ncei(httpx_mock):
 
 
 def test_intl_settlement_not_stored_as_fahrenheit(httpx_mock):
-    """Intl outcome must be stored as Celsius (<50), not as Fahrenheit (>50 for similar temps)."""
+    """Intl outcome must be stored as Celsius (<50), not as Fahrenheit (>50)."""
     conn = connect(":memory:")
     init_schema(conn)
     _market(conn, "eglc-tmax-0609", "London", "TMAX", "2026-06-09", venue="polymarket")
@@ -763,12 +768,11 @@ def test_intl_settlement_not_stored_as_fahrenheit(httpx_mock):
         "SELECT actual_value FROM outcomes WHERE market_id = ?", ("eglc-tmax-0609",)
     ).fetchone()
     conn.close()
-    # 19C stored as Celsius; if mistakenly stored as F, 19*9/5+32 = 66.2 (>50)
-    assert row["actual_value"] < 50  # sanity guard: must be Celsius scale
+    assert row["actual_value"] < 50
 
 
 def test_intl_regrade_skips_intl_cities(httpx_mock):
-    """regrade_polymarket_settlements must not process intl markets (US-only operation)."""
+    """regrade_polymarket_settlements must not process intl markets (US-only)."""
     conn = connect(":memory:")
     init_schema(conn)
     _market(
@@ -776,7 +780,6 @@ def test_intl_regrade_skips_intl_cities(httpx_mock):
     )
     record_outcome(conn, "eglc-tmax-0609", 19.0, "2026-06-10T00:00:00Z")
 
-    # No ASOS mock: any call to ASOS would raise (unmocked URL)
     with httpx.Client() as client:
         regraded = regrade_polymarket_settlements(conn, client, "2026-06-15T00:00:00Z")
 
@@ -784,5 +787,5 @@ def test_intl_regrade_skips_intl_cities(httpx_mock):
         "SELECT actual_value FROM outcomes WHERE market_id = ?", ("eglc-tmax-0609",)
     ).fetchone()
     conn.close()
-    assert regraded == 0  # not regraded: intl city excluded from regrade
-    assert row["actual_value"] == pytest.approx(19.0)  # unchanged
+    assert regraded == 0
+    assert row["actual_value"] == pytest.approx(19.0)

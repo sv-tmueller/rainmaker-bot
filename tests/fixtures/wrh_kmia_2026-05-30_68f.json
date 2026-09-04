@@ -1,0 +1,23 @@
+{
+  "SUMMARY": {
+    "RESPONSE_CODE": 1,
+    "RESPONSE_MESSAGE": "OK"
+  },
+  "STATION": [
+    {
+      "STID": "KMIA",
+      "NAME": "Miami Intl Airport",
+      "LATITUDE": 25.7881,
+      "LONGITUDE": -80.3169,
+      "TIMEZONE": "America/New_York",
+      "OBSERVATIONS": {
+        "date_time": [
+          "2026-05-30T12:55:00-0400"
+        ],
+        "air_temp_set_1": [
+          68.0
+        ]
+      }
+    }
+  ]
+}

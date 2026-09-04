@@ -6,19 +6,22 @@ Idempotent: already-settled markets are skipped, and a market whose data is
 not published yet is left for a later run.
 
 Settlement source routing:
-  Polymarket TMAX/TMIN (US)   -> ASOS (Iowa State Mesonet): Fahrenheit, UTC bucketing.
+  Polymarket TMAX/TMIN (US)   -> wrh (Synoptic Data API, weather.gov): Fahrenheit,
+                                local-day bucketing. ASOS fallback on fetch failure.
   Polymarket TMAX/TMIN (intl) -> ASOS (Iowa State Mesonet): Celsius, local-day bucketing.
   Polymarket PRCP             -> NCEI GSOM: no ASOS precip path.
   Kalshi (all)                -> NCEI GHCND: Kalshi settles on the NOAA daily climate report.
   NULL venue (legacy)         -> NCEI GHCND: safe fallback, does not send legacy rows to ASOS.
 
-Batching (US ASOS path):
-  US Polymarket TMAX/TMIN markets are grouped by (asos_station, variable). All markets
-  in a group share one Mesonet request covering their full date range. This collapses
+Batching (US wrh path):
+  US Polymarket TMAX/TMIN markets are grouped by (station_icao, variable). All markets
+  in a group share one wrh request covering their full date range. This collapses
   O(markets) requests to O(distinct station x variable) <= ~22 per run.
+  On wrh fetch failure the group falls back to ASOS (same batch pattern), mirroring
+  Polymarket's own fallback hierarchy.
 
 Intl ASOS path:
-  Each intl market is fetched individually with a ±1 UTC-day padded window and
+  Each intl market is fetched individually with a +/-1 UTC-day padded window and
   local-day bucketing (no report_type filter; all obs types including SPECI).
 """
 
@@ -33,6 +36,7 @@ import httpx
 from rainmaker.backfill import fetch_actuals, fetch_monthly_precip
 from rainmaker.config import INTL_STATIONS, PRECIP_STATIONS, STATIONS
 from rainmaker.forecasts.asos import ICAO_TO_ASOS_STATION, fetch_asos_daily_extreme
+from rainmaker.forecasts.wrh import fetch_wrh_hourly_extreme
 from rainmaker.probability.outcomes import settles
 from rainmaker.probability.precip_outcomes import precip_settles
 from rainmaker.store.db import Conn
@@ -62,6 +66,43 @@ def _asos_code_for(city: str) -> str | None:
     if station is None:
         return None
     return ICAO_TO_ASOS_STATION.get(station.icao)
+
+
+def _us_station_for(city: str) -> tuple[str, str] | None:
+    """Return (ICAO, timezone) for a US city, or None if unmapped/international."""
+    station = STATIONS.get(city)
+    if station is None:
+        return None
+    return station.icao, station.timezone
+
+
+def _fetch_us_extreme(
+    station_icao: str,
+    timezone: str,
+    start: date,
+    end: date,
+    client: httpx.Client,
+    variable: str,
+) -> dict[date, float]:
+    """Primary wrh fetch with ASOS fallback for US Polymarket TMAX/TMIN.
+
+    Mirrors Polymarket's own fallback hierarchy: wrh (weather.gov Synoptic API)
+    first, ASOS (Iowa State Mesonet) if wrh fails.
+    """
+    try:
+        return fetch_wrh_hourly_extreme(
+            station_icao, start, end, client, variable, timezone=timezone
+        )
+    except (httpx.HTTPError, ValueError) as exc:
+        asos_code = ICAO_TO_ASOS_STATION.get(station_icao)
+        if asos_code is None:
+            raise
+        print(
+            f"wrh fetch failed for {station_icao}/{variable}: {exc}; "
+            f"falling back to ASOS",
+            file=sys.stderr,
+        )
+        return fetch_asos_daily_extreme(asos_code, start, end, client, variable)
 
 
 def _grade_won(variable: str, bucket: dict[str, Any], actual_value: float, side: str) -> int:
@@ -135,7 +176,7 @@ def run_settlement(
     """Settle every unsettled past market. Returns (settled, waiting).
 
     Routes by venue and variable:
-    - Polymarket TMAX/TMIN (US)   -> ASOS, Fahrenheit, batched by station+variable
+    - Polymarket TMAX/TMIN (US)   -> wrh primary (ASOS fallback), Fahrenheit, batched
     - Polymarket TMAX/TMIN (intl) -> ASOS, Celsius, local-day bucketing, one per market
     - Polymarket PRCP             -> NCEI GSOM
     - Kalshi (all)                -> NCEI GHCND
@@ -145,8 +186,8 @@ def run_settlement(
     settled = 0
     waiting = 0
 
-    # Separate Polymarket TMAX/TMIN markets (ASOS path) from everything else.
-    us_asos_markets: list[dict[str, Any]] = []
+    # Separate Polymarket TMAX/TMIN markets (wrh/ASOS path) from everything else.
+    us_wrh_markets: list[dict[str, Any]] = []
     intl_asos_markets: list[dict[str, Any]] = []
     other_markets: list[dict[str, Any]] = []
 
@@ -165,34 +206,39 @@ def run_settlement(
             if m["city"] in _INTL_CITIES:
                 intl_asos_markets.append(m)
             else:
-                us_asos_markets.append(m)
+                us_wrh_markets.append(m)
         else:
             other_markets.append(m)
 
-    # --- US ASOS batch path ---
-    # Group by (asos_code, variable), fetch once per group over [min_date, max_date].
+    # --- US wrh batch path ---
+    # Group by (station_icao, variable), fetch once per group over [min_date, max_date].
+    # wrh is primary; ASOS is the fallback on fetch failure.
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
 
-    for m in us_asos_markets:
-        asos_code = _asos_code_for(m["city"])
-        if asos_code is None:
+    for m in us_wrh_markets:
+        station_info = _us_station_for(m["city"])
+        if station_info is None:
             print(
                 f"skipping {m['market_id']}: no station for {m['city']!r}",
                 file=sys.stderr,
             )
             continue
-        groups[(asos_code, m["variable"])].append(m)
+        icao, _tz = station_info
+        groups[(icao, m["variable"])].append(m)
 
-    for (asos_code, variable), group_markets in groups.items():
+    for (station_icao, variable), group_markets in groups.items():
         dates = [date.fromisoformat(m["settlement_date"]) for m in group_markets]
         start = min(dates)
         end = max(dates)
+        _, tz = _us_station_for(group_markets[0]["city"])  # type: ignore[misc]
         try:
-            lookup = fetch_asos_daily_extreme(asos_code, start, end, client, variable)
+            lookup = _fetch_us_extreme(
+                station_icao, tz, start, end, client, variable
+            )
         except httpx.HTTPError as exc:
             for m in group_markets:
                 print(
-                    f"waiting on {m['market_id']}: ASOS fetch failed: {exc}",
+                    f"waiting on {m['market_id']}: fetch failed (wrh+ASOS): {exc}",
                     file=sys.stderr,
                 )
                 waiting += 1
@@ -274,18 +320,19 @@ def run_settlement(
 
 
 def regrade_polymarket_settlements(conn: Conn, client: httpx.Client, regraded_at: str) -> int:
-    """Re-settle existing Polymarket TMAX/TMIN outcomes using ASOS and re-grade predictions.
+    """Re-settle existing Polymarket TMAX/TMIN outcomes using wrh and re-grade predictions.
 
-    Fetches the ASOS daily extreme for every settled Polymarket TMAX/TMIN market,
-    overwrites outcomes.actual_value, and re-grades predictions.won.
+    Fetches the daily extreme for every settled Polymarket TMAX/TMIN market via wrh
+    (primary) with ASOS fallback, overwrites outcomes.actual_value, and re-grades
+    predictions.won.
 
-    Markets are batched by (asos_station, variable): one Mesonet request covers
-    all markets at the same station for the same variable.
+    Markets are batched by (station_icao, variable): one request covers all markets
+    at the same station for the same variable.
 
-    Returns the number of markets successfully regraded. Markets where ASOS
-    returns no data for the settlement date are skipped (not counted).
+    Returns the number of markets successfully regraded. Markets where neither wrh
+    nor ASOS returns data for the settlement date are skipped (not counted).
 
-    Re-runnable: running twice converges to the same ASOS value.
+    Re-runnable: running twice converges to the same source value.
 
     Note: intl cities are excluded from regrade. They settled in Celsius via the
     local-day path; regrade operates in Fahrenheit (US-only). Intl settlement
@@ -293,30 +340,34 @@ def regrade_polymarket_settlements(conn: Conn, client: httpx.Client, regraded_at
     """
     all_markets = settled_polymarket_temp_markets(conn)
 
-    # Group by (asos_code, variable), fetch once per group.
+    # Group by (station_icao, variable), fetch once per group.
     # Intl cities are excluded: they settled in Celsius; regrade is US-only.
     groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for m in all_markets:
         if m["city"] in _INTL_CITIES:
             continue
-        asos_code = _asos_code_for(m["city"])
-        if asos_code is None:
-            # No ASOS mapping for this city: skip silently (should not occur for
+        station_info = _us_station_for(m["city"])
+        if station_info is None:
+            # No station mapping for this city: skip silently (should not occur for
             # the 11 known cities, but do not crash if a legacy row appears).
             continue
-        groups[(asos_code, m["variable"])].append(m)
+        icao, _tz = station_info
+        groups[(icao, m["variable"])].append(m)
 
     regraded = 0
-    for (asos_code, variable), group_markets in groups.items():
+    for (station_icao, variable), group_markets in groups.items():
         dates = [date.fromisoformat(m["settlement_date"]) for m in group_markets]
         start = min(dates)
         end = max(dates)
+        _, tz = _us_station_for(group_markets[0]["city"])  # type: ignore[misc]
         try:
-            lookup = fetch_asos_daily_extreme(asos_code, start, end, client, variable)
+            lookup = _fetch_us_extreme(
+                station_icao, tz, start, end, client, variable
+            )
         except httpx.HTTPError as exc:
             for m in group_markets:
                 print(
-                    f"regrade skipped {m['market_id']}: ASOS fetch failed: {exc}",
+                    f"regrade skipped {m['market_id']}: fetch failed (wrh+ASOS): {exc}",
                     file=sys.stderr,
                 )
             continue
