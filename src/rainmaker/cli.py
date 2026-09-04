@@ -79,6 +79,7 @@ from rainmaker.tracking import (
     settled_rows,
     write_snapshot,
 )
+from rainmaker.venue_decomp import run_venue_decomp
 
 SUPPORTED_VARIABLES = {"TMAX", "TMIN"}
 
@@ -926,6 +927,71 @@ def _gate_sweep(db_path: str, since: str | None = None) -> None:
         )
 
 
+_VENUE_DECOMP_HEADER = (
+    f"{'City/Venue':<24} {'n':>5} {'W':>4} {'L':>4} {'Hit%':>6} "
+    f"{'PnL':>8} {'ROI':>8}"
+)
+
+
+def _fmt_venue_decomp_row(row: dict[str, Any]) -> str:
+    hit = "n/a" if row["hit_rate"] is None else f"{row['hit_rate']:.0%}"
+    return (
+        f"{row['city']:<12} {row['venue']:<11} {row['n_bets']:>5} {row['wins']:>4} "
+        f"{row['losses']:>4} {hit:>6} {row['pnl']:>+8.2f} {row['roi']:>+8.1%}"
+    )
+
+
+def _fmt_price_proxy_row(label: str, entry: dict[str, Any]) -> str:
+    at = entry["at_ask"]
+    impl = entry["at_implied"]
+    return (
+        f"{label:<11} "
+        f"ask:{at['n_bets']:>4}n {at['pnl']:>+7.2f} {at['roi']:>+6.1%}  "
+        f"implied:{impl['n_bets']:>4}n {impl['pnl']:>+7.2f} {impl['roi']:>+6.1%}  "
+        f"(skip {impl['skipped']:>3})"
+    )
+
+
+def _venue_decomp(db_path: str, since: str | None = None) -> None:
+    """Decompose the Kalshi-vs-Polymarket edge gap (read-only diagnostic).
+
+    Section 1: ROI by (city, venue) - isolates whether Kalshi's edge concentrates
+    in the different-station cities (NYC Central Park, Chicago Midway) or is
+    uniform across every Kalshi city.
+    Section 2: P&L reprojected at the stored implied_prob vs the ask - isolates
+    how much of the edge is a price-discovery artifact of Kalshi's thinner books.
+    """
+    if "://" not in db_path:
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        rows = settled_rows(conn)
+        result = run_venue_decomp(rows, since=since)
+    finally:
+        conn.close()
+
+    if since is not None:
+        print(f"since: {since}")
+
+    print("\n--- ROI by city x venue ---")
+    print(_VENUE_DECOMP_HEADER)
+    for row in result["city_venue"]:
+        print(_fmt_venue_decomp_row(row))
+
+    pp = result["price_proxy"]
+    print("\n--- Price-proxy reprojection (ask vs implied_prob) ---")
+    print(f"{'Venue':<11} {'ask':>16}  {'implied':>18}")
+    for label in ("polymarket", "kalshi", "all"):
+        if label in pp:
+            print(_fmt_price_proxy_row(label, pp[label]))
+    print(
+        "\nimplied_prob = the market's own probability (last-trade or bid/ask mid on\n"
+        "Kalshi, the CLOB yes_price on Polymarket). A large Kalshi ROI drop from ask\n"
+        "to implied means the edge leans on stale or loose quotes, not fillable prices."
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="rainmaker")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1109,6 +1175,21 @@ def main(argv: list[str] | None = None) -> None:
         help="restrict to predictions whose run started on or after this date (YYYY-MM-DD)",
     )
 
+    venue_decomp_cmd = sub.add_parser(
+        "venue-decomp",
+        help=(
+            "decompose the Kalshi-vs-Polymarket edge gap: ROI by city x venue, "
+            "plus a price-proxy reprojection at implied_prob vs ask"
+        ),
+    )
+    venue_decomp_cmd.add_argument("--db", default=DB_PATH, help="SQLite database path")
+    venue_decomp_cmd.add_argument(
+        "--since",
+        type=date.fromisoformat,
+        default=None,
+        help="restrict to predictions whose run started on or after this date (YYYY-MM-DD)",
+    )
+
     recover_gap_cmd = sub.add_parser(
         "recover-gap",
         help="rediscover, reprice, and persist US TMAX/TMIN markets missed during a date range",
@@ -1183,6 +1264,9 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "gate-sweep":
         since = args.since.isoformat() if args.since is not None else None
         _gate_sweep(db, since)
+    elif args.command == "venue-decomp":
+        since = args.since.isoformat() if args.since is not None else None
+        _venue_decomp(db, since)
     elif args.command == "recover-gap":
         _recover_gap(args.from_date, args.to_date, db)
 
