@@ -106,6 +106,10 @@ Python 3.11+ managed with uv. Commands:
   min_edge, YES/NO floors, lead filter, venue -- over settled history at
   alternate values, one factor at a time; read-only diagnostic, ad hoc, not
   part of a scheduled workflow; `--since YYYY-MM-DD` matches `track`/`tail-check`)
+- Venue decomp: `uv run rainmaker venue-decomp` (decompose the Kalshi-vs-Polymarket
+  edge gap: ROI by city x venue, plus a price-proxy reprojection at implied_prob
+  vs ask; read-only diagnostic, ad hoc, not part of a scheduled workflow;
+  `--since YYYY-MM-DD` matches `track`/`tail-check`)
 - Snapshot: `uv run rainmaker snapshot` (upsert the daily metrics row the dashboard reads)
 - Backfill: `uv run rainmaker backfill --city <X>` (fit a calibration cell and
   backtest accuracy from history; `--city all` covers every city)
@@ -142,6 +146,7 @@ src/rainmaker/
   settle.py           settle past markets against NOAA actuals (idempotent catch-up)
   tracking.py         hypothetical P&L + calibration scoring, daily snapshot
   gate_sweep.py       replay the recommendation gate over settled history at alternate values
+  venue_decomp.py     decompose the Kalshi-vs-Polymarket edge gap (city x venue, price-proxy)
   forecasts/
     base.py           ForecastSample, ForecastSet, ForecastSource protocol
     nws.py            NWS fetch + parse
