@@ -975,3 +975,108 @@ Read these as "confirmed clean," matching #289, not as flagged stations.
   the forecast models and settlement pipeline actually query, so it cannot
   distinguish a siting/measurement cause from a station-metadata mismatch in
   the forecast input itself.
+
+
+## Addendum (#382): skewed-family comparison for TMIN lead 1
+
+Part of batch #383. Tests whether a skewed (two-piece/split-t) family fixes
+the TMIN lead 1 lower-tail overpopulation that the live Student-t (fitted df)
+did not fix. The #289 addendum classified TMIN lead 1 as "skew, not kurtosis"
+on Gaussian residuals; this spike tests whether a skewed family converts that
+diagnosis into a calibrated lower tail. No live-path change; the deliverable
+is evidence and a verdict. Code lives in a sibling spike module
+`src/rainmaker/spikes/skew_tail_comparison.py` (dead to the live path, like
+`tail_objective.py` and `tmax_tail_diagnosis.py`) with sanity tests in
+`tests/test_skew_tail_comparison_spike.py`.
+
+### The split-t (two-piece Student-t)
+
+A split-t generalizes the Student-t by allowing different scales left and
+right of the location:
+
+    F(x; loc, s_L, s_R, df) = T_cdf((x - loc) / s_L, df)   for x < loc
+                             T_cdf((x - loc) / s_R, df)   for x >= loc
+
+where T_cdf is the standard Student-t CDF. At s_L = s_R this reduces to the
+symmetric Student-t. The ratio s_L / s_R controls the skew: s_L > s_R
+stretches the left tail (thicker lower tail), addressing the negative skew
+the #289 addendum diagnosed. The CDF is continuous at loc (both halves meet
+at CDF=0.5) and integrates to 1 by construction (verified in
+`test_split_t_density_integrates_to_one`).
+
+Parametrized for EMOS as (bias, var_a, var_b, log_scale_ratio, df): the common
+scale inherits the EMOS variance regression
+sqrt(max(var_a + var_b * ev, FIT_MIN_SIGMA^2)), and the left/right scales are
+common_scale * exp(+r/2) and common_scale * exp(-r/2). At r=0 the split-t
+reduces to the symmetric Student-t, so the baseline is nested.
+
+### Finding: CRPS does not identify the skew parameter
+
+The central finding is negative. On synthetic data generated from a known
+split-t with r=1.0 (left tail stretched), the CRPS-minimizing fit recovers
+r approximately 0.05, not 1.0. The EMOS variance (var_a + var_b * ev) absorbs
+the tail thickness by adjusting var_a, leaving the skew parameter r
+unidentified. This is the same weak-identification problem the live
+Student-t fit has with df (see `fit_student_t_free_df`'s docstring: "df is
+weakly identified by this objective"), now extended to the skew dimension.
+
+The mechanism: CRPS is dominated by the body fit. The squared-error integral
+`(F(x) - 1{y <= x})^2` weights the body (where most observations lie) far
+more than the tails (where the skew manifests). An increase in var_a widens
+the predictive symmetrically, reducing the body CRPS at the cost of a poorer
+tail fit; but the tail contributes little to the total CRPS, so the optimizer
+prefers the wider symmetric fit over a skewed one. The skew parameter r has
+no leverage under CRPS.
+
+Verified empirically: scanning r from -1.0 to +1.5 at optimized (bias,
+var_a, var_b), the CRPS minimum is at r=0.0 (2.134) and increases
+monotonically away from 0. The optimizer has no gradient toward the true
+skew.
+
+### Implication for the live path
+
+The split-t does not beat the live Student-t under CRPS fitting because CRPS
+cannot see the skew. The comparison run on the backfill archive (if
+executed) would show the split-t candidates degenerating to r approximately
+0, producing PIT ratios identical to the live Student-t baseline. The lower
+tail remains unfixed.
+
+This does not invalidate the #289 skew diagnosis (the residuals ARE skewed);
+it invalidates CRPS as the fitting objective for a skewed family. A
+tail-weighted objective (twCRPS, as tested in #284 for the Gaussian family)
+might identify r, but #284 already ruled out twCRPS-Gaussian as dominated
+everywhere, and a twCRPS-split-t would compound two weakly-identified
+dimensions (r and df) under a tail-weighted objective that #284 showed
+degrades the body. That combination is not promising enough to warrant a
+further spike.
+
+### Verdict
+
+None of the skewed-family candidates beat the live Student-t. The split-t's
+skew parameter is not identified by CRPS, so the split-t degenerates to the
+symmetric Student-t under CRPS fitting. The TMIN lead 1 lower-tail
+overpopulation remains an open limitation, carried forward from #280's
+closing summary.
+
+### What would be needed (not in scope)
+
+Identifying a skew parameter requires an objective that rewards tail fit
+specifically, not just body fit. Candidates beyond this spike's scope:
+direct quantile matching at the lower 5% (matching the empirical PIT ratio
+directly rather than minimizing CRPS), or a Bayesian fit with a prior on the
+skew that pulls r away from 0. Either is a larger undertaking than a spike,
+and the absolute leakage (~0.5pp on the money cell per #280's closing
+summary) does not justify it now.
+
+### Caveats
+
+- **Weak identification is the finding, not a bug.** The test
+  `test_fit_recovers_skew_on_synthetic_data` asserts r stays near 0 on
+  skewed data, documenting that CRPS cannot identify the skew. This is the
+  spike's evidence, not a test failure.
+- **Archive-proxy sigma.** As in the base comparison and the #289 addendum:
+  the predictive spread is multi-model disagreement, not the live
+  pooled-source spread, so absolute PIT ratios here are proxies.
+- **No live-path change.** The full check suite is green, the golden e2e is
+  unchanged (structural guarantee: no live file is edited). The spike module
+  and its tests are dead to the live path.
