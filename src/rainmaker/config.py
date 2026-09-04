@@ -422,6 +422,17 @@ STATION_POLICIES: dict[str, StationPolicy] = {
             "the station-metadata audit named in that addendum's caveats."
         ),
     ),
+    "KHOU": StationPolicy(
+        action="exclude",
+        reason=(
+            "KHOU: excluded from recommendations. The venue-decomposition "
+            "diagnostic (#372, batch #370) found 86 settled Polymarket bets "
+            "with a 37% hit rate, -25.0% ROI, and -10.66u P&L drain—the "
+            "largest absolute drain of any city—with no sign of a temporary "
+            "regime shift. Exclusion replaces incremental edge-floor deltas. "
+            "Path back in: a calibration audit (batch sibling) finding a fix."
+        ),
+    ),
 }
 
 # Per-(station, variable) edge-floor delta (#303), keyed by (ICAO, variable) and

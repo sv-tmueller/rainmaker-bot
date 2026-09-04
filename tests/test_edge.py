@@ -1268,6 +1268,127 @@ def test_knyc_market_without_policy_is_recommendable() -> None:
 
 
 # ---------------------------------------------------------------------------
+# KHOU (Houston Hobby) exclusion (#372, batch #370)
+# ---------------------------------------------------------------------------
+
+_KHOU_STATION_FOR_GATE = Station(
+    city="Houston",
+    icao="KHOU",
+    name="Houston William P. Hobby Airport",
+    lat=29.6459,
+    lon=-95.2821,
+    timezone="America/Chicago",
+    wunderground_url="https://www.wunderground.com/history/daily/us/tx/houston/KHOU",
+    ghcnd_id="USW00012918",
+)
+
+
+def _gate_market_hou() -> Market:
+    """KHOU-shaped market mirroring _gate_market_knyc's two-bucket structure.
+
+    Forecast centered at 85F (typical Houston summer):
+    - "78F or higher": p_win ~ 1.0, best_ask=0.05 -> edge >> min_edge (YES side live)
+    - "100F or higher": no best_ask so YES excluded; no_ask=0.05 -> p_no ~ 1.0,
+      edge_no >> min_edge (NO side live).
+
+    Both sides would be recommended absent the station policy.
+    """
+    target = Target(station=_KHOU_STATION_FOR_GATE, variable="TMAX", local_date=date(2026, 7, 15))
+    return Market(
+        id="gate_hou",
+        slug="gate-hou",
+        title="Highest temperature in Houston on Jul 15?",
+        target=target,
+        buckets=[
+            _bucket("78°F or higher", "above", threshold=78, best_ask=0.05),
+            _bucket("100°F or higher", "above", threshold=100, no_ask=0.05),
+        ],
+    )
+
+
+def _two_source_hou(target: Target) -> ForecastSet:
+    """Two live sources, forecast centered at 85F, comfortably between the 78F
+    and 100F thresholds so both sides of _gate_market_hou clear every other
+    gate; only the station policy is left to isolate."""
+    samples = [
+        ForecastSample(
+            source=src,
+            model="m",
+            member=None,
+            station=target.station.icao,
+            variable="TMAX",
+            target_date=target.local_date,
+            lead_time_days=1,
+            value_f=85.0 + offset,
+            issued_at=None,
+        )
+        for src in ("open-meteo", "nws")
+        for offset in (-2.0, -1.0, 0.0, 1.0, 2.0)
+    ]
+    return ForecastSet(
+        target=target,
+        samples=samples,
+        coverage=[
+            SourceCoverage(source="open-meteo", ok=True, n_samples=5),
+            SourceCoverage(source="nws", ok=True, n_samples=5),
+        ],
+    )
+
+
+def test_khou_excluded_from_recommendations() -> None:
+    """A KHOU-shaped market with full calibration and all other gates passing
+    must never produce recommended=True, on any side, when station_policy marks
+    it excluded (#372, the venue-decomposition diagnostic's Houston verdict).
+
+    Mirrors test_knyc_excluded_from_recommendations: advisory display is
+    unaffected (outcomes non-empty, mu set), only recommended is forced off,
+    and MarketReport.policy_exclusion carries the policy's reason.
+    """
+    market = _gate_market_hou()
+    fs = _two_source_hou(market.target)
+    policy = STATION_POLICIES["KHOU"]
+
+    report = evaluate_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_F,
+        min_edge=MIN_EDGE,
+        calibration=_full_cal(),
+        station_policy=policy,
+    )
+    assert report.outcomes, "outcomes must be non-empty so advisory still renders"
+    assert report.mu is not None, "mu must be set so advisory still renders"
+    assert all(not o.recommended for o in report.outcomes), (
+        f"KHOU market must not recommend any outcome; got {report.outcomes}"
+    )
+    assert report.policy_exclusion == policy.reason
+
+
+def test_khou_market_without_policy_is_recommendable() -> None:
+    """Control: the same KHOU-shaped market with no station_policy passed clears
+    every other gate, proving the exclusion above is what blocks it and not an
+    incidental gate failure."""
+    market = _gate_market_hou()
+    fs = _two_source_hou(market.target)
+
+    report = evaluate_market(
+        market,
+        fs,
+        floor=CONFIDENCE_FLOOR,
+        min_sources=MIN_SOURCES,
+        min_sigma=MIN_SIGMA_F,
+        min_edge=MIN_EDGE,
+        calibration=_full_cal(),
+    )
+    assert any(o.recommended for o in report.outcomes), (
+        f"control market should have at least one recommended outcome; got {report.outcomes}"
+    )
+    assert report.policy_exclusion is None
+
+
+# ---------------------------------------------------------------------------
 # Per-(station, variable) edge-floor delta gate (#303, the #296 addendum)
 # ---------------------------------------------------------------------------
 
