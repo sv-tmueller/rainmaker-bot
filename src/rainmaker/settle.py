@@ -98,8 +98,7 @@ def _fetch_us_extreme(
         if asos_code is None:
             raise
         print(
-            f"wrh fetch failed for {station_icao}/{variable}: {exc}; "
-            f"falling back to ASOS",
+            f"wrh fetch failed for {station_icao}/{variable}: {exc}; falling back to ASOS",
             file=sys.stderr,
         )
         return fetch_asos_daily_extreme(asos_code, start, end, client, variable)
@@ -232,9 +231,7 @@ def run_settlement(
         end = max(dates)
         _, tz = _us_station_for(group_markets[0]["city"])  # type: ignore[misc]
         try:
-            lookup = _fetch_us_extreme(
-                station_icao, tz, start, end, client, variable
-            )
+            lookup = _fetch_us_extreme(station_icao, tz, start, end, client, variable)
         except httpx.HTTPError as exc:
             for m in group_markets:
                 print(
@@ -361,9 +358,7 @@ def regrade_polymarket_settlements(conn: Conn, client: httpx.Client, regraded_at
         end = max(dates)
         _, tz = _us_station_for(group_markets[0]["city"])  # type: ignore[misc]
         try:
-            lookup = _fetch_us_extreme(
-                station_icao, tz, start, end, client, variable
-            )
+            lookup = _fetch_us_extreme(station_icao, tz, start, end, client, variable)
         except httpx.HTTPError as exc:
             for m in group_markets:
                 print(

@@ -928,8 +928,7 @@ def _gate_sweep(db_path: str, since: str | None = None) -> None:
 
 
 _VENUE_DECOMP_HEADER = (
-    f"{'City/Venue':<24} {'n':>5} {'W':>4} {'L':>4} {'Hit%':>6} "
-    f"{'PnL':>8} {'ROI':>8}"
+    f"{'City/Venue':<24} {'n':>5} {'W':>4} {'L':>4} {'Hit%':>6} {'PnL':>8} {'ROI':>8}"
 )
 
 
