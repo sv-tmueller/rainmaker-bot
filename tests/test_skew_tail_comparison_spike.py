@@ -114,8 +114,7 @@ def test_positive_r_thickens_lower_tail() -> None:
     split_cdf = split_t_std_cdf(r, df)
     prob_below = float(split_cdf(np.array([sym_q05]))[0])
     assert prob_below > 0.05, (
-        f"With r={r}, P(X < sym_q05) = {prob_below}, expected > 0.05 "
-        f"(left tail should be thicker)"
+        f"With r={r}, P(X < sym_q05) = {prob_below}, expected > 0.05 (left tail should be thicker)"
     )
 
 

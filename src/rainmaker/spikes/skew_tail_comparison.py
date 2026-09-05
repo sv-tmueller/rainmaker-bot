@@ -355,9 +355,7 @@ def student_t_baseline_residuals(
                 fallback_df=5.0,
             )
             z = (actual - loc) / scale
-            out.append(
-                ResidualRow(icao=icao, variable=variable, lead=lead, target_date=d, z=z)
-            )
+            out.append(ResidualRow(icao=icao, variable=variable, lead=lead, target_date=d, z=z))
     return out
 
 
@@ -500,9 +498,7 @@ def run_skew_comparison(
         fit_rows, eval_rows = _split(rows)
         if not fit_rows or not eval_rows:
             continue
-        fit_pairs: list[FitPair] = [
-            (mu, sigma**2, actual) for _d, mu, sigma, actual in fit_rows
-        ]
+        fit_pairs: list[FitPair] = [(mu, sigma**2, actual) for _d, mu, sigma, actual in fit_rows]
         cal_pairs = [
             CalibrationPair(mu=mu, sigma=sigma, ensemble_var=sigma**2, actual=actual)
             for _d, mu, sigma, actual in fit_rows
@@ -511,9 +507,7 @@ def run_skew_comparison(
         fits["t_live_baseline", icao, variable, lead] = fit_student_t_free_df(
             icao, variable, lead, cal_pairs
         )
-        fits["split_t_df5", icao, variable, lead] = fit_split_t_fixed_df(
-            fit_pairs, df=5.0
-        )
+        fits["split_t_df5", icao, variable, lead] = fit_split_t_fixed_df(fit_pairs, df=5.0)
         fits["split_t_free_df", icao, variable, lead] = fit_split_t_free_df(fit_pairs)
 
     results: dict[tuple[str, str, int], Any] = {}
@@ -551,9 +545,7 @@ def run_skew_comparison(
                         fallback_df=5.0,
                     )
 
-                cell_eval = score_candidate_cell(
-                    candidate, variable, lead, eval_rows, predict_sym
-                )
+                cell_eval = score_candidate_cell(candidate, variable, lead, eval_rows, predict_sym)
             else:
                 # Split-t candidate: use the split-t-aware scorer.
                 def predict_split(
@@ -626,8 +618,8 @@ def render_skew_table(
         for (variable, lead), s in sorted(shapes.items()):
             cls = classify_residual_shape(s, contrast_g2=None)
             lines.append(
-                f"| {variable} | {lead} | {s.n} | {s.g1:.3f} | {sqrt(6.0/s.n):.3f} | "
-                f"{s.g2:.3f} | {sqrt(24.0/s.n):.3f} | {s.kelly:.3f} | {cls} |"
+                f"| {variable} | {lead} | {s.n} | {s.g1:.3f} | {sqrt(6.0 / s.n):.3f} | "
+                f"{s.g2:.3f} | {sqrt(24.0 / s.n):.3f} | {s.kelly:.3f} | {cls} |"
             )
 
     return "\n".join(lines) + "\n"
