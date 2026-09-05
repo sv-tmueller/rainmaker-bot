@@ -6,6 +6,7 @@ import { PnlChart } from "../components/PnlChart";
 import { RunHealth } from "../components/RunHealth";
 import { SettledList } from "../components/SettledList";
 import { getDashboardData } from "../lib/data";
+import { visibleBreaks } from "../lib/structuralBreaks";
 
 export const dynamic = "force-dynamic"; // always read live data, never prerender
 
@@ -13,6 +14,8 @@ export default async function Page() {
   const { run, bets, snapshots, venueSnapshots, accuracy, calibration, settled } =
     await getDashboardData();
   const snap = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null;
+  const snapshotDates = snapshots.map((s) => s.date).sort();
+  const breaksShown = visibleBreaks(snapshotDates);
   return (
     <main className="mx-auto w-full max-w-[1200px] px-9 py-7">
       <header className="flex items-baseline justify-between border-b border-line pb-3.5">
@@ -38,6 +41,18 @@ export default async function Page() {
               <div className="mt-2.5">
                 <PnlChart snapshots={snapshots} venue={venueSnapshots} />
               </div>
+              {breaksShown.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {breaksShown.map((br) => (
+                    <li
+                      key={br.date}
+                      className="font-mono text-[10px] leading-snug text-warn"
+                    >
+                      <span className="text-faint">{br.label}:</span> {br.detail}
+                    </li>
+                  ))}
+                </ul>
+              )}
               {settled.length > 0 && (
                 <>
                   <div className="mt-3 text-[10px] uppercase tracking-[0.1em] text-muted">

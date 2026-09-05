@@ -1,7 +1,25 @@
 import type { Snapshot } from "../lib/data";
 import { signed } from "../lib/format";
+import { visibleBreaks } from "../lib/structuralBreaks";
 
 type NamedSeries = { label: string; data: Snapshot[]; colorClass: string };
+
+// Interpolate the x-axis position of a date that falls between two snapshots,
+// so a structural-break line sits at the right spot even though the break date
+// is not itself a snapshot row. Returns the right neighbour's x when the date
+// matches a snapshot exactly.
+function xForDate(date: string, dates: string[], xOf: (i: number) => number) {
+  const idx = dates.indexOf(date);
+  if (idx >= 0) return xOf(idx);
+  // Binary-ish linear scan is fine: dates is short (< ~90 entries).
+  let lo = 0;
+  while (lo < dates.length - 1 && dates[lo + 1] < date) lo++;
+  const a = dates[lo];
+  const b = dates[Math.min(lo + 1, dates.length - 1)];
+  if (a >= date || b <= date || a === b) return xOf(Math.min(lo + 1, dates.length - 1));
+  const frac = (Date.parse(date) - Date.parse(a)) / (Date.parse(b) - Date.parse(a));
+  return xOf(lo) + frac * (xOf(lo + 1) - xOf(lo));
+}
 
 export function PnlChart({
   snapshots,
@@ -130,6 +148,33 @@ export function PnlChart({
       <text x={W - PAD} y={H - 4} textAnchor="end" className="fill-faint font-mono text-[10px]">
         {dates[dates.length - 1]}
       </text>
+      {/* Structural-break annotations: dashed verticals marking one-time
+          measurement-base changes (regardes, settlement-source swaps) that
+          retroactively rewrote historical grades. Not organic performance. */}
+      {visibleBreaks(dates).map((br) => {
+        const bx = xForDate(br.date, dates, x);
+        return (
+          <g key={br.date}>
+            <line
+              x1={bx}
+              y1={PAD}
+              x2={bx}
+              y2={H - BOTTOM}
+              className="text-warn"
+              stroke="currentColor"
+              strokeDasharray="2 3"
+              opacity={0.7}
+            />
+            <text
+              x={bx + 3}
+              y={PAD + 9}
+              className="fill-warn font-mono text-[9px]"
+            >
+              {br.label}
+            </text>
+          </g>
+        );
+      })}
     </svg>
   );
 }
