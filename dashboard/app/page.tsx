@@ -1,6 +1,7 @@
 import { AccuracyGrid } from "../components/AccuracyGrid";
 import { BetsTable } from "../components/BetsTable";
 import { CalibrationPanel } from "../components/CalibrationPanel";
+import { DisclosureToggle } from "../components/DisclosureToggle";
 import { KpiStrip } from "../components/KpiStrip";
 import { PnlChart } from "../components/PnlChart";
 import { RunHealth } from "../components/RunHealth";
@@ -29,8 +30,10 @@ export default async function Page() {
 
       <div className="mt-3.5 grid grid-cols-5 gap-3.5">
         <div className="col-span-3 flex flex-col gap-3.5">
-          <AccuracyGrid accuracy={accuracy} />
-          <CalibrationPanel calibration={calibration} />
+          <DisclosureToggle label="Technical details">
+            <AccuracyGrid accuracy={accuracy} />
+            <CalibrationPanel calibration={calibration} />
+          </DisclosureToggle>
         </div>
         <section className="col-span-2 rounded border border-line bg-panel px-4 py-4">
           <div className="text-[10px] uppercase tracking-[0.1em] text-muted">Track record</div>
