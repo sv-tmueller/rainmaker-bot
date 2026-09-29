@@ -4,6 +4,7 @@ import { CalibrationPanel } from "../components/CalibrationPanel";
 import { DisclosureToggle } from "../components/DisclosureToggle";
 import { KpiStrip } from "../components/KpiStrip";
 import { PnlChart } from "../components/PnlChart";
+import { ReliabilityFieldLoader } from "../components/ReliabilityFieldLoader";
 import { RunHealth } from "../components/RunHealth";
 import { SettledList } from "../components/SettledList";
 import { getDashboardData } from "../lib/data";
@@ -33,6 +34,9 @@ export default async function Page() {
           <DisclosureToggle label="Technical details">
             <AccuracyGrid accuracy={accuracy} />
             <CalibrationPanel calibration={calibration} />
+            <DisclosureToggle label="3D view">
+              <ReliabilityFieldLoader calibration={calibration} />
+            </DisclosureToggle>
           </DisclosureToggle>
         </div>
         <section className="col-span-2 rounded border border-line bg-panel px-4 py-4">
