@@ -24,6 +24,14 @@ card grids, no marketing copy, no decoration that competes with the data.
   line in the header (runs.coverage), recent settled bets list (outcomes join).
 - The page stays fully server-rendered. No client JS anywhere.
 
+  > Update (2026-09-29, #391): no longer accurate; code wins over this line.
+  > `DisclosureToggle` (#389) added a small "use client" toggle for the
+  > technical-details sections. #391 adds a second, heavier client island: an
+  > opt-in 3D calibration reliability view (react-three-fiber), lazy-loaded
+  > with `next/dynamic({ ssr: false })` so three.js never ships in the page's
+  > first-load JS. Both stay behind explicit user action (a click to expand),
+  > so the page is still server-rendered and inert by default.
+
 ## Page structure
 
 Max width about 1200px, four zones top to bottom.
