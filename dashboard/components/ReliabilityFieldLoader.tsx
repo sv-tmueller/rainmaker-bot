@@ -3,7 +3,7 @@
 import { Component, useEffect, useState, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import type { CalibrationData } from "../lib/data";
-import { canUseWebGL } from "../lib/webglSupport";
+import { canUseWebGL, releasingProbe } from "../lib/webglSupport";
 
 // The heavy r3f scene (three.js + fiber + drei) loads only when this island
 // mounts, and never on the server: `ssr: false` has to live in a "use client"
@@ -44,7 +44,7 @@ class SceneErrorBoundary extends Component<
 function probeWebGL(): boolean {
   try {
     const canvas = document.createElement("canvas");
-    return canUseWebGL((type) => canvas.getContext(type));
+    return canUseWebGL(releasingProbe(canvas));
   } catch {
     return false;
   }

@@ -5,6 +5,7 @@ import { OrbitControls } from "@react-three/drei";
 import { useMemo, useState } from "react";
 import type { CalibrationData } from "../lib/data";
 import { buildReliabilityField, type ReliabilityBar } from "../lib/reliabilityField";
+import { isGenuineContextLoss } from "../lib/webglSupport";
 import { coverageClass } from "./CalibrationPanel";
 import { pct } from "../lib/format";
 
@@ -16,8 +17,8 @@ const REFERENCE_THICKNESS = 0.06;
 type ColorTokens = {
   pos: string;
   warm: string;
-  accent: string;
   fg: string;
+  fg2: string;
 };
 
 // Read the dashboard's own CSS custom properties instead of hardcoding a
@@ -28,16 +29,23 @@ function readColorTokens(): ColorTokens {
   return {
     pos: read("--pos", "#3fb950"),
     warm: read("--warm", "#e8b05a"),
-    accent: read("--accent", "#e8b05a"),
     fg: read("--fg", "#e8eae6"),
+    fg2: read("--fg-2", "#bdb8af"),
   };
 }
 
 // Same under/over-confidence thresholds the 2D calibration panel uses, so a
-// bar's color means the same thing here as the "cov" cells there.
-function barColor(observedFreq: number, predictedMean: number, tokens: ColorTokens): string {
+// bar's color means the same thing here as the "cov" cells there. The
+// middling ("") band maps to fg2, not accent: --accent equals --warm in this
+// dashboard's palette, which would make "slightly off" and "badly off" bars
+// indistinguishable.
+export function barColor(
+  observedFreq: number,
+  predictedMean: number,
+  tokens: ColorTokens,
+): string {
   const cls = coverageClass(observedFreq, predictedMean);
-  return cls === "text-pos" ? tokens.pos : cls === "text-warm" ? tokens.warm : tokens.accent;
+  return cls === "text-pos" ? tokens.pos : cls === "text-warm" ? tokens.warm : tokens.fg2;
 }
 
 function Bar({
@@ -134,6 +142,11 @@ export function ReliabilityFieldScene({
             camera={{ position: [centerX + 3, HEIGHT_SCALE + 1.5, centerZ + 5.5], fov: 45 }}
             onCreated={({ gl }) => {
               gl.domElement.addEventListener("webglcontextlost", (event) => {
+                // r3f's teardown (switching to a variable with no bars unmounts
+                // <Canvas>) calls forceContextLoss(), which queues this event
+                // for after the canvas is already detached. Only a loss on a
+                // still-mounted canvas is a real, recoverable context loss.
+                if (!isGenuineContextLoss(gl.domElement)) return;
                 event.preventDefault();
                 onContextLost();
               });
@@ -166,6 +179,13 @@ export function ReliabilityFieldScene({
           <span>Hover or focus a bar for its bin range, predicted and observed value, and n.</span>
         )}
       </div>
+
+      <p className="mt-2 text-[11px] leading-relaxed text-faint">
+        Starting view: lead time in days runs left to right, predicted-probability bins run back to
+        front (lowest at the back). Bar height is observed frequency. The translucent slab marks the
+        bin&apos;s predicted mean, where a perfectly calibrated bar stops. Thinner, fainter bars have
+        fewer samples. Drag to rotate, scroll to zoom.
+      </p>
 
       {/* Keyboard-accessible equivalent of hovering a bar: screen-reader-only
           controls so "focus" (not just mouse hover) surfaces the same detail,
