@@ -183,8 +183,9 @@ export function ReliabilityFieldScene({
       <p className="mt-2 text-[11px] leading-relaxed text-faint">
         Starting view: lead time in days runs left to right, predicted-probability bins run back to
         front (lowest at the back). Bar height is observed frequency. The translucent slab marks the
-        bin&apos;s predicted mean, where a perfectly calibrated bar stops. Thinner, fainter bars have
-        fewer samples. Drag to rotate, scroll to zoom.
+        bin&apos;s predicted mean, where a perfectly calibrated bar stops. Bar color is the gap
+        between the two: green within 5 points, light gray 5 to 10 points, amber more than 10.
+        Thinner, fainter bars have fewer samples. Drag to rotate, scroll to zoom.
       </p>
 
       {/* Keyboard-accessible equivalent of hovering a bar: screen-reader-only

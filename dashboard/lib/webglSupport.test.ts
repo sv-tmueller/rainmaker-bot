@@ -10,6 +10,10 @@ describe("canUseWebGL", () => {
     expect(canUseWebGL(() => null)).toBe(false);
   });
 
+  test("false when only WebGL1 is available (three.js needs WebGL2)", () => {
+    expect(canUseWebGL((type) => (type === "webgl" ? {} : null))).toBe(false);
+  });
+
   test("false when the probe throws (blocked or unsupported)", () => {
     expect(
       canUseWebGL(() => {

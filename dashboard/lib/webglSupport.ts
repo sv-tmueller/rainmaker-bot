@@ -6,10 +6,11 @@
  *
  * Some browsers throw instead of returning null when WebGL is disabled
  * (for example a locked-down GPU sandbox), so both cases fold to false.
+ * Only WebGL2 counts: three.js dropped WebGL1 in r163.
  */
 export function canUseWebGL(probe: (type: string) => unknown): boolean {
   try {
-    return probe("webgl2") != null || probe("webgl") != null;
+    return probe("webgl2") != null;
   } catch {
     return false;
   }
