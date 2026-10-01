@@ -24,7 +24,7 @@ const y = (p: number) => TOP + (1 - p) * PLOT;
 const radius = (weight: number) => R_MIN + (R_MAX - R_MIN) * Math.sqrt(weight);
 
 function tooltip(point: ReliabilityPoint) {
-  return `forecasts at ${pct(point.lo)}-${pct(point.hi)}: predicted ${pct(point.predictedMean)}, won ${pct(point.observedFreq)}, n ${point.count}`;
+  return `${pct(point.lo)}-${pct(point.hi)} band, ${point.count} forecasts: predicted ${pct(point.predictedMean)}, won ${pct(point.observedFreq)}`;
 }
 
 function VariableChart({ chart }: { chart: ReliabilityChartData }) {
@@ -101,7 +101,7 @@ function VariableChart({ chart }: { chart: ReliabilityChartData }) {
           y1={y(0)}
           x2={x(1)}
           y2={y(1)}
-          className="text-muted"
+          className="text-faint"
           stroke="currentColor"
           strokeDasharray="3 4"
         />
@@ -114,7 +114,6 @@ function VariableChart({ chart }: { chart: ReliabilityChartData }) {
               fill="none"
               stroke="currentColor"
               strokeWidth="1"
-              opacity={0.6}
             />
             {s.points.map((p) => (
               <circle
@@ -144,7 +143,8 @@ export function ReliabilityChart({ calibration }: { calibration: CalibrationData
       <div className="text-[10px] uppercase tracking-[0.1em] text-muted">
         Reliability{" "}
         <span className="normal-case tracking-normal text-faint">
-          · predicted chance vs actual win rate, by variable and lead day
+          · predicted chance vs actual win rate, all cities pooled · 0d = same-day forecast, 1d = one
+          day ahead · bigger dots hold more forecasts
         </span>
       </div>
       {charts.every((chart) => chart.series.length === 0) ? (
@@ -157,11 +157,8 @@ export function ReliabilityChart({ calibration }: { calibration: CalibrationData
             ))}
           </div>
           <p className="mt-3 text-[11px] leading-relaxed text-faint">
-            Each dot groups forecasts within a 10% band of predicted chance. On the dashed line,
-            outcomes we gave X% won X% of the time: that is perfect calibration. Above the line,
-            outcomes won more often than we predicted (we were too cautious). Below it, we were too
-            confident. Bigger dots hold more forecasts. 0d is a same-day forecast, 1d one day
-            ahead, and so on. Pooled across all cities.
+            Dashed line: outcomes we gave a 30% chance won 30% of the time. Above it they won more
+            often than predicted (too cautious), below it less often (too confident).
           </p>
         </>
       )}

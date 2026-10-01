@@ -62,7 +62,8 @@ describe("buildReliabilitySeries", () => {
   });
 
   test("palette avoids pos/neg, which mean win and loss elsewhere on the page", () => {
-    expect(LEAD_COLORS).toEqual(["text-cool", "text-warm", "text-fg", "text-fg-2"]);
+    expect(LEAD_COLORS).not.toContain("text-pos");
+    expect(LEAD_COLORS).not.toContain("text-neg");
   });
 
   test("colors follow the lead's index in calibration.leads and cycle past the palette", () => {
