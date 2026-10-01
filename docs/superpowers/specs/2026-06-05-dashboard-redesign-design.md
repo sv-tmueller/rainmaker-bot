@@ -16,6 +16,9 @@ card grids, no marketing copy, no decoration that competes with the data.
 - Dark only. One palette to maintain.
 - Layout: decision-first grid (option B). Bets own the full width; trust and
   track record share the row below.
+  (Update 2026-10-01, #394: track record now has its own full-width row under
+  the bets, and the trust panels sit in a collapsed "Technical details" row at
+  the very bottom.)
 - P&L over time is charted with a hand-rolled server-rendered SVG. No chart
   library, no new dependency.
 - Per-market detail is dense inline: decision columns prominent, trust
@@ -33,7 +36,8 @@ card grids, no marketing copy, no decoration that competes with the data.
 
 ## Page structure
 
-Max width about 1200px, four zones top to bottom.
+Max width about 1200px, four zones top to bottom. (Since #394 the bottom zone is
+two full-width rows: track record, then the collapsed "Technical details" row.)
 
 1. Header bar. "Rainmaker" wordmark left. Right: run health from the latest
    run: started_at time, ok_sources from runs.coverage, market count. The

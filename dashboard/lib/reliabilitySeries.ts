@@ -1,8 +1,9 @@
 import type { CalibrationData } from "./data";
 
 // Tailwind text-* classes from the CSS color tokens. The chart sets stroke and
-// fill to currentColor, so one class colors a whole series.
-export const LEAD_COLORS = ["text-cool", "text-warm", "text-fg-2", "text-pos", "text-neg"];
+// fill to currentColor, so one class colors a whole series. No pos/neg: green
+// and red mean win and loss elsewhere on the page.
+export const LEAD_COLORS = ["text-cool", "text-warm", "text-fg", "text-fg-2"];
 
 export type ReliabilityPoint = {
   lo: number;

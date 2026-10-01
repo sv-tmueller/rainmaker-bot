@@ -61,6 +61,10 @@ describe("buildReliabilitySeries", () => {
     expect(charts[0].series[1].points[0].weight).toBeCloseTo(0.49);
   });
 
+  test("palette avoids pos/neg, which mean win and loss elsewhere on the page", () => {
+    expect(LEAD_COLORS).toEqual(["text-cool", "text-warm", "text-fg", "text-fg-2"]);
+  });
+
   test("colors follow the lead's index in calibration.leads and cycle past the palette", () => {
     const charts = buildReliabilitySeries(fixture());
     expect(charts[0].series[0].colorClass).toBe(LEAD_COLORS[0]);
