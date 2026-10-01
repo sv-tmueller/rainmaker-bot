@@ -4,6 +4,7 @@ import { CalibrationPanel } from "../components/CalibrationPanel";
 import { DisclosureToggle } from "../components/DisclosureToggle";
 import { KpiStrip } from "../components/KpiStrip";
 import { PnlChart } from "../components/PnlChart";
+import { ReliabilityChart } from "../components/ReliabilityChart";
 import { RunHealth } from "../components/RunHealth";
 import { SettledList } from "../components/SettledList";
 import { getDashboardData } from "../lib/data";
@@ -28,37 +29,31 @@ export default async function Page() {
 
       <BetsTable bets={bets} />
 
-      <div className="mt-3.5 grid grid-cols-5 gap-3.5">
-        <div className="col-span-3 flex flex-col gap-3.5">
-          <DisclosureToggle label="Technical details">
-            <AccuracyGrid accuracy={accuracy} />
-            <CalibrationPanel calibration={calibration} />
-          </DisclosureToggle>
-        </div>
-        <section className="col-span-2 rounded border border-line bg-panel px-4 py-4">
-          <div className="text-[10px] uppercase tracking-[0.1em] text-muted">Track record</div>
-          {snapshots.length === 0 ? (
-            <p className="mt-3 text-sm text-muted">No settled results yet.</p>
-          ) : (
-            <>
-              <div className="mt-2.5">
-                <PnlChart snapshots={snapshots} venue={venueSnapshots} />
-              </div>
+      <section className="mt-3.5 rounded border border-line bg-panel px-4 py-4">
+        <div className="text-[10px] uppercase tracking-[0.1em] text-muted">Track record</div>
+        {snapshots.length === 0 ? (
+          <p className="mt-3 text-sm text-muted">No settled results yet.</p>
+        ) : (
+          // The P&L chart is an SVG that scales with its width. Keeping it in
+          // 2 of 5 columns holds it near its old size; full width would
+          // stretch its text and height about 2.7x.
+          <div className="mt-2.5 grid grid-cols-5 gap-x-6">
+            <div className="col-span-2">
+              <PnlChart snapshots={snapshots} venue={venueSnapshots} />
               {breaksShown.length > 0 && (
                 <ul className="mt-2 space-y-1">
                   {breaksShown.map((br) => (
-                    <li
-                      key={br.date}
-                      className="font-mono text-[10px] leading-snug text-warn"
-                    >
+                    <li key={br.date} className="font-mono text-[10px] leading-snug text-warn">
                       <span className="text-faint">{br.label}:</span> {br.detail}
                     </li>
                   ))}
                 </ul>
               )}
+            </div>
+            <div className="col-span-3">
               {settled.length > 0 && (
                 <>
-                  <div className="mt-3 text-[10px] uppercase tracking-[0.1em] text-muted">
+                  <div className="text-[10px] uppercase tracking-[0.1em] text-muted">
                     Recent settled
                   </div>
                   <div className="mt-1.5">
@@ -66,9 +61,19 @@ export default async function Page() {
                   </div>
                 </>
               )}
-            </>
-          )}
-        </section>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <div className="mt-3.5">
+        <DisclosureToggle label="Technical details">
+          <div className="flex flex-col gap-3.5">
+            <AccuracyGrid accuracy={accuracy} />
+            <CalibrationPanel calibration={calibration} />
+            <ReliabilityChart calibration={calibration} />
+          </div>
+        </DisclosureToggle>
       </div>
     </main>
   );
