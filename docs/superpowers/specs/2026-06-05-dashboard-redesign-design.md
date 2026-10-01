@@ -16,6 +16,9 @@ card grids, no marketing copy, no decoration that competes with the data.
 - Dark only. One palette to maintain.
 - Layout: decision-first grid (option B). Bets own the full width; trust and
   track record share the row below.
+  (Update 2026-10-01, #394: track record now has its own full-width row under
+  the bets, and the trust panels sit in a collapsed "Technical details" row at
+  the very bottom.)
 - P&L over time is charted with a hand-rolled server-rendered SVG. No chart
   library, no new dependency.
 - Per-market detail is dense inline: decision columns prominent, trust
@@ -24,17 +27,17 @@ card grids, no marketing copy, no decoration that competes with the data.
   line in the header (runs.coverage), recent settled bets list (outcomes join).
 - The page stays fully server-rendered. No client JS anywhere.
 
-  > Update (2026-09-29, #391): no longer accurate; code wins over this line.
-  > `DisclosureToggle` (#389) added a small "use client" toggle for the
-  > technical-details sections. #391 adds a second, heavier client island: an
-  > opt-in 3D calibration reliability view (react-three-fiber), lazy-loaded
-  > with `next/dynamic({ ssr: false })` so three.js never ships in the page's
-  > first-load JS. Both stay behind explicit user action (a click to expand),
-  > so the page is still server-rendered and inert by default.
+  > Update (2026-10-01, #394): no longer accurate; code wins over this line.
+  > `DisclosureToggle` (#389) is a small "use client" toggle for the
+  > technical-details section, and it is the only client JavaScript left. The
+  > opt-in 3D calibration view (#391/#392, react-three-fiber) was removed in
+  > #394 along with three.js; the reliability diagram is now a 2D SVG drawn on
+  > the server. The page stays server-rendered and inert by default.
 
 ## Page structure
 
-Max width about 1200px, four zones top to bottom.
+Max width about 1200px, four zones top to bottom. (Since #394 the bottom zone is
+two full-width rows: track record, then the collapsed "Technical details" row.)
 
 1. Header bar. "Rainmaker" wordmark left. Right: run health from the latest
    run: started_at time, ok_sources from runs.coverage, market count. The
@@ -49,6 +52,10 @@ Max width about 1200px, four zones top to bottom.
    Forecast mu (deg F with deg C), P(win), Ask, Edge (green, bold). Then
    muted: sigma and n sources for that market in this run (predictions.confidence is never recorded, so it is not shown).
 4. Bottom row, two panels.
+   (Update 2026-10-01, #394: the layout changed. Track record is now a full-width
+   panel directly under the bets, and a collapsed "Technical details" row at the
+   very bottom holds the accuracy pivot, calibration table and 2D reliability
+   chart.)
    - Left, about 60 percent: forecast accuracy pivot. City rows, one column
      per distinct lead time present in the data (today 1d/2d/3d). Cell: live
      MAE primary, signed bias colored by
