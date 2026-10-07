@@ -122,3 +122,29 @@ def test_settles_uses_half_to_even_rounding():
     # half-up would round 70.5 to 71 and win here; half-to-even gives 70 and loses.
     assert not settles("range", 71, 72, None, 70.5)
     assert settles("range", 72, 73, None, 72.5)  # 72.5 -> 72, in [72, 73]
+
+
+def test_exact_half_cases_in_prod_history_are_rule_compatible():
+    """#399: among ~3000 settled prod markets, exactly three actuals sit at an
+    exact .5 (72.5, 54.5, 81.5; all Denver KBKF). Adjudicated against
+    Polymarket's Gamma resolution (2026-10-07):
+
+    - 81.5 resolved 82-73F bucket ('82-83°F' YES): the resolver ROUNDED (81.5
+      -> 82), ruling out truncation. Banker's rounding also maps 81.5 -> 82
+      (82 is even), so our grading matched.
+    - 72.5 and 54.5 face 2-degree range buckets where every rounding rule
+      agrees (both neighbors inside the bucket).
+
+    The theoretically discriminating shape (a below/above THRESHOLD bucket
+    against an exact .5, e.g. '65F or below' at 65.5: banker's 66 no-settle
+    vs truncation 65 settle) has never occurred. This test pins the three
+    observed compatibilities so a future discriminating case gets noticed."""
+    # 81.5: resolver rounded to 82; banker's agrees (round(81.5) == 82).
+    assert round(81.5) == 82
+    assert settles("range", 82, 83, None, 81.5)  # our grade matches resolution
+    # 72.5 / 54.5: every rule agrees inside the 2-degree buckets.
+    assert settles("range", 72, 73, None, 72.5)
+    assert settles("range", 54, 55, None, 54.5)
+    # The never-yet-observed discriminator, pinned for awareness:
+    # banker's: 65.5 -> 66 (> 65, no settle); truncation would settle.
+    assert not settles("below", None, None, 65, 65.5)
