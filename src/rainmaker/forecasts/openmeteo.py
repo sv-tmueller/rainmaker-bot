@@ -1,4 +1,5 @@
 import re
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import httpx
@@ -139,4 +140,10 @@ class OpenMeteoSource:
         for ens_model in OPENMETEO_ENSEMBLE_MODELS:
             data = fetch_raw_ensemble(target, self.client, ens_model)
             samples.extend(parse_ensemble(data, target, ens_model))
-        return samples
+        # Stamp the fetch wall-clock time. The Open-Meteo payload exposes no
+        # model-run instant, so fetch time is the strongest freshness witness
+        # available; without it issued_at stayed None and the aggregate
+        # freshness gate treated every Open-Meteo sample as fresh forever
+        # (#401). Parsing stays pure (issued_at=None); only the source stamps.
+        now = datetime.now(UTC)
+        return [s.model_copy(update={"issued_at": now}) for s in samples]

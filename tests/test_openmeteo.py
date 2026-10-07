@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from rainmaker.config import build_target
+from rainmaker.forecasts.base import ForecastSample
 from rainmaker.forecasts.openmeteo import (
     ENSEMBLE_URL,
     FORECAST_URL,
@@ -146,6 +147,57 @@ def test_common_params_requests_min_field_for_tmin():
     assert _common_params(build_target("NYC", "TMAX", date(2026, 5, 31)))["daily"] == (
         "temperature_2m_max"
     )
+
+
+def test_source_stamps_issue_time_on_every_sample(httpx_mock):
+    """Open-Meteo publishes no model-run instant, so the source stamps the
+    fetch wall-clock time as issued_at (#401): the aggregate freshness gate
+    otherwise treated every Open-Meteo sample as fresh forever."""
+    httpx_mock.add_response(url=re.compile(re.escape(FORECAST_URL)), json=_multimodel_fixture())
+    for _ in range(3):
+        httpx_mock.add_response(url=re.compile(re.escape(ENSEMBLE_URL)), json=_ensemble_fixture())
+
+    target = build_target("NYC", "TMAX", date(2026, 5, 31))
+    before = datetime.now(UTC)
+    with httpx.Client() as client:
+        samples = OpenMeteoSource(client).fetch(target)
+    after = datetime.now(UTC)
+    assert samples
+    for s in samples:
+        assert s.issued_at is not None
+        assert before <= s.issued_at <= after
+
+
+def test_aggregate_gate_excludes_stale_open_meteo_sample():
+    """The freshness gate now binds Open-Meteo: a stamped-but-old sample is
+    excluded and reflected in coverage, instead of riding the None-is-fresh
+    loophole forever (#401)."""
+    from rainmaker.config import Target
+    from rainmaker.forecasts.aggregate import aggregate
+
+    class StaleOpenMeteoSource:
+        name = "open-meteo"
+
+        def fetch(self, target: Target) -> list[ForecastSample]:
+            return [
+                ForecastSample(
+                    source="open-meteo",
+                    model="gfs_seamless",
+                    member=None,
+                    station="KLGA",
+                    variable="TMAX",
+                    target_date=date(2026, 5, 31),
+                    lead_time_days=1,
+                    value_f=74.6,
+                    issued_at=datetime.now(UTC) - timedelta(days=3),
+                )
+            ]
+
+    target = build_target("NYC", "TMAX", date(2026, 5, 31))
+    fs = aggregate(target, [StaleOpenMeteoSource()])
+    assert fs.samples == []
+    assert fs.coverage[0].ok is True
+    assert fs.coverage[0].n_samples == 0
 
 
 def test_source_raises_when_ensemble_call_fails(httpx_mock):
