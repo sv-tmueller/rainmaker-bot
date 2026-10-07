@@ -161,6 +161,17 @@ def evaluate_market(
     # the fitted Gaussian lives in the same unit as the bucket edges.
     samples = [_f_to_c(s) for s in forecast_set.samples] if unit == "C" else forecast_set.samples
     gaussian = fit_gaussian(samples, min_sigma=min_sigma)
+    # Guard the latent F/C unit clash (#402): calibration cells are keyed by ICAO
+    # and fitted exclusively in Fahrenheit (Open-Meteo/NCEI/ASOS all fit in F).
+    # The path is unreachable today (no intl station carries a ghcnd_id, so C
+    # markets never calibrate), but one registry edit would silently apply an
+    # F-unit bias/variance model to C forecasts and buckets. Fail loudly instead.
+    if calibration is not None and unit == "C":
+        raise ValueError(
+            f"calibration cell supplied for {market.target.station.icao} but the "
+            "market settles in Celsius; calibration cells are Fahrenheit-only "
+            "(see #402). Fit a C-unit cell before enabling this path."
+        )
     # Apply calibration only when a cell is provided; with none, use the raw fit
     # wrapped as a Gaussian (df=None) predictive.
     calibrated: Literal["uncalibrated", "bias_only", "full"] = "uncalibrated"

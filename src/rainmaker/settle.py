@@ -212,7 +212,7 @@ def run_settlement(
     # --- US wrh batch path ---
     # Group by (station_icao, variable), fetch once per group over [min_date, max_date].
     # wrh is primary; ASOS is the fallback on fetch failure.
-    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[str, str], tuple[str, list[dict[str, Any]]]] = defaultdict(lambda: ("", []))
 
     for m in us_wrh_markets:
         station_info = _us_station_for(m["city"])
@@ -222,14 +222,14 @@ def run_settlement(
                 file=sys.stderr,
             )
             continue
-        icao, _tz = station_info
-        groups[(icao, m["variable"])].append(m)
+        icao, tz = station_info
+        existing_icao, lst = groups[(icao, m["variable"])]
+        groups[(icao, m["variable"])] = (tz, [*lst, m])
 
-    for (station_icao, variable), group_markets in groups.items():
+    for (station_icao, variable), (tz, group_markets) in groups.items():
         dates = [date.fromisoformat(m["settlement_date"]) for m in group_markets]
         start = min(dates)
         end = max(dates)
-        _, tz = _us_station_for(group_markets[0]["city"])  # type: ignore[misc]
         try:
             lookup = _fetch_us_extreme(station_icao, tz, start, end, client, variable)
         except httpx.HTTPError as exc:
@@ -339,7 +339,7 @@ def regrade_polymarket_settlements(conn: Conn, client: httpx.Client, regraded_at
 
     # Group by (station_icao, variable), fetch once per group.
     # Intl cities are excluded: they settled in Celsius; regrade is US-only.
-    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    groups: dict[tuple[str, str], tuple[str, list[dict[str, Any]]]] = defaultdict(lambda: ("", []))
     for m in all_markets:
         if m["city"] in _INTL_CITIES:
             continue
@@ -348,15 +348,15 @@ def regrade_polymarket_settlements(conn: Conn, client: httpx.Client, regraded_at
             # No station mapping for this city: skip silently (should not occur for
             # the 11 known cities, but do not crash if a legacy row appears).
             continue
-        icao, _tz = station_info
-        groups[(icao, m["variable"])].append(m)
+        icao, tz = station_info
+        _existing, lst = groups[(icao, m["variable"])]
+        groups[(icao, m["variable"])] = (tz, [*lst, m])
 
     regraded = 0
-    for (station_icao, variable), group_markets in groups.items():
+    for (station_icao, variable), (tz, group_markets) in groups.items():
         dates = [date.fromisoformat(m["settlement_date"]) for m in group_markets]
         start = min(dates)
         end = max(dates)
-        _, tz = _us_station_for(group_markets[0]["city"])  # type: ignore[misc]
         try:
             lookup = _fetch_us_extreme(station_icao, tz, start, end, client, variable)
         except httpx.HTTPError as exc:

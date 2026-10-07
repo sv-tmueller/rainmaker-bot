@@ -947,3 +947,22 @@ may reverse the preliminary recommendations above.
 
 - Analysis script: `scripts/tmax_bias_audit.py`
 - Raw output: saved to `/tmp/tmax_audit_output.txt` (local demo run)
+
+## Update 2026-10-07: cross-venue NO-liquidity derivations differ (#402)
+
+The NO side of the gate is priced off `bucket.no_ask`, and that field is
+derived differently per venue. Neither derivation is wrong; they are just not
+the same measurement, so cross-venue edge comparisons carry a caveat.
+
+- Polymarket (`polymarket/markets.py`): Gamma exposes only the YES book, so
+  `no_ask = 1 - yes_bid`. It exists only when a YES bid exists to take the
+  complement of; a hollow YES book hides the NO side entirely.
+- Kalshi (`kalshi/markets.py`): `no_ask_dollars` is read directly from the
+  API. It exists even when the YES book is empty, so Kalshi NO bets can be
+  quotable where Polymarket's would be excluded.
+
+Consequence for the venue decomposition: Kalshi's NO-side candidate set is
+weakly larger than Polymarket's at equal liquidity, and the asks compared by
+`venue-decomp` come from differently-derived books (direct NO quote versus a
+complement of the YES bid). When comparing ROI or edge between venues, treat
+part of any NO-side gap as a measurement artifact, not necessarily alpha.
