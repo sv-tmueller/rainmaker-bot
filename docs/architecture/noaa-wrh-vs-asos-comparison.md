@@ -189,3 +189,32 @@ not intended for production use. Raw JSON results are in
    TMAX/TMIN, with ASOS as fallback.
 4. Update `regrade_polymarket_settlements` to re-converge historical outcomes.
 5. Write tests with saved JSON fixtures for the wrh parser.
+
+## Appendix 2026-10-07: rounding-rule sensitivity at exact halves (#399)
+
+Question: `probability/outcomes.py:settles()` grades with Python `round()`
+(half-to-even). Wunderground's displayed daily extreme plausibly truncates
+instead. Could the two disagree on a settled market?
+
+Empirical answer from the production store, adjudicated against Polymarket's
+Gamma resolution: among all settled US Polymarket TMAX/TMIN markets, exactly
+THREE actuals sit at an exact .5 (72.5, 54.5, 81.5; all Denver KBKF).
+
+- 81.5 (TMAX 2026-09-26) resolved '82-83F' YES: the resolver ROUNDED (81.5 ->
+  82), ruling out truncation. Banker's rounding also maps 81.5 -> 82 (82 is
+  even), so our grading matched the resolution.
+- 72.5 and 54.5 faced 2-degree range buckets ([72,73], [54,55]) where
+  banker's, half-up, and truncation all agree: both neighboring integers lie
+  inside the bucket.
+
+Conclusion: the observed evidence is COMPATIBLE with our half-to-even rule
+(and with half-up; the two differ only at odd-even boundary halves, none of
+which occurred). Truncation is ruled out. The theoretically discriminating
+shape, a below/above THRESHOLD bucket against an exact .5 (e.g. '65F or
+below' at 65.5: banker's 66 -> no settle, truncation 65 -> settle), has not
+occurred in ~3000 settled markets. Fractional parts cluster on .0/.5 bands
+(Celsius conversion granularity), so an eventual discriminating case is
+possible but rare; when one occurs, adjudicate against the Gamma-resolved
+winner before changing `settles()`.
+`tests/test_outcomes.py::test_exact_half_cases_in_prod_history_are_rule_compatible`
+pins the evidence.
