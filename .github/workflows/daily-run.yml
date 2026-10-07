@@ -6,6 +6,10 @@ on:
     # pass before the day's markets post simply re-prices the still-open ones.
     - cron: "0 */3 * * *"
   workflow_dispatch: {}
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   issues: write
