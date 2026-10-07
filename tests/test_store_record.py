@@ -436,3 +436,53 @@ def test_accuracy_save_and_upsert_round_trip():
     assert rows[0]["mae_f"] == pytest.approx(2.0)  # updated
     assert rows[0]["bias_f"] == pytest.approx(-0.3)  # updated
     assert rows[0]["updated_at"] == "t1"  # updated
+
+
+def test_record_prices_no_quote_records_null_implied_not_one():
+    """A Kalshi bucket with no quote component at all has yes_price None; the
+    NO row's implied_prob must be NULL, not the fabricated 1 - 0.0 = 1.0
+    the pre-#398 code wrote (which poisoned venue-decomp's reprojection)."""
+
+    from datetime import date as _date
+
+    from rainmaker.config import build_target
+    from rainmaker.domain import Bucket
+    from rainmaker.domain import Market as Mk
+    from rainmaker.store.record import _record_prices
+
+    market = Mk(
+        id="km1",
+        slug="s",
+        title="t",
+        target=build_target("NYC", "TMAX", _date(2026, 6, 8)),
+        buckets=[
+            Bucket(
+                label="79°F or higher",
+                kind="above",
+                lo=None,
+                hi=None,
+                threshold=79,
+                yes_token_id="KXTICK",
+                best_ask=None,
+                best_bid=None,
+                yes_price=None,
+                no_token_id="",
+                no_ask=0.95,
+            )
+        ],
+    )
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute("INSERT INTO runs (id, started_at, status) VALUES ('run-x', 't0', 'ok')")
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue) "
+        "VALUES ('km1', 'NYC', 'TMAX', '2026-06-08', 'kalshi')"
+    )
+    _record_prices(conn, "run-x", market, "t0")
+    rows = conn.execute(
+        "SELECT side, price, implied_prob FROM prices WHERE market_id = 'km1' ORDER BY side"
+    ).fetchall()
+    conn.close()
+    by_side = {r["side"]: (r["price"], r["implied_prob"]) for r in rows}
+    assert by_side["YES"] == (None, None)
+    assert by_side["NO"] == (0.95, None)  # NULL implied, not 1.0

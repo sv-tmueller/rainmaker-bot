@@ -75,7 +75,10 @@ class Bucket(BaseModel):
     yes_token_id: str
     best_ask: float | None
     best_bid: float | None
-    yes_price: float
+    # The market's own probability estimate (last trade or bid/ask mid). None on
+    # Kalshi when no quote component exists at all: fabricating 0.0 would poison
+    # the NO row's implied_prob (1 - 0.0 = 1.0) downstream (#398).
+    yes_price: float | None
     # NO side. Gamma exposes only the YES book, so the NO ask is the complement of
     # the YES bid (buying NO == selling YES). None when there is no YES bid to take.
     no_token_id: str = ""
@@ -143,7 +146,8 @@ class PrecipBracket(BaseModel):
     yes_token_id: str
     best_ask: float | None
     best_bid: float | None
-    yes_price: float
+    # Same None-not-zero rule as Bucket.yes_price (#398).
+    yes_price: float | None
     # NO side, derived exactly as in markets.py: Gamma exposes only the YES book,
     # so the NO ask is the complement of the YES bid (buying NO == selling YES).
     no_token_id: str = ""

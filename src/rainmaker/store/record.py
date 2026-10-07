@@ -151,9 +151,12 @@ def _record_prices(
             insert, (run_id, market.id, b.label, "YES", b.best_ask, b.yes_price, captured_at)
         )
         if b.no_ask is not None:
+            # implied_prob mirrors the YES price; with no quote at all (#398)
+            # yes_price is None and the NO row records NULL rather than 1.0.
+            no_implied = None if b.yes_price is None else 1 - b.yes_price
             conn.execute(
                 insert,
-                (run_id, market.id, b.label, "NO", b.no_ask, 1 - b.yes_price, captured_at),
+                (run_id, market.id, b.label, "NO", b.no_ask, no_implied, captured_at),
             )
 
 
