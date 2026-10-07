@@ -43,6 +43,20 @@ Every CLI command targets local SQLite (default `rainmaker.db`) unless
 `DATABASE_URL` is set to a postgres DSN. Export the prod DSN locally only when
 you mean to touch prod.
 
+## Secrets and tokens
+
+- `DATABASE_URL` (repo secret): the Supabase session-pooler DSN, used by the
+  scheduled runs and every prod-local invocation.
+- `RAINYDAY_SYNOPTIC_TOKEN` (optional env var): the Synoptic Data API token
+  used by the wrh settlement fetcher (`src/rainmaker/forecasts/wrh.py`),
+  overriding the embedded weather.gov public token. Rotate here when the
+  embedded token dies: set the secret in the repo (Settings > Secrets >
+  Actions) and locally before running settle by hand. Leaving it unset keeps
+  today's behavior; setting it to an empty string is NOT a kill switch (an
+  empty value falls back to the embedded token). If wrh is unavailable for any
+  reason, US Polymarket settlement degrades to the ASOS fallback
+  automatically; no manual intervention is needed.
+
 ## Commands
 
 - `uv run rainmaker run`: discover live US-city temperature markets, forecast,

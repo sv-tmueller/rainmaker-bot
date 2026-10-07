@@ -18,6 +18,7 @@ the local calendar day.
 
 from __future__ import annotations
 
+import os
 import time
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -28,7 +29,11 @@ import httpx
 SYNOPTIC_API_URL = "https://api.synopticdata.com/v2/stations/timeseries"
 
 # Token embedded in weather.gov's apiKey.js. Public, not a secret.
-SYNOPTIC_TOKEN = "7c76618b66c74aee913bdbae4b448bdd"
+# Override with RAINYDAY_SYNOPTIC_TOKEN (env) so a rotation is an ops step,
+# not a code change (#406). An empty override disables wrh entirely: the
+# fetch raises a ValueError naming the env var, and the caller's ASOS
+# fallback takes over (settle._fetch_us_extreme already wraps it).
+SYNOPTIC_TOKEN = os.environ.get("RAINYDAY_SYNOPTIC_TOKEN") or ("7c76618b66c74aee913bdbae4b448bdd")
 
 # Referer header required by the Synoptic API when using the weather.gov token.
 WRH_REFERER = "https://www.weather.gov/wrh/timeseries"
