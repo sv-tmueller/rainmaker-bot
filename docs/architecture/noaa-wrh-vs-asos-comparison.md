@@ -218,3 +218,33 @@ possible but rare; when one occurs, adjudicate against the Gamma-resolved
 winner before changing `settles()`.
 `tests/test_outcomes.py::test_exact_half_cases_in_prod_history_are_rule_compatible`
 pins the evidence.
+
+## Appendix 2026-10-07: deterministic-vs-ensemble sigma gap (#400)
+
+`probability/distribution.py:fit_gaussian`'s ensemble arm computes sigma from
+between-ensemble-group dispersion only. Deterministic models (NWS, the
+seamless deterministics) inform mu equally but contribute NOTHING to sigma:
+five deterministic models agreeing with each other while disagreeing with the
+ensemble mean produce a confidently narrow sigma.
+
+Measured against prod (14 days, 1097 (run, market) groups carrying BOTH
+families, reconstructed from the forecasts table):
+
+- |gap| between family consensuses: mean 1.01F, median 0.70F, p90 2.11F,
+  max 7.18F.
+- Ratio |gap| / ensemble-between-group sigma: mean 0.71, median 0.44, p90
+  1.49. 45% of groups sit above 0.5 sigma; 19% above 1.0 sigma.
+
+Verdict: the blind spot is material, not theoretical. HOWEVER, changing the
+production fit invalidates every calibration cell fitted under the current
+sigma definition (cells are keyed by (station, variable, lead) and fitted
+from historical mu/sigma/actual triples). Shipping the extension piecemeal
+would mix sigma generations inside one calibration table.
+
+Decision: the fit extension is DEFERRED to the next scheduled calibration
+regime refit (update REGIME_SINCE in daily-diagnostics.yml in the same
+change, per docs/operations/README.md). Meanwhile the diagnostic ships:
+`inter_family_gap(samples)` in distribution.py reports det/ens consensus,
+the gap, current sigma, the counterfactual extended sigma, and the
+gap/sigma ratio, with tests pinning the confidently-wrong-det-block case.
+Tail-check consumers can surface it alongside the existing tail ratios.
