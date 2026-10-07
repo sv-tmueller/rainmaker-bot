@@ -18,8 +18,17 @@ def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]
     tz = ZoneInfo(target.station.timezone)
     issued_local = issued_at.astimezone(tz).date()
     # TMAX is the daytime high on the target day. TMIN is the overnight low that
-    # GHCND settles to, which NWS reports in the night period starting the evening
-    # before (isDaytime false, local start date == target - 1 day).
+    # NWS reports in the night period starting the evening before (isDaytime
+    # false, local start date == target - 1 day). CAVEAT (#404, measured): the
+    # night-period low is NOT the calendar-day low Polymarket settles on -
+    # evening cold plunges before midnight belong to the previous calendar day
+    # but sit inside the NWS night period. Measured wedge (wrh obs, 6 stations,
+    # 14 days): mean 1.0-1.7F, peaks to 7F, night-period lows systematically
+    # LOWER. Our TMIN forecast is therefore biased low versus the settlement
+    # quantity; the per-(station, variable, lead) calibration absorbs part of
+    # this as a bias term. Changing the sampling window is a calibration-regime
+    # decision, not a casual edit: see the #404 appendix in
+    # docs/architecture/noaa-wrh-vs-asos-comparison.md.
     want_daytime = target.variable == "TMAX"
     match_date = target.local_date if want_daytime else target.local_date - timedelta(days=1)
     for period in props["periods"]:

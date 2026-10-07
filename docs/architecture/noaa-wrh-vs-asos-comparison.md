@@ -248,3 +248,37 @@ change, per docs/operations/README.md). Meanwhile the diagnostic ships:
 the gap, current sigma, the counterfactual extended sigma, and the
 gap/sigma ratio, with tests pinning the confidently-wrong-det-block case.
 Tail-check consumers can surface it alongside the existing tail ratios.
+
+## Appendix 2026-10-07: TMIN night-period window vs calendar-day low (#404)
+
+Question: our TMIN forecast samples the NWS night period starting the evening
+BEFORE the target day (isDaytime=false, local start date = target - 1).
+Polymarket TMIN settles on the calendar-day low (wrh local-day bucketing).
+Evening cold plunges before midnight belong to the previous calendar day but
+sit inside the NWS night period: are the two quantities the same?
+
+Measured (wrh observations, 6 stations x 14 days, 2026-09-23..10-06): the
+proxy wedge between the calendar-day low and the min of the adjacent
+calendar-day lows bounding the night period averages 0.97-1.69F per station
+(peaks 3.6-7.2F; 5-8 of 15 days per station show a nonzero wedge). The
+night-period low is systematically LOWER than the calendar-day low.
+
+Interpretation: our TMIN forecast is anchored on a colder quantity than the
+one that settles. Effects:
+
+1. A systematic low bias versus settlement, of order 1F. The per-(station,
+   variable, lead) calibration fit absorbs a stationary bias into its bias
+   term, so the shipped probabilities largely compensate TODAY.
+2. The compensation is only as good as the bias stationarity: on days when
+   the wedge is 5-7F (cold-front evenings), the calibrated forecast inherits
+   a large error the bias term cannot represent.
+
+Decision: do NOT retarget the sampling window casually. The window change
+(alternatives: derive the overnight low from the hourly gridpoint forecast
+restricted to the target local day, or blend the night-period value with the
+following daytime low) alters every TMIN forecast from tomorrow onward and
+thus invalidates the TMIN calibration cells the same way the #400 extension
+does. Bundle it with the next calibration regime refit: re-derive TMIN
+sampling, refit all cells, bump REGIME_SINCE, and re-run tail-check to
+confirm the wedge disappeared. Until then the nws.py comment now carries the
+measured caveat instead of the incorrect "GHCND settles to" justification.
