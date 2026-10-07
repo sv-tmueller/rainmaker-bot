@@ -712,7 +712,10 @@ def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
     _record_predictions writing an identical dist_params string for every bucket
     row of one (run, market); if that changes, replace DISTINCT with a subquery.
     Rows with an unknown city, unparsable dist_params, a null actual, or no usable
-    mu/sigma are skipped.
+    mu/sigma are skipped. PRCP rows are excluded outright: their dist_params
+    describe a gamma (mean/sqrt-var in inches), not a Gaussian in degrees, so
+    degree-space metrics would be meaningless (same rationale as
+    compute_live_calibration below).
     """
     rows = conn.execute(
         "SELECT DISTINCT p.run_id AS run_id, p.market_id AS market_id, "
@@ -723,7 +726,8 @@ def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
         "JOIN outcomes o ON o.market_id = p.market_id "
         "JOIN markets m ON m.id = p.market_id "
         "JOIN runs r ON r.id = p.run_id "
-        "WHERE p.dist_params IS NOT NULL AND o.actual_value IS NOT NULL"
+        "WHERE p.dist_params IS NOT NULL AND o.actual_value IS NOT NULL "
+        "AND m.variable != 'PRCP'"
     ).fetchall()
     groups: dict[tuple[str, str, str, int], list[CalibrationPair]] = defaultdict(list)
     for r in _latest_run_per_market_day([dict(row) for row in rows]):
