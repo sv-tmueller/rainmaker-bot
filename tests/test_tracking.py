@@ -1075,6 +1075,40 @@ def test_compute_live_accuracy_dedupes_buckets():
     assert acc.bias_f == pytest.approx(-3.0)  # forecast ran cold
 
 
+def test_compute_live_accuracy_excludes_prcp():
+    """PRCP dist_params describe a gamma in inches, not a Gaussian in degrees;
+
+    scoring them through compute_live_accuracy poisons the degree-space metrics
+    (compute_live_calibration excludes them for the same reason, see its
+    docstring). Regression test for the drift the #396 review caught.
+    """
+
+    from rainmaker.tracking import compute_live_accuracy
+
+    conn = connect(":memory:")
+    _setup_live(conn)
+    # A settled PRCP market with gamma-shaped dist_params (mean inches /
+    # sqrt-variance inches), same shape _record_predictions writes for precip.
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue) "
+        "VALUES ('m2', 'NYC', 'PRCP', '2026-05-31', NULL)"
+    )
+    prcp_dist = json.dumps({"mu": 3.0, "sigma": 0.6, "n_sources": 2})
+    conn.execute(
+        "INSERT INTO predictions "
+        "(run_id, market_id, bucket, p_win, dist_params, edge, recommended, created_at) "
+        "VALUES ('r1', 'm2', '2-3\"', 0.5, ?, 0.1, 1, 't')",
+        (prcp_dist,),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES ('m2', 3.1, 't')"
+    )
+    conn.commit()
+    rows = compute_live_accuracy(conn)
+    conn.close()
+    assert all(row["variable"] != "PRCP" for row in rows)
+
+
 def test_compute_live_accuracy_attributes_kalshi_to_its_station():
     from rainmaker.tracking import compute_live_accuracy
 
