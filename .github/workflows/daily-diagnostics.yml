@@ -9,6 +9,10 @@ on:
     # a single settled-rows read (#334).
     - cron: "45 21 * * *"
   workflow_dispatch: {}
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   issues: write
