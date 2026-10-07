@@ -73,12 +73,13 @@ def test_yes_price_falls_back_to_mid_when_last_none():
     assert b.yes_price == pytest.approx(0.105)
 
 
-def test_yes_price_zero_when_all_none():
-    # no last, no ask, no bid -> 0.0.
+def test_yes_price_none_when_all_quotes_absent():
+    # no last, no ask, no bid -> None (fabricating 0.0 would poison the NO
+    # row's implied_prob as 1.0 downstream, #398).
     b = parse_kalshi_bucket(
         _mkt(last_price_dollars=None, yes_ask_dollars=None, yes_bid_dollars=None)
     )
-    assert b.yes_price == 0.0
+    assert b.yes_price is None
 
 
 def _event_markets():

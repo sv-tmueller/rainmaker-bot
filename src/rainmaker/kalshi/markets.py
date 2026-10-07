@@ -75,13 +75,18 @@ def _price(market: dict[str, Any], key: str) -> float | None:
     return val if val > 0 else None
 
 
-def _yes_price(market: dict[str, Any]) -> float:
-    """The YES implied price: last trade, else the bid/ask mid, else 0."""
+def _yes_price(market: dict[str, Any]) -> float | None:
+    """The YES implied price: last trade, else the bid/ask mid, else None.
+
+    None (not 0.0) when no quote component exists: a fabricated 0.0 would flow
+    into the NO row's implied_prob as 1 - 0.0 = 1.0 and contaminate the
+    implied-probability reprojections downstream (#398).
+    """
     best_ask = _price(market, "yes_ask_dollars")
     best_bid = _price(market, "yes_bid_dollars")
     last = _price(market, "last_price_dollars")
     mid = None if best_ask is None or best_bid is None else (best_ask + best_bid) / 2
-    return last if last is not None else (mid if mid is not None else 0.0)
+    return last if last is not None else (mid if mid is not None else None)
 
 
 def parse_kalshi_bucket(market: dict[str, Any]) -> Bucket:
