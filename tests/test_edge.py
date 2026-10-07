@@ -1134,7 +1134,10 @@ def test_intl_market_never_recommended() -> None:
         min_sources=MIN_SOURCES,
         min_sigma=MIN_SIGMA_C,
         min_edge=MIN_EDGE,
-        calibration=_full_cal(),  # isolate the uncalibratable gate from the calibration gate
+        # Waive the full-calibration gate to isolate the uncalibratable gate.
+        # (Passing a calibration cell would trip the #402 F/C unit guard: cells
+        # are Fahrenheit-only and this market settles in Celsius.)
+        require_calibration=False,
     )
     # Advisory display must still render (intl markets stay in the report).
     assert report.outcomes, "outcomes must be non-empty so advisory still renders"
@@ -1143,6 +1146,26 @@ def test_intl_market_never_recommended() -> None:
     assert all(not o.recommended for o in report.outcomes), (
         f"intl market must not recommend any outcome; got {report.outcomes}"
     )
+
+
+def test_fc_unit_guard_rejects_calibration_on_celsius_market() -> None:
+    """Calibration cells are Fahrenheit-only (#402): supplying one for a
+    C-settled market must raise, not silently apply an F-unit bias/variance
+    model to C forecasts and buckets (latent until someone adds a ghcnd_id
+    to an intl station)."""
+
+    market = _gate_market_intl()
+    fs = _two_source_c(market.target)
+    with pytest.raises(ValueError, match="Fahrenheit-only"):
+        evaluate_market(
+            market,
+            fs,
+            floor=CONFIDENCE_FLOOR,
+            min_sources=MIN_SOURCES,
+            min_sigma=MIN_SIGMA_C,
+            min_edge=MIN_EDGE,
+            calibration=_full_cal(),
+        )
 
 
 # ---------------------------------------------------------------------------
