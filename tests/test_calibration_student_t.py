@@ -70,6 +70,28 @@ def test_numeric_crps_is_vectorized_over_batches():
         assert float(result[i]) == pytest.approx(expected, abs=3e-3)
 
 
+def test_numeric_crps_warns_when_matrix_cap_shrinks_grid(recwarn):
+    """Grid shrink must never be silent (#407): when the batch x grid matrix
+    exceeds _MAX_MATRIX_ELEMENTS, resolution drops (up to ~18x worse jump-term
+    error at the 1001 floor) and a future caller change could shift fits
+    invisibly. The shrink emits a RuntimeWarning naming both sizes."""
+    big_batch = 3000  # forces _MAX_MATRIX_ELEMENTS // N below the default 20001
+    mu = np.zeros(big_batch)
+    sigma = np.ones(big_batch)
+    actual = np.ones(big_batch) * 0.5
+    with pytest.warns(RuntimeWarning, match="grid reduced"):
+        numeric_crps(std_cdf_for(None), mu, sigma, actual)
+
+
+def test_numeric_crps_does_not_warn_on_normal_batch(recwarn):
+    """Ordinary batch sizes keep full resolution: no warning (#407)."""
+    mu = np.zeros(50)
+    sigma = np.ones(50)
+    actual = np.ones(50) * 0.5
+    numeric_crps(std_cdf_for(None), mu, sigma, actual)
+    assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
+
+
 # ---------------------------------------------------------------------------
 # Truncation-trap fix: widened grid + FIT_MIN_SIGMA floor (coverage gap flagged
 # by the tester on spike PR #285).

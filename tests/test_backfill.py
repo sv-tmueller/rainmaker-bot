@@ -314,6 +314,50 @@ def test_fetch_historical_lead_forecasts_maps_lead_zero_to_unsuffixed_response_k
     assert by_lead[0][date(2026, 3, 1)].mu == pytest.approx(49.0)  # (50 + 48) / 2 daily max
 
 
+def test_saved_fixture_still_carries_unsuffixed_lead0_keys():
+    """Freezes the Open-Meteo response-shape assumption the lead-0 fit rests on
+    (#407): the REAL saved fixture must contain the un-suffixed
+    temperature_2m_<model> keys for lead 0. If Open-Meteo changes the
+    normalization, this fails and the maintainer knows BEFORE lead-0
+    calibration silently empties out (the fetcher would find no keys, drop the
+    dates under the <2-models guard, and the fit would regress to
+    uncalibrated with no error)."""
+    fixture = _previous_runs_fixture()["hourly"]
+    keys = [k for k in fixture if k != "time"]
+    unsuffixed = [k for k in keys if "_previous_day" not in k]
+    assert unsuffixed, (
+        "openmeteo_previous_runs_klga.json no longer carries un-suffixed "
+        "temperature_2m_<model> keys: Open-Meteo's lead-0 normalization changed "
+        "and fetch_historical_lead_forecasts(..., lead 0) will silently return "
+        "no Gaussians. Update the lead-0 key logic in backfill.py."
+    )
+    # and at least one suffixed key for the other leads, so the fixture itself
+    # is not rotten in the opposite direction
+    assert any("_previous_day1_" in k for k in keys)
+
+
+def test_lead0_rename_degrades_loudly_detectable(httpx_mock):
+    """Documents the failure mode the freeze above protects against (#407):
+    if the response keys ARE renamed, lead 0 comes back as an empty dict
+    (dates dropped under the <2-models guard) rather than raising."""
+    data = {
+        "hourly": {
+            "time": ["2026-03-01T00:00", "2026-03-01T12:00"],
+            # hypothetically renamed keys: nothing matches temperature_2m_{model}
+            "temperature_2m_prev_day_gfs_seamless": [40.0, 50.0],
+            "temperature_2m_prev_day_ecmwf_ifs025": [42.0, 48.0],
+        }
+    }
+    httpx_mock.add_response(url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=data)
+    with httpx.Client() as client:
+        by_lead = fetch_historical_lead_forecasts(
+            KLGA, (0,), date(2026, 3, 1), date(2026, 3, 1), client
+        )
+    # The lead key exists but every date was dropped under the <2-models guard:
+    # an empty inner dict, not a missing outer key and not an error.
+    assert by_lead == {0: {}}
+
+
 def test_fetch_historical_lead_forecasts_uses_min_for_tmin(httpx_mock):
     data = {
         "hourly": {

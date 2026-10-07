@@ -13,6 +13,7 @@ pairs. Three regimes gated on n_samples:
   >= MIN_CAL_SAMPLES      -> full EMOS: mu - bias, sigma from sqrt(var_a + var_b*sigma^2).
 """
 
+import warnings
 from collections.abc import Callable
 from math import pi, sqrt
 from typing import Literal
@@ -220,6 +221,18 @@ def numeric_crps(
     n_grid_eff = min(
         n_grid_eff, _MAX_GRID, max(1001, _MAX_MATRIX_ELEMENTS // max(len(actual_std), 1))
     )
+    if n_grid_eff < n_grid:
+        # Losing resolution raises the O(step) jump-discontinuity error by
+        # n_grid/n_grid_eff (up to ~18x at the 1001 floor). Never silence it:
+        # a future caller change that shrinks the grid routinely would
+        # otherwise shift calibration fits invisibly (#407).
+        warnings.warn(
+            f"numeric_crps grid reduced from {n_grid} to {n_grid_eff} points "
+            f"(matrix-element cap {_MAX_MATRIX_ELEMENTS}, batch {len(actual_std)}); "
+            "jump-term discretization error rises accordingly.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     u = np.linspace(-span_eff, span_eff, n_grid_eff)
     cdf_u = std_cdf(u)  # (G,)
     indicator = (u[None, :] >= actual_std[:, None]).astype(np.float64)  # (N, G)
