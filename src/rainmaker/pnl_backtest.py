@@ -483,6 +483,44 @@ def _parse_closed_markets(
     return out
 
 
+def _candidate_token_ids(
+    market: Market,
+    gaussian: Any,
+    calibrations: dict[int, Calibration | None],
+    leads: Sequence[int],
+    *,
+    floor: float,
+    floor_no: float | None,
+    min_sigma: float,
+) -> set[str]:
+    """Tokens whose price history must be prefetched for this market.
+
+    The replay gate (evaluate_market) reprices buckets through the CALIBRATED
+    predictive per lead, so selecting candidates on the raw predictive alone
+    starved the prefetch: a bucket whose calibrated p clears the floor while its
+    raw p does not arrived with no price and was silently dropped, omitting bets
+    the live gate would have emitted (#397). The candidate set is therefore the
+    UNION of the raw net and every full-tier calibrated net across the leads
+    (non-full tiers never recommend, so they add nothing). Fetching a few extra
+    histories wastes bandwidth; skipping a real candidate biases the P/L.
+    """
+    from rainmaker.probability.calibration import apply_calibration
+
+    candidate_floor = min(floor, floor_no) if floor_no is not None else floor
+    nets: list[Predictive] = [Predictive(mu=gaussian.mu, sigma=gaussian.sigma)]
+    for cal in calibrations.values():
+        if cal is not None and cal.n_samples >= MIN_CAL_SAMPLES:
+            nets.append(apply_calibration(gaussian, cal, min_sigma=min_sigma)[0])
+    out: set[str] = set()
+    for bucket in market.buckets:
+        for predictive in nets:
+            p_win = bucket_probability(predictive, bucket)
+            if p_win >= floor or (1 - p_win) >= candidate_floor:
+                out.add(bucket.yes_token_id)
+                break
+    return out
+
+
 def backtest_pnl(
     events: list[dict[str, Any]],
     client: httpx.Client,
@@ -505,8 +543,11 @@ def backtest_pnl(
 
     Groups parsed markets by station, fetches the archive forecast and NOAA
     actual once per group, then per market fetches the price series for the
-    buckets that could clear the confidence floor (on either side) and replays
-    each lead. Returns None when nothing scorable remains. min_sources defaults
+    buckets that could clear the confidence floor (on either side) under EITHER
+    the raw predictive or any full-tier calibrated cell across the leads (#397:
+    the replay gate prices through the calibrated predictive, so a raw-only net
+    would silently drop bets the live gate would emit) and replays each lead.
+    Returns None when nothing scorable remains. min_sources defaults
     to 1 because the archive is a single source; recommended here is therefore a
     superset of the live two-source gate. max_edge defaults to MAX_EDGE (#356),
     matching the live cap; pass None to replay uncapped.
@@ -566,17 +607,24 @@ def backtest_pnl(
             start_ts = int(settlement_dt.timestamp()) - (max_lead + 1) * SECONDS_PER_DAY
             end_ts = int(settlement_dt.timestamp()) + 3600
             histories: dict[str, list[PricePoint]] = {}
-            candidate_token_ids: list[str] = []
-            # Use the lowest floor for candidate selection (widest net across sides).
-            _candidate_floor = min(floor, floor_no) if floor_no is not None else floor
-            raw_predictive = Predictive(mu=gaussian.mu, sigma=gaussian.sigma)
+            # Candidates from the union of the raw net and every full-tier
+            # calibrated net across the leads (#397): the replay gate prices
+            # through the calibrated predictive, so a raw-only net starves the
+            # prefetch and silently drops bets the live gate would emit.
+            candidate_token_ids = _candidate_token_ids(
+                market,
+                gaussian,
+                calibrations if calibration_lookup is not None else {},
+                leads,
+                floor=floor,
+                floor_no=floor_no,
+                min_sigma=min_sigma,
+            )
             for bucket in market.buckets:
-                p_win = bucket_probability(raw_predictive, bucket)
-                if p_win >= floor or (1 - p_win) >= _candidate_floor:  # candidate on some side
+                if bucket.yes_token_id in candidate_token_ids:
                     histories[bucket.yes_token_id] = fetch_price_history(
                         bucket.yes_token_id, start_ts, end_ts, client
                     )
-                    candidate_token_ids.append(bucket.yes_token_id)
 
             # In trades mode, fetch fills for candidate buckets (both YES and NO tokens).
             fill_histories: dict[str, list[FillPoint]] | None = None

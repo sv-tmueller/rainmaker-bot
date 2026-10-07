@@ -1574,3 +1574,141 @@ def test_backtest_pnl_trades_mode_all_408_degrades_to_mid_totals(
     assert all("0xcond_d" in line for line in warn_lines)
     tokens_seen = {line.split("token ")[1].split(",")[0] for line in warn_lines}
     assert tokens_seen == {"d0", "d1"}
+
+
+# Candidate selection must use the CALIBRATED predictive, not the raw one (#397).
+
+
+def _events_single_above_bucket() -> list[dict[str, Any]]:
+    """One closed KLGA market with a single '70°F or higher' bucket.
+
+    Paired with monkeypatched samples tightly clustered at 70F, the threshold
+    sits at the raw mu: raw p_yes ~ 0.37, so NEITHER raw side clears a 0.80
+    floor and the pre-fix prefetch would skip the price fetch entirely.
+    """
+
+    return [
+        {
+            "id": "700010",
+            "slug": "highest-temperature-in-nyc-on-march-2-2026-single",
+            "title": "Highest temperature in NYC on March 2?",
+            "endDate": "2026-03-02T12:00:00Z",
+            "description": (
+                "Resolves to the highest temperature at the LaGuardia Airport "
+                "Station (KLGA) in degrees Fahrenheit."
+            ),
+            "markets": [
+                {
+                    "groupItemTitle": "70°F or higher",
+                    "outcomes": '["Yes", "No"]',
+                    "outcomePrices": '["0.1", "0.9"]',
+                    "bestAsk": 0.11,
+                    "bestBid": 0.09,
+                    "clobTokenIds": '["y1", "n1"]',
+                }
+            ],
+        }
+    ]
+
+
+def test_candidate_token_ids_union_raw_and_calibrated():
+    """Candidate selection must union the raw net with the full-tier calibrated
+    nets across leads (#397): a bucket whose raw p_win misses the floor on both
+    sides but whose calibrated p_win clears it must be prefetched, or the
+    replay silently drops a bet the live gate would emit.
+    """
+    from rainmaker.pnl_backtest import _candidate_token_ids
+
+    market = _market(
+        [_bucket("70°F or higher", "above", threshold=70, yes_token_id="y1", no_token_id="n1")]
+    )
+    # Tight samples at 70F -> raw mu 70, sigma floored to min_sigma=1.5:
+    # raw p_yes(~69.5 vs 70) ~ 0.37: neither side clears floor 0.80.
+    samples = [
+        ForecastSample(
+            source="open-meteo",
+            model=m,
+            member=None,
+            station="KLGA",
+            variable="TMAX",
+            target_date=date(2026, 3, 2),
+            lead_time_days=1,
+            value_f=70.0,
+            issued_at=None,
+        )
+        for m in OPENMETEO_MODELS
+    ]
+    gaussian = fit_gaussian(samples, min_sigma=1.5)
+    assert gaussian.mu == pytest.approx(70.0)
+    shifted = _full_cal(bias=-20.0)  # calibrated mu 90: p_yes('>= 70') ~ 1.0
+
+    # Raw-only net (the pre-fix behavior): no candidates.
+    raw_only = _candidate_token_ids(
+        market, gaussian, {}, (0,), floor=0.80, floor_no=None, min_sigma=1.5
+    )
+    assert raw_only == set()
+    # Union with the calibrated net: the bucket is prefetched.
+    both = _candidate_token_ids(
+        market, gaussian, {0: shifted}, (0,), floor=0.80, floor_no=None, min_sigma=1.5
+    )
+    assert both == {"y1"}
+
+
+def test_backtest_pnl_prefetch_follows_calibrated_candidate(
+    monkeypatch: pytest.MonkeyPatch, httpx_mock: Any
+):
+    """A bucket whose raw p_win misses the floor on both sides but whose
+    calibrated p_win clears it must still get its price history fetched, so the
+    replay can place the bet the live gate would emit (#397). Before the fix
+    the prefetch selected candidates on the raw predictive, the bucket arrived
+    with no price, and the bet was silently dropped.
+    """
+    # Controlled forecast: tight cluster at 70F so raw p_yes('>= 70') ~ 0.37
+    # (both sides miss the 0.80 floor), while the bias=-20 cell lifts the
+    # calibrated mu to 90 and the calibrated p_yes clears it.
+    controlled = {
+        date(2026, 3, 2): [
+            ForecastSample(
+                source="open-meteo",
+                model=m,
+                member=None,
+                station="KLGA",
+                variable="TMAX",
+                target_date=date(2026, 3, 2),
+                lead_time_days=1,
+                value_f=70.0,
+                issued_at=None,
+            )
+            for m in OPENMETEO_MODELS
+        ]
+    }
+    monkeypatch.setattr(pnl_backtest_mod, "fetch_historical_samples", lambda *a, **k: controlled)
+
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=_asos_fixture())
+    httpx_mock.add_callback(
+        _clob_callback, url=re.compile(re.escape(CLOB_PRICES_URL)), is_reusable=True
+    )
+
+    shifted = _full_cal(bias=-20.0)
+
+    with httpx.Client() as client:
+        result = backtest_pnl(
+            _events_single_above_bucket(),
+            client,
+            on_or_after=date(2026, 3, 1),
+            leads=(0,),
+            floor=0.80,
+            min_sources=1,
+            min_sigma=1.5,
+            min_edge=0.05,
+            calibration_lookup=lambda icao, lead: shifted,
+            max_edge=None,  # this test is about prefetch selection, not the cap (#356)
+        )
+
+    assert result is not None
+    # Without the price fetch the replay cannot place this bet at all; with it,
+    # the lead places the YES bet the calibrated gate demands (calibrated mu=90
+    # vs threshold 70). The fixture actual for Mar 2 is 34F, which misses
+    # '>= 70': the YES bet loses.
+    assert result.overall.n_bets == 1
+    assert result.overall.losses == 1
