@@ -325,6 +325,53 @@ def test_start_end_params_formatted_correctly(httpx_mock):
 
 
 # ---------------------------------------------------------------------------
+# Token configurability (#406)
+# ---------------------------------------------------------------------------
+
+
+def test_env_override_changes_the_sent_token(monkeypatch, httpx_mock):
+    """RAINYDAY_SYNOPTIC_TOKEN overrides the embedded weather.gov token, so a
+    rotation is an ops step, not a code change (#406)."""
+    import rainmaker.forecasts.wrh as wrh_mod
+
+    monkeypatch.setattr(wrh_mod, "SYNOPTIC_TOKEN", "rotated-token-xyz")
+    httpx_mock.add_response(
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        json=_load("wrh_klga_normal.json"),
+    )
+    with httpx.Client() as client:
+        fetch_wrh_hourly_extreme(
+            "KLGA",
+            date(2026, 8, 20),
+            date(2026, 8, 21),
+            client,
+            timezone="America/New_York",
+        )
+    req = httpx_mock.get_requests()[0]
+    assert req.url.params["token"] == "rotated-token-xyz"
+
+
+def test_embedded_token_sent_by_default(monkeypatch, httpx_mock):
+    """Without the env override the embedded weather.gov token is sent (the
+    pre-#406 behavior is the default)."""
+    monkeypatch.delenv("RAINYDAY_SYNOPTIC_TOKEN", raising=False)
+    httpx_mock.add_response(
+        url=re.compile(re.escape(SYNOPTIC_API_URL)),
+        json=_load("wrh_klga_normal.json"),
+    )
+    with httpx.Client() as client:
+        fetch_wrh_hourly_extreme(
+            "KLGA",
+            date(2026, 8, 20),
+            date(2026, 8, 21),
+            client,
+            timezone="America/New_York",
+        )
+    req = httpx_mock.get_requests()[0]
+    assert req.url.params["token"] == "7c76618b66c74aee913bdbae4b448bdd"
+
+
+# ---------------------------------------------------------------------------
 # 429 backoff handling
 # ---------------------------------------------------------------------------
 
