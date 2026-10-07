@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from rainmaker.forecasts.base import ForecastSample
-from rainmaker.probability.distribution import fit_gaussian
+from rainmaker.probability.distribution import fit_gaussian, inter_family_gap
 
 
 def _sample(value_f: float, member: int | None = None) -> ForecastSample:
@@ -187,3 +187,55 @@ def test_fit_gaussian_sigma_equal_weights_ensemble_groups():
     assert expected_sigma != pytest.approx(pooled_std)
     assert g.sigma == pytest.approx(expected_sigma)
     assert g.sigma != pytest.approx(pooled_std)
+
+
+# ---------------------------------------------------------------------------
+# #400 diagnostic: deterministic-vs-ensemble dispersion gap the fit ignores
+# ---------------------------------------------------------------------------
+
+
+def test_inter_family_gap_flags_confidently_wrong_det_block():
+    """Five deterministic models agree tightly at 80F while the ensemble sits
+    at 70F with 1F spread: the fit's sigma sees only the ensemble (~1), the
+    diagnostic must reveal the 10-degree family gap (~10 sigma)."""
+    dets = [_grp(80.0, "open-meteo", f"det{i}") for i in range(5)]
+    ens = [
+        _grp(70.0 + (0.5 if i % 2 == 0 else -0.5), "open-meteo", "gfs_ens", member=i + 1)
+        for i in range(10)
+    ]
+    diag = inter_family_gap(dets + ens)
+    assert diag["det_consensus"] == pytest.approx(80.0)
+    assert diag["ens_consensus"] == pytest.approx(70.0)
+    assert diag["gap"] == pytest.approx(10.0)
+    assert diag["current_sigma"] == pytest.approx(0.5, abs=0.1)
+    assert diag["ratio"] == pytest.approx(20.0, rel=0.3)
+    # Extension: joining the five det groups into the mixture widens sigma a lot.
+    assert diag["extended_sigma"] is not None
+    assert diag["extended_sigma"] > diag["current_sigma"] * 3
+
+
+def test_inter_family_gap_none_without_cross_family_overlap():
+    """Ensemble-only or deterministic-only pools have no cross-family gap."""
+    ens = [_grp(70.0, "open-meteo", "gfs_ens", member=i + 1) for i in range(4)]
+    diag = inter_family_gap(ens)
+    assert diag["gap"] is None and diag["ratio"] is None
+    assert diag["det_consensus"] is None
+    assert diag["current_sigma"] is not None
+
+    dets = [_grp(70.0, "nws", "nws")]
+    diag2 = inter_family_gap(dets)
+    assert diag2["gap"] is None
+    assert diag2["current_sigma"] is None  # no ensemble arm engaged
+
+
+def test_inter_family_gap_small_agreement_case():
+    """Deterministic and ensemble consensuses nearly aligned: gap ~ 0, the
+    extension barely moves sigma (the fit's blindness is harmless here)."""
+    dets = [_grp(70.2, "nws", "nws"), _grp(69.8, "open-meteo", "gfs")]
+    ens = [
+        _grp(70.0 + (0.5 if i % 2 == 0 else -0.5), "open-meteo", "gfs_ens", member=i + 1)
+        for i in range(10)
+    ]
+    diag = inter_family_gap(dets + ens)
+    assert diag["gap"] == pytest.approx(0.0, abs=0.5)
+    assert diag["ratio"] == pytest.approx(0.0, abs=0.5)
