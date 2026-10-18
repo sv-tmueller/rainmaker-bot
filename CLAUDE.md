@@ -124,7 +124,10 @@ Python 3.11+ managed with uv. Commands:
 - Type check: `uv run mypy src`
 
 Every command uses local SQLite unless `DATABASE_URL` is set to a postgres DSN
-(the scheduled GitHub Actions workflow sets it from a repo secret). Runtime deps:
+(the scheduled GitHub Actions workflow sets it from a repo secret). The wrh
+settlement fetcher uses an embedded weather.gov Synoptic token by default; set
+`RAINYDAY_SYNOPTIC_TOKEN` to override it (see `docs/operations/README.md`).
+Runtime deps:
 httpx, pydantic, numpy, scipy, psycopg. The dashboard in `dashboard/` is
 Next.js; verify it with `npm run build` there. API clients are tested against
 saved JSON fixtures in `tests/fixtures/`, never live endpoints.
@@ -149,12 +152,16 @@ src/rainmaker/
   tracking.py         hypothetical P&L + calibration scoring, daily snapshot
   gate_sweep.py       replay the recommendation gate over settled history at alternate values
   venue_decomp.py     decompose the Kalshi-vs-Polymarket edge gap (city x venue, price-proxy)
+  recover_gap.py      rediscover + reprice runs missed during the pre-#361 ICAO-guard gap
+  settlement_divergence.py  divergence spike: NCEI vs ASOS vs resolved winners
   forecasts/
     base.py           ForecastSample, ForecastSet, ForecastSource protocol
     nws.py            NWS fetch + parse
     openmeteo.py      Open-Meteo multi-model and ensemble fetch + parse
     precip.py         precip sourcing (Open-Meteo + NWS QPF + climatology) -> monthly-total moments
     aggregate.py      pool sources, coverage, freshness
+    wrh.py            wrh/timeseries (Synoptic API) actuals; token via RAINYDAY_SYNOPTIC_TOKEN
+    asos.py           Iowa State Mesonet ASOS actuals (fallback + intl path)
   probability/
     distribution.py   pooled samples -> Gaussian (uncalibrated, sigma floor)
     precip_distribution.py  monthly total -> gamma by method of moments (var floor)
@@ -170,6 +177,7 @@ src/rainmaker/
     markets.py        event JSON -> Market (target + buckets, ICAO guard)
     precip_markets.py monthly-precip event JSON -> PrecipMonthlyMarket (inch brackets)
     prices.py         CLOB price-history client (read-only) + snap to a timestamp
+    trades.py         data-api BUY-fill history (read-only, for backtest asks)
   kalshi/
     client.py         Kalshi discovery (read-only): daily high/low temp + monthly rain, secondary venue
     markets.py        Kalshi temp ladder -> Market (reuses Bucket/Target; per-variable guard)
@@ -184,6 +192,10 @@ dashboard/            read-only Next.js dashboard (Vercel, behind Cloudflare Acc
 .github/workflows/
   daily-run.yml       scheduled cron (every 3h): run -> settle -> prune against Supabase
   daily-diagnostics.yml  scheduled cron (daily): snapshot -> track -> tail-check against Supabase
+  ci.yml              lint/format/type/tests + dashboard build on every PR and main push
+  regrade.yml         on-demand: bulk-regenerate US Polymarket outcomes on the current source
+  snapshot-backfill.yml, backfill.yml, backup.yml, gate-sweep.yml,
+  weekly-metrics.yml, keepalive.yml   on-demand/scheduled operators (see the files)
 tests/
   fixtures/           saved API responses (NWS, Open-Meteo, NCEI, Polymarket)
   test_*.py           unit and I/O tests (pytest-httpx for mocked HTTP)
@@ -284,7 +296,8 @@ Standing preferences for this project:
 
 ## Agent team
 
-The template ships four role agents in `.claude/agents/` and a set of skills.
+The four role agents and the tm- skills live in the sv-tmueller/orchestrai
+template repo and are installed user-scope, not committed in this repo (#181).
 The lead is the main session: subagents cannot call each other, so the
 session running `/tm-kickoff` routes every handoff, and GitHub (sub-plan and
 verdict comments, draft PRs, labels) holds the state that makes a dropped
@@ -301,8 +314,8 @@ literal `Blocked by: #N` line in the issue body. Then `/tm-kickoff <issues>`
 (user-typed only; it does not auto-trigger) runs unblocked issues in parallel
 waves to ready PRs. Under `/tm-kickoff` the sub-plan comment substitutes for the
 full plan in `docs/plans/`. Merging stays human and gates the next wave. Caps,
-routing, and report contracts live in `.claude/skills/tm-kickoff/SKILL.md` and
-the agent files; they are not repeated here.
+routing, and report contracts live in the tm-kickoff skill and the agent files
+in the sv-tmueller/orchestrai template repo; they are not repeated here.
 
 Labels: `in-progress` (package dispatched; resume, do not restart) and
 `needs-human` (parked: question, blocker, or exhausted fix loop), on top of
@@ -314,7 +327,8 @@ the sizing set.
 refines a raw need into a batch of work packages, gets one sign-off, then
 runs the team uninterrupted and reports. The full design is
 `docs/superpowers/specs/2026-06-12-advisor-operating-model-design.md`; the
-mechanics live in `.claude/skills/tm-advisor/SKILL.md`. The rules that matter
+mechanics live in the tm-advisor skill in the sv-tmueller/orchestrai template
+repo. The rules that matter
 session-wide:
 
 - A batch is up to 6 independent `size:S`/`size:M` issues, run through the
@@ -347,9 +361,10 @@ runs, not raw effort everywhere.
   `architect` and `reviewer` run `opus` (the judgment roles).
 - Workflows: pin worker stages to a cheap model in the script and reserve the
   strong model for synthesis or critique. The `tm-review-changes` workflow in
-  `.claude/workflows/` is the worked example: a fixed set of Sonnet reviewers
-  plus one Opus critic, bounded by construction so it cannot fan out into the
-  100-agent review that an unpinned session model produces.
+  the sv-tmueller/orchestrai template repo is the worked example: a fixed set
+  of Sonnet reviewers plus one Opus critic, bounded by construction so it
+  cannot fan out into the 100-agent review that an unpinned session model
+  produces.
   `tm-review-codebase` applies the same discipline to a whole-repo audit: a Sonnet
   scout splits the repo into N areas (sized to the repo, capped at a ceiling),
   Sonnet workers review each area plus repo-wide structure, and one Opus critic
