@@ -133,13 +133,15 @@ saved JSON fixtures in `tests/fixtures/`, never live endpoints.
 
 ```
 .claude/
-  agents/             role agents: architect, developer, tester, reviewer
-  skills/             project skills: /tm-advisor, /tm-grill-me, /tm-kickoff, /tm-sync-template, /tm-to-issues
-  workflows/          bounded orchestration scripts (tm-review-changes, tm-review-codebase)
-  settings.json       project settings; enables the superpowers plugin
+  settings.json       project settings only; the role agents, tm- skills, and
+                      review workflows are NOT committed here anymore (#181):
+                      they are installed user-scope from the
+                      sv-tmueller/orchestrai template repo
 src/rainmaker/
   config.py           station registry (11 cities), Target, source config constants
   cli.py              run/settle/prune/track/snapshot/backfill/backtest/backtest-pnl entry points
+  domain.py           shared types: Market, Bucket, Precip*, bucket-label parsers
+  httpclient.py       HTTP client with retries for transient 5xx/read failures
   backfill.py         NCEI actuals + historical forecasts -> calibration fit; GSOM monthly precip
   backtest.py         forecast calibration + win-rate over history (no P/L)
   pnl_backtest.py     replay closed markets at historical CLOB prices -> betting P/L
