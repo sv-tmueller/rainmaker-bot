@@ -136,10 +136,10 @@ saved JSON fixtures in `tests/fixtures/`, never live endpoints.
 
 ```
 .claude/
-  settings.json       project settings only; the role agents, tm- skills, and
-                      review workflows are NOT committed here anymore (#181):
-                      they are installed user-scope from the
-                      sv-tmueller/orchestrai template repo
+  settings.json       project settings; enables the superpowers plugin. The role
+                      agents, tm- skills, and review workflows are NOT committed
+                      here anymore (#181): they are installed user-scope from
+                      the sv-tmueller/orchestrai template repo
 src/rainmaker/
   config.py           station registry (11 cities), Target, source config constants
   cli.py              run/settle/prune/track/snapshot/backfill/backtest/backtest-pnl entry points
@@ -309,8 +309,8 @@ session resumable.
 - `reviewer` - spec pass then quality pass, read-only.
 
 Refine and size issues in discussion first (`/tm-grill-me` stress-tests the
-plan, `/tm-to-issues` turns it into sized issues); mark dependencies with a
-literal `Blocked by: #N` line in the issue body. Then `/tm-kickoff <issues>`
+plan); mark dependencies with a literal `Blocked by: #N` line in the issue
+body. Then `/tm-kickoff <issues>`
 (user-typed only; it does not auto-trigger) runs unblocked issues in parallel
 waves to ready PRs. Under `/tm-kickoff` the sub-plan comment substitutes for the
 full plan in `docs/plans/`. Merging stays human and gates the next wave. Caps,
@@ -400,8 +400,9 @@ forecasts into an expected ranked report.
   tests including the golden e2e).
 - Don't bypass git hooks (`--no-verify`). If a hook fails, fix the cause.
 - Don't improve `.claude/` machinery only in this repo. Change the template
-  (sv-tmueller/claude-template) first, then `/tm-sync-template` it back here;
-  local-only edits are overwritten by the next sync.
+  repo (sv-tmueller/orchestrai) first, then reinstall it user-scope
+  (`/plugin install orchestrai@orchestrai`); local-only edits are
+  overwritten by the next install.
 - Don't introduce a new dependency without saying why in the PR body.
 
 ## When in doubt
