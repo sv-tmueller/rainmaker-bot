@@ -39,19 +39,42 @@ def _select_period(
 ) -> dict[str, Any] | None:
     """Period matcher for the periods product (#450, implements #434).
 
-    Legacy semantics (this extraction step): the FIRST period with the
-    wanted isDaytime whose local start date equals match_date. For TMIN any
-    night period BEGINNING on the match date qualifies, so a post-midnight
-    fragment can shadow the wanted evening period; the covering-window
-    preference lands in the follow-up commit, red tests first.
+    Matches on the period COVERING the wanted window, not the first one that
+    merely begins on the match date. Preference order:
+
+    1. A period of the wanted kind whose END date is the target date - it
+       covers the window the target settles on. Among several, one starting
+       in the afternoon/evening (start hour >= 12) is the full period rather
+       than a post-midnight residual fragment.
+    2. Fallback: the legacy first-hit on start date == match_date.
+
+    Why not first-hit alone: for TMIN any night period BEGINNING on the
+    match date qualifies, so a post-midnight "Overnight" fragment listed
+    first shadows the wanted "Tonight" period (wrong night's low), and a
+    fragment REPLACING the evening period matches nothing at all (silent
+    zero-sample loss with ok=True). Measured blast radius: zero observed
+    events in stored history (docs/architecture/
+    tmin-night-fragment-blast-radius.md); this is defense-in-depth for a
+    legal NWS product shape.
     """
+    covering: list[dict[str, Any]] = []
+    first_hit: dict[str, Any] | None = None
     for period in periods:
         if period["isDaytime"] != want_daytime:
             continue
         start_local = datetime.fromisoformat(period["startTime"]).astimezone(tz)
-        if start_local.date() == match_date:
+        end_local = datetime.fromisoformat(period["endTime"]).astimezone(tz)
+        if end_local.date() == target_date:
+            covering.append(period)
+        if first_hit is None and start_local.date() == match_date:
+            first_hit = period
+    for period in covering:
+        start_local = datetime.fromisoformat(period["startTime"]).astimezone(tz)
+        if start_local.hour >= 12:
             return period
-    return None
+    if covering:
+        return covering[0]
+    return first_hit
 
 
 def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]:
