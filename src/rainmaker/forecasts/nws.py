@@ -29,6 +29,31 @@ def _make_sample(
     )
 
 
+def _select_period(
+    periods: list[dict[str, Any]],
+    *,
+    want_daytime: bool,
+    match_date: date,
+    target_date: date,
+    tz: ZoneInfo,
+) -> dict[str, Any] | None:
+    """Period matcher for the periods product (#450, implements #434).
+
+    Legacy semantics (this extraction step): the FIRST period with the
+    wanted isDaytime whose local start date equals match_date. For TMIN any
+    night period BEGINNING on the match date qualifies, so a post-midnight
+    fragment can shadow the wanted evening period; the covering-window
+    preference lands in the follow-up commit, red tests first.
+    """
+    for period in periods:
+        if period["isDaytime"] != want_daytime:
+            continue
+        start_local = datetime.fromisoformat(period["startTime"]).astimezone(tz)
+        if start_local.date() == match_date:
+            return period
+    return None
+
+
 def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]:
     if target.variable not in ("TMAX", "TMIN"):
         raise NotImplementedError(f"unsupported variable {target.variable!r}")
@@ -54,13 +79,18 @@ def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]
         return parse_hourly_low(forecast_json, target)
 
     match_date = target.local_date
-    for period in props["periods"]:
-        start_local = datetime.fromisoformat(period["startTime"]).astimezone(tz)
-        if period["isDaytime"] and start_local.date() == match_date:
-            if period["temperatureUnit"] != "F":
-                raise ValueError(f"expected Fahrenheit, got {period['temperatureUnit']}")
-            return [_make_sample(target, issued_at, issued_local, float(period["temperature"]))]
-    return []
+    period = _select_period(
+        props["periods"],
+        want_daytime=True,
+        match_date=match_date,
+        target_date=target.local_date,
+        tz=tz,
+    )
+    if period is None:
+        return []
+    if period["temperatureUnit"] != "F":
+        raise ValueError(f"expected Fahrenheit, got {period['temperatureUnit']}")
+    return [_make_sample(target, issued_at, issued_local, float(period["temperature"]))]
 
 
 def parse_hourly_low(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]:
