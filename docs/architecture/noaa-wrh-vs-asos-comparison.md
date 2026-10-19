@@ -282,3 +282,57 @@ does. Bundle it with the next calibration regime refit: re-derive TMIN
 sampling, refit all cells, bump REGIME_SINCE, and re-run tail-check to
 confirm the wedge disappeared. Until then the nws.py comment now carries the
 measured caveat instead of the incorrect "GHCND settles to" justification.
+
+## Appendix 2026-10-19: calibration regime refit v2 replay (#426)
+
+The #400 sigma extension (fit_gaussian mixes all forecast families into
+sigma, not just ensemble groups) and the #426 TMIN retarget (calendar-day low
+via the NWS hourly product instead of the night-period low) shipped together
+as regime refit v2. Before flipping production, the replay script
+(`scripts/refit_v2_replay.py`, kept beside `compare_asos_vs_wrh.py`) rebuilt
+every persisted (run, market) pool from the forecasts table under the OLD
+sigma (ensemble-only) and the NEW sigma (all-groups), scored both against the
+stored calibration cells, and compared per-(variable, lead) Brier plus PIT
+tail ratios over runs since 2026-07-18 (the previous regime's start).
+
+Population: 5993 (run, market) rows, 105 calibration cells.
+
+| var/lead | n | Brier old | Brier new | d(Brier) | upper q=.10 o/n | lower q=.10 o/n |
+|----------|-----|-----------|-----------|----------|-----------------|-----------------|
+| TMAX|0 | 1331 | 0.0955 | 0.0946 | -0.0009 | 1.31/1.37 | 2.17/2.18 |
+| TMAX|1 | 1358 | 0.1014 | 0.1011 | -0.0004 | 1.26/1.30 | 2.78/2.86 |
+| TMAX|2 |  714 | 0.1046 | 0.1044 | -0.0002 | 1.55/1.57 | 3.73/3.77 |
+| TMIN|0 |  910 | 0.0943 | 0.0944 | +0.0001 | 0.51/0.52 | 3.52/3.53 |
+| TMIN|1 |  992 | 0.1029 | 0.1026 | -0.0003 | 0.54/0.58 | 4.00/3.98 |
+| TMIN|2 |  684 | 0.0988 | 0.0986 | -0.0002 | 1.10/1.10 | 3.86/3.83 |
+
+(q=.05 tails move the same way: TMAX upper 1.28/1.37, 1.43/1.49, 2.07/2.16;
+lower tails widen slightly, e.g. TMAX|0 lower q=.05 4.12/4.19.)
+
+Local refit sanity proof: `uv run rainmaker backfill --city all` against a
+scratch store exited 0 and wrote 80 cells (TMAX and TMIN, leads 0-3, every
+station with in-season history), each overwriting its predecessor in place.
+Because cells are upserts keyed by (station, variable, lead), the refit purges
+the stale generation by construction: any cell the refit does not overwrite
+retains the old sigma-era fit, which is why the operator sequence (merge,
+then trigger the prod backfill BEFORE reading new tail-check numbers)
+matters.
+
+Honest TMIN caveat: the forecasts table stores the night-period low for
+historical NWS rows (the pre-retarget window), so the replay's TMIN arms
+isolate the sigma-extension effect only. The calendar-day alignment itself is
+proven by the backfill path (whose fit pairs always used the local
+calendar-day min) and by the wedge measurement in the #404 appendix. The
+stale-bias purge is the refit's own contribution and is invisible to this
+replay by design.
+
+Verdict: the sigma gap did NOT collapse into a step improvement, and none was
+expected on this axis. The extension shifts Brier by at most -0.0009 per
+(variable, lead) and pulls the thin upper tails toward 1.0 (TMAX|0 upper q=.10
+1.31 to 1.37, q=.05 1.28 to 1.37), consistent with removing the
+confidently-narrow-det-blind-spot distortion rather than repricing the body.
+Its value is structural: the #400 appendix showed 45% of mixed-family pools
+with a det/ens gap above half the ensemble sigma, and those pools now carry
+the wider, honest sigma into the fit. The TMIN gain rides on the retarget
+plus refit, measurable in tail-check only after the prod backfill lands and
+REGIME_SINCE advances to 2026-10-19.
