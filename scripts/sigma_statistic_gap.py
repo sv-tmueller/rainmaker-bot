@@ -87,7 +87,9 @@ def archive_style_sigma(
     """
     if openmeteo_only:
         det_values = [
-            vals[0] for (src, _mdl), vals in groups.items() if len(vals) == 1 and src == "open-meteo"
+            vals[0]
+            for (src, _mdl), vals in groups.items()
+            if len(vals) == 1 and src == "open-meteo"
         ]
     else:
         det_values = [vals[0] for vals in groups.values() if len(vals) == 1]
@@ -311,7 +313,10 @@ def main() -> int:
         for (icao, variable, lead), obs in sorted(by_cell.items()):
             pairs_fit = [
                 CalibrationPair(
-                    mu=o["mu"], sigma=o["ev_fit"] ** 0.5, ensemble_var=o["ev_fit"], actual=o["actual"]
+                    mu=o["mu"],
+                    sigma=o["ev_fit"] ** 0.5,
+                    ensemble_var=o["ev_fit"],
+                    actual=o["actual"],
                 )
                 for o in obs
             ]
@@ -382,9 +387,7 @@ def main() -> int:
             },
             "cells_total": len(results),
             "cells_eligible": len(eligible),
-            "breaches": [
-                f"{r['station']}|{r['variable']}|{r['lead']}" for r in breaches
-            ],
+            "breaches": [f"{r['station']}|{r['variable']}|{r['lead']}" for r in breaches],
             "verdict": verdict,
             "cells": results,
         }
@@ -407,7 +410,9 @@ def main() -> int:
                 f" {r['pred_sigma_fit_at_med']:>7.2f} {r['pred_sigma_apply_at_med']:>8.2f}"
                 f" {fl:>6}{star}"
             )
-        print(f"\neligible cells (n >= {DECISION_MIN_N}): {len(eligible)}, breaches: {len(breaches)}")
+        print(
+            f"\neligible cells (n >= {DECISION_MIN_N}): {len(eligible)}, breaches: {len(breaches)}"
+        )
         print(f"VERDICT: {verdict}")
         print(f"results written to {args.output}")
     finally:
