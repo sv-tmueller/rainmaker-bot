@@ -1,3 +1,5 @@
+import sys
+import traceback
 from datetime import UTC, datetime, timedelta
 
 from rainmaker.config import FRESHNESS_LIMIT_HOURS, Target
@@ -25,6 +27,9 @@ def aggregate(
         try:
             fetched = source.fetch(target)
         except Exception as exc:  # noqa: BLE001 - one source failing must not abort the run
+            # stderr reaches the GitHub Actions log; a bare error string hides
+            # parser bugs behind "source down".
+            traceback.print_exc(file=sys.stderr)
             coverage.append(
                 SourceCoverage(source=source.name, ok=False, n_samples=0, error=str(exc))
             )

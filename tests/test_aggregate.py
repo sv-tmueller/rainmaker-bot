@@ -80,6 +80,20 @@ def test_aggregate_all_sources_fail_returns_empty_samples_with_failed_coverage()
     assert len(fs.coverage) == 2
 
 
+def test_aggregate_crashing_source_logs_traceback_and_continues(capsys):
+    good = _StubSource("good", samples=[_sample("m1", NOW)])
+    bad = _StubSource("bad", error=TypeError("cannot unpack"))
+    fs = aggregate(TARGET, [good, bad], now=NOW)
+    err = capsys.readouterr().err
+    assert "Traceback (most recent call last)" in err
+    assert "TypeError: cannot unpack" in err
+    assert len(fs.samples) == 1
+    cov = {c.source: c for c in fs.coverage}
+    assert cov["good"].ok is True
+    assert cov["bad"].ok is False
+    assert "cannot unpack" in cov["bad"].error
+
+
 def test_aggregate_all_stale_source_is_ok_with_zero_samples():
     stale_only = _StubSource("a", samples=[_sample("m1", NOW - timedelta(hours=48))])
     fs = aggregate(TARGET, [stale_only], now=NOW, freshness_limit_hours=24)
