@@ -343,9 +343,12 @@ REGIME_SINCE advances to 2026-10-19.
 Accepted statistic mismatch (var_b): the refit cells are fitted on the
 deterministic-archive pooled-std sigma (the backfill path has no ensemble
 members, so fit_gaussian's fallback arm supplies the pooled std), while live
-pools now carry the wider extended sigma into apply_calibration. The
-discrepancy runs in one direction: extended sigma >= archive pooled-std, so
-the live predictive sigma is somewhat wider than the fit statistic assumes.
+pools now carry the wider extended sigma into apply_calibration. For the
+measured pools this difference ran in one direction (extended sigma >=
+archive pooled-std), so the live predictive sigma is somewhat wider than the
+fit statistic assumes; the inequality is not a mathematical identity (a
+tight ensemble at the det consensus with widely dispersed det models can
+invert it), so #435's re-basing should re-check the direction on live pools.
 This is accepted for this regime because rebuilding the forecasts table's
 historical sigmas would mean a full reconstruction of every archived pool,
 while the EMOS var_b term dominates the predictive variance for well-covered
