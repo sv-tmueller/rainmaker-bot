@@ -1052,8 +1052,8 @@ the OFAT lead axis agrees: excluding lead 0 lifts ROI from -0.2% to +0.9%
   consistent, sizable improvement on both windows (regime: -0.2% -> +1.6%;
   pure era: -3.5% -> +0.6%), monotone-ish toward higher thresholds, and it
   simultaneously trims the weak lead-0/lead-1 populations (the combined
-  min_edge x excl-lead-0 table peaks at 0.12 too: +2.8% regime). Filed as a
-  recommendation issue for a future batch; not changed here.
+  min_edge x excl-lead-0 table peaks at 0.12 too: +2.8% regime). Filed as
+  recommendation issue #440 for a future batch; not changed here.
 - Confidence floors: keep `CONFIDENCE_FLOOR = 0.80` and
   `CONFIDENCE_FLOOR_NO = 0.75`. The YES floor is not binding at leads 0-3
   (identical rows across its whole grid); the NO floor's tighter values cut
