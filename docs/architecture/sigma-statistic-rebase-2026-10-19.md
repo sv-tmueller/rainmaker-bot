@@ -124,7 +124,7 @@ cell with n >= 40 AND no directional flip in predictive sigma ordering.
 Among the 30 eligible cells: 16 breach the abs(delta var_b) >= 0.05 bound
 (max +0.517 at KDAL TMAX lead 0, max negative -0.443 at KSFO TMAX lead 1),
 9 show a directional flip (including KDAL TMIN lead 0, where var_b moves from
-the zero bound to 0.392, and KORD TMIN lead 0, 0.013 to 0.369). Union: 18 of
+the zero bound to 0.392, and KORD TMAX lead 0, 0.000 to 0.189). Union: 18 of
 30 eligible cells breach. Median abs(delta var_b) among eligible cells is
 0.067; the largest predictive-sigma move at the median pool is +0.939F
 (KDAL TMIN lead 0), and the deltas are NOT one-signed (16 positive, 13
