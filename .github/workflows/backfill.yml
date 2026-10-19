@@ -4,7 +4,11 @@ on:
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 30 min: the July baseline ran 13-16 min with NCEI healthy, and the #446
+    # incident showed 20 left no slack for one slow/down source. The backfill
+    # client is bounded (2 attempts, 10s timeout), so this is headroom, not
+    # license to hang.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - name: Install uv

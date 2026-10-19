@@ -22,6 +22,13 @@ RETRY_ATTEMPTS = 4
 RETRY_BACKOFF_S = 0.5
 RETRYABLE_STATUS_CODES = frozenset({500, 502, 503, 504})
 
+# Bounds for the batch backfill client (#449/#446): the backfill run iterates
+# many (station, variable) cells inside a workflow timeout, so a hard-down
+# source must fail fast per cell instead of chaining minute-scale retries.
+BACKFILL_RETRY_ATTEMPTS = 2
+BACKFILL_RETRY_BACKOFF_S = 0.25
+BACKFILL_TIMEOUT_S = 10.0
+
 
 class RetryTransport(httpx.BaseTransport):
     """Retry transient transport errors and 5xx statuses with exponential backoff."""
@@ -70,4 +77,26 @@ def build_client(timeout: float) -> httpx.Client:
         headers={"User-Agent": NWS_USER_AGENT},
         timeout=timeout,
         transport=RetryTransport(),
+    )
+
+
+def build_backfill_client(
+    timeout: float = BACKFILL_TIMEOUT_S,
+    attempts: int = BACKFILL_RETRY_ATTEMPTS,
+    backoff: float = BACKFILL_RETRY_BACKOFF_S,
+) -> httpx.Client:
+    """Like build_client, but tightly bounded for the batch backfill run.
+
+    The backfill loop iterates many (station, variable) cells against several
+    free sources, and the whole run sits inside a workflow timeout. During the
+    #446 incident a hard-down NCEI turned each Kalshi-only station into a
+    minute-scale retry chain and cancelled the run mid-refit. Two attempts and
+    a short timeout keep one dead source to seconds per cell; the loop already
+    treats a raised HTTPError as a per-cell skip, so the run completes partial
+    and the summary line reports what failed.
+    """
+    return httpx.Client(
+        headers={"User-Agent": NWS_USER_AGENT},
+        timeout=timeout,
+        transport=RetryTransport(attempts=attempts, backoff=backoff),
     )
