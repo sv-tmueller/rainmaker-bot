@@ -1033,6 +1033,48 @@ def test_cli_tail_check_smoke(tmp_path, capsys):
     assert "( 10/  2.00)" in out_hourly  # counts survive --by-hour too
 
 
+def test_tail_check_leads_use_utc_day_of_offset_stamp():
+    """An offset-aware started_at must contribute its UTC day's lead, not the
+    naive local-calendar-day lead the [:10] slice gave.
+
+    "2026-05-29T23:00:00-05:00" is 2026-05-30T04:00Z, so settlement 2026-05-30
+    is lead 0; slicing [:10] saw local day 2026-05-29 and called it lead 1.
+    Both populations (primary and PIT) and the --by-hour split must agree on
+    lead 0 (with hour 4), unlike the pre-fix (lead 1, hour 4) mismatch.
+    """
+    conn = connect(":memory:")
+    init_schema(conn)
+    _insert_row(
+        conn,
+        market_id="m-offset",
+        run_id="r-offset",
+        started_at="2026-05-29T23:00:00-05:00",
+        settlement_date="2026-05-30",
+        p_win=0.95,
+        mu=70.0,
+        sigma=2.0,
+        actual=76.0,
+        bucket_kind="range",
+        lo=72,
+        hi=73,
+    )
+    conn.commit()
+
+    default_result = compute_tail_calibration(conn)
+    hourly_result = compute_tail_calibration(conn, by_hour=True)
+    conn.close()
+
+    assert _pit_row(default_result, "TMAX", 0) is not None
+    assert _pit_row(default_result, "TMAX", 1) is None
+
+    primary = _primary_row(default_result, "TMAX", 0, "YES", "[0.95,1.0]")
+    assert primary is not None
+    assert primary["n"] == 1
+    assert _primary_row(default_result, "TMAX", 1, "YES", "[0.95,1.0]") is None
+
+    assert _pit_row(hourly_result, "TMAX", 0, hour=4) is not None
+
+
 def test_cli_tail_check_since_filters_rows(tmp_path, capsys):
     """--since excludes real rows, and the printed counts reflect only survivors.
 

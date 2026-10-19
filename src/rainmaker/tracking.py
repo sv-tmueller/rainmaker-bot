@@ -1132,9 +1132,7 @@ def compute_tail_calibration(
     pit_groups: dict[tuple[str, int, int | None], list[float]] = defaultdict(list)
     for r in dedup([dict(row) for row in dist_rows]):
         try:
-            lead = (
-                date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
-            ).days
+            lead = (date.fromisoformat(r["settlement_date"]) - utc_day(r["started_at"])).days
         except ValueError:
             continue  # unparsable date (e.g. test sentinel "t"): skip
         if lead < 0:
@@ -1173,9 +1171,7 @@ def compute_tail_calibration(
     )
     for r in dedup([dict(row) for row in yes_rows_raw]):
         try:
-            lead = (
-                date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
-            ).days
+            lead = (date.fromisoformat(r["settlement_date"]) - utc_day(r["started_at"])).days
         except ValueError:
             continue
         if lead < 0:
