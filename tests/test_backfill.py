@@ -589,7 +589,12 @@ def test_dead_ncei_surfaces_after_two_attempts_not_the_default_four():
     budget in the #446 incident."""
     import httpx as _httpx
 
-    from rainmaker.httpclient import build_backfill_client
+    from rainmaker.config import NWS_USER_AGENT
+    from rainmaker.httpclient import (
+        BACKFILL_RETRY_ATTEMPTS,
+        BACKFILL_RETRY_BACKOFF_S,
+        RetryTransport,
+    )
 
     calls = {"n": 0}
 
@@ -597,8 +602,15 @@ def test_dead_ncei_surfaces_after_two_attempts_not_the_default_four():
         calls["n"] += 1
         return _httpx.Response(503)
 
-    client = build_backfill_client()
-    client._transport._transport = _httpx.MockTransport(_always_503)
+    client = _httpx.Client(
+        headers={"User-Agent": NWS_USER_AGENT},
+        timeout=10.0,
+        transport=RetryTransport(
+            transport=_httpx.MockTransport(_always_503),
+            attempts=BACKFILL_RETRY_ATTEMPTS,
+            backoff=BACKFILL_RETRY_BACKOFF_S,
+        ),
+    )
     try:
         with pytest.raises(_httpx.HTTPStatusError):
             fetch_actuals(KLGA.ghcnd_id, date(2026, 3, 1), date(2026, 3, 5), client)

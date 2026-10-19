@@ -1795,7 +1795,7 @@ def test_backfill_invalid_city_names_bad_key_and_valid_keys(monkeypatch, tmp_pat
     """A typo must not look like a crash: name the offending key and the valid
     ones on stderr, then exit 1."""
     monkeypatch.setattr(cli, "run_backfill", _fake_run_backfill)  # must never be reached
-    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+    monkeypatch.setattr(cli, "build_backfill_client", lambda *a, **k: pytest.fail("client built"))
 
     with pytest.raises(SystemExit) as exc:
         cli.main(
@@ -1815,7 +1815,7 @@ def test_backfill_invalid_city_makes_no_network_calls(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli, "connect", lambda *a, **k: pytest.fail("connect() reached despite invalid --city")
     )
-    monkeypatch.setattr(cli, "build_client", lambda *a, **k: pytest.fail("client built"))
+    monkeypatch.setattr(cli, "build_backfill_client", lambda *a, **k: pytest.fail("client built"))
 
     with pytest.raises(SystemExit):
         cli.main(["backfill", "--city", "ORD", "--db", str(tmp_path / "t.db")])
@@ -1833,7 +1833,7 @@ def test_backfill_summary_counts_fitted_vs_failed_station_variables(monkeypatch,
         return _fake_run_backfill(station, variable, leads, start, end, client)
 
     monkeypatch.setattr(cli, "run_backfill", _mixed)
-    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+    monkeypatch.setattr(cli, "build_backfill_client", lambda *a, **k: _DummyClient())
     db = tmp_path / "t.db"
 
     cli.main(["backfill", "--city", "all", "--variable", "TMAX", "--db", str(db)])
@@ -1860,7 +1860,7 @@ def test_backfill_dead_source_continues_and_summarizes(monkeypatch, tmp_path, ca
         return _fake_run_backfill(station, variable, leads, start, end, client)
 
     monkeypatch.setattr(cli, "run_backfill", _mixed)
-    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+    monkeypatch.setattr(cli, "build_backfill_client", lambda *a, **k: _DummyClient())
     db = tmp_path / "t.db"
 
     cli.main(["backfill", "--city", "all", "--variable", "TMAX", "--db", str(db)])
