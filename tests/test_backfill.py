@@ -20,7 +20,7 @@ from rainmaker.backfill import (
     season_window,
 )
 from rainmaker.cli import _backfill
-from rainmaker.config import STATIONS
+from rainmaker.config import MIN_CAL_SAMPLES, MIN_SIGMA_F, STATIONS
 from rainmaker.forecasts.asos import MESONET_ASOS_URL
 from rainmaker.probability.calibration import CalibrationPair
 from rainmaker.probability.distribution import Gaussian
@@ -273,9 +273,11 @@ def test_fetch_historical_lead_forecasts_builds_gaussian_per_lead(httpx_mock):
             KLGA, (0, 1, 2, 3), date(2026, 3, 1), date(2026, 3, 2), client
         )
     assert set(by_lead) == {0, 1, 2, 3}
-    # lead 0 (day-0 archive, unsuffixed keys): 55/53 -> 54.0, 43/41 -> 42.0
+    # lead 0 (day-0 archive, unsuffixed keys): 55/53 -> 54.0, 43/41 -> 42.0.
+    # sigma is the #462 unified statistic: population std (ddof=0) of [55, 53]
+    # = 1.0, floored at MIN_SIGMA_F (1.5).
     assert by_lead[0][date(2026, 3, 1)].mu == pytest.approx(54.0)
-    assert by_lead[0][date(2026, 3, 1)].sigma == pytest.approx(1.414, abs=1e-3)
+    assert by_lead[0][date(2026, 3, 1)].sigma == pytest.approx(MIN_SIGMA_F)
     assert by_lead[0][date(2026, 3, 2)].mu == pytest.approx(42.0)
     # lead 1: 51/49 -> 50.0, 39/37 -> 38.0
     assert by_lead[1][date(2026, 3, 1)].mu == pytest.approx(50.0)
@@ -446,6 +448,160 @@ def test_backfill_cli_saves_a_row_per_lead_and_station(httpx_mock, tmp_path, mon
 
 
 # season_window tests
+
+
+# ---------------------------------------------------------------------------
+# #462 routing: recon pairs from the store beat the archive fallback when the
+# cell reached MIN_CAL_SAMPLES; conn=None keeps the pure archive path.
+# ---------------------------------------------------------------------------
+
+
+def _seed_recon_store(db_path: str, n_pairs: int, lead: int = 1) -> None:
+    """Seed a scratch store with n_pairs settled KLGA TMAX recon pools."""
+    from rainmaker.store.db import connect, init_schema
+
+    conn = connect(db_path)
+    init_schema(conn)
+    for i in range(n_pairs):
+        run_id = f"rr{i}"
+        market_id = f"mm{i}"
+        day = f"2026-09-{i + 1:02d}"
+        conn.execute(
+            "INSERT INTO runs (id, started_at, finished_at, status) VALUES (?, ?, ?, ?)",
+            (run_id, f"{day}T12:00:00Z", f"{day}T12:01:00Z", "ok"),
+        )
+        conn.execute(
+            "INSERT INTO markets (id, city, variable, settlement_date, venue) "
+            "VALUES (?, 'NYC', 'TMAX', ?, 'polymarket')",
+            (market_id, f"2026-09-{i + 2:02d}"),
+        )
+        conn.execute(
+            "INSERT INTO predictions (run_id, market_id, p_win, dist_params, created_at) "
+            "VALUES (?, ?, 0.5, '{}', ?)",
+            (run_id, market_id, f"{day}T12:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO outcomes (market_id, actual_value, won, settled_at) VALUES (?, ?, 1, ?)",
+            (market_id, 70.0 + i, f"{day}T12:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO forecasts (run_id, market_id, source, model, variable, values_json, lead_time, fetched_at) "
+            "VALUES (?, ?, 'nws', 'nws', 'TMAX', ?, ?, ?), "
+            "(?, ?, 'open-meteo', 'gfs', 'TMAX', ?, ?, ?)",
+            (
+                run_id,
+                market_id,
+                json.dumps([71.0]),
+                lead,
+                f"{day}T12:00:00Z",
+                run_id,
+                market_id,
+                json.dumps([73.0]),
+                lead,
+                f"{day}T12:00:00Z",
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+
+def test_run_backfill_routes_dense_recon_cell_off_the_archive(httpx_mock, tmp_path):
+    # A store holding >= MIN_CAL_SAMPLES recon pairs for (KLGA, TMAX, 1):
+    # the cell must fit on those WITHOUT touching the archive HTTP APIs.
+    db = str(tmp_path / "recon.db")
+    _seed_recon_store(db, n_pairs=MIN_CAL_SAMPLES)
+    from rainmaker.store.db import connect
+
+    conn = connect(db)
+    try:
+        with httpx.Client() as client:
+            results = run_backfill(
+                KLGA, "TMAX", (1,), date(2026, 9, 1), date(2026, 9, 30), client, conn
+            )
+    finally:
+        conn.close()
+    assert 1 in results
+    cal, acc = results[1]
+    assert cal.n_samples == MIN_CAL_SAMPLES
+    # recon mu is 72.0 per pair; actuals 70.. -> bias reflects the recon pairs
+    assert acc.n == MIN_CAL_SAMPLES
+    # NO archive HTTP request was registered (httpx_mock raises on unmatched)
+    assert not httpx_mock.get_requests()
+
+
+def test_run_backfill_thin_recon_cell_falls_back_to_archive(httpx_mock, tmp_path):
+    # Below MIN_CAL_SAMPLES recon pairs: the archive path serves the cell.
+    db = str(tmp_path / "thin.db")
+    _seed_recon_store(db, n_pairs=3)
+    httpx_mock.add_response(
+        url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
+    )
+    asos_fixture = (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
+    from rainmaker.store.db import connect
+
+    conn = connect(db)
+    try:
+        with httpx.Client() as client:
+            results = run_backfill(
+                KLGA, "TMAX", (1,), date(2026, 3, 1), date(2026, 3, 2), client, conn
+            )
+    finally:
+        conn.close()
+    assert 1 in results
+    # the archive served the fit (fixture pairs), not the 3 recon pairs
+    cal, _acc = results[1]
+    assert cal.n_samples == 2
+
+
+def test_run_backfill_conn_none_keeps_pure_archive_path(httpx_mock):
+    # conn=None (default): identical to the pre-#462 behavior, no store read.
+    httpx_mock.add_response(
+        url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
+    )
+    asos_fixture = (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
+    with httpx.Client() as client:
+        results = run_backfill(KLGA, "TMAX", (1,), date(2026, 3, 1), date(2026, 3, 2), client)
+    assert 1 in results
+    assert results[1][0].n_samples == 2
+
+
+def test_archive_sigma_is_unified_statistic(httpx_mock):
+    # The archive fallback's sigma: population std (ddof=0) floored at
+    # MIN_SIGMA_F, replacing the old ddof=1 stdev floored at 1e-6 (#462).
+    httpx_mock.add_response(
+        url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
+    )
+    with httpx.Client() as client:
+        by_lead = fetch_historical_lead_forecasts(
+            KLGA, (0,), date(2026, 3, 1), date(2026, 3, 2), client
+        )
+    # fixture lead-0 scalars 55/53: pop std 1.0 -> floor 1.5 (old: stdev 1.414)
+    assert by_lead[0][date(2026, 3, 1)].sigma == pytest.approx(MIN_SIGMA_F)
+
+
+def test_archive_sigma_unfloored_when_models_disagree(httpx_mock):
+    # Wide model disagreement: the unified statistic exceeds the floor, and
+    # ddof=0 (population) is measurably below the old ddof=1 stdev.
+    data = {
+        "hourly": {
+            "time": ["2026-03-01T12:00"],
+            "temperature_2m_gfs_seamless": [40.0],
+            "temperature_2m_ecmwf_ifs025": [50.0],
+            "temperature_2m_icon_seamless": [70.0],
+        }
+    }
+    httpx_mock.add_response(url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=data)
+    with httpx.Client() as client:
+        by_lead = fetch_historical_lead_forecasts(
+            KLGA, (0,), date(2026, 3, 1), date(2026, 3, 1), client
+        )
+    import statistics as st
+
+    scalars = [40.0, 50.0, 70.0]
+    assert by_lead[0][date(2026, 3, 1)].sigma == pytest.approx(st.pstdev(scalars))
+    assert by_lead[0][date(2026, 3, 1)].sigma < st.stdev(scalars)
 
 
 def test_season_window_mid_winter_returns_full_days_window():

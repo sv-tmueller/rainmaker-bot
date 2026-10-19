@@ -353,7 +353,7 @@ def test_backfill_gaussian_cell_line_unchanged(monkeypatch, tmp_path, capsys):
     assert "df=" not in out
 
 
-def _fake_run_backfill(station, variable, leads, start, end, client):
+def _fake_run_backfill(station, variable, leads, start, end, client, conn=None):
     from rainmaker.probability.calibration import Accuracy
 
     return {
@@ -407,7 +407,7 @@ def test_backfill_partial_failure_exits_zero(monkeypatch, tmp_path, capsys):
 
     fail_city = sorted(STATIONS)[0]
 
-    def _mixed(station, variable, leads, start, end, client):
+    def _mixed(station, variable, leads, start, end, client, conn=None):
         if station.icao == STATIONS[fail_city].icao:
             raise httpx.ConnectError("down")
         return _fake_run_backfill(station, variable, leads, start, end, client)
@@ -479,7 +479,7 @@ def test_backfill_city_grid_covers_every_variable_and_lead(monkeypatch, tmp_path
 def test_backfill_defaults_cover_full_grid(monkeypatch, tmp_path):
     calls: list[tuple[str, tuple[int, ...]]] = []
 
-    def _record(station, variable, leads, start, end, client):
+    def _record(station, variable, leads, start, end, client, conn=None):
         calls.append((variable, leads))
         return {}
 
@@ -1873,7 +1873,7 @@ def test_backfill_summary_counts_fitted_vs_failed_station_variables(monkeypatch,
 
     fail_city = sorted(STATIONS)[0]
 
-    def _mixed(station, variable, leads, start, end, client):
+    def _mixed(station, variable, leads, start, end, client, conn=None):
         if station.icao == STATIONS[fail_city].icao:
             raise httpx.ConnectError("down")
         return _fake_run_backfill(station, variable, leads, start, end, client)
@@ -1900,7 +1900,7 @@ def test_backfill_dead_source_continues_and_summarizes(monkeypatch, tmp_path, ca
 
     dead_icaos = {KALSHI_STATIONS["NYC"].icao, KALSHI_STATIONS["Chicago"].icao}
 
-    def _mixed(station, variable, leads, start, end, client):
+    def _mixed(station, variable, leads, start, end, client, conn=None):
         if station.icao in dead_icaos:
             raise httpx.ConnectTimeout("ncei down")
         return _fake_run_backfill(station, variable, leads, start, end, client)
