@@ -7,7 +7,7 @@ from here rather than from a specific venue package.
 """
 
 import re
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -104,6 +104,67 @@ class Market(BaseModel):
 # descriptions. The deferred settlement task reads these; settling logic is not
 # part of this build.
 SETTLEMENT_DECIMALS = 2  # the NOAA monthly figure is reported to 2 decimals
+
+
+# ---------------------------------------------------------------------------
+# Stored-timestamp parsing (#429)
+# ---------------------------------------------------------------------------
+
+
+def _stored_timestamp(stamp: str) -> datetime:
+    """Parse a stored ISO-8601 timestamp (runs.started_at and kin) to a UTC datetime.
+
+    The store writes ISO-8601 UTC text on both backends, but a stamp that
+    arrives carrying a non-UTC offset must be normalized before any day/hour
+    judgment: slicing the raw text (stamp[:10], stamp[11:13]) silently used
+    the local calendar day and clock hour, which disagree with UTC whenever
+    the offset crosses a midnight boundary (23:00 at -05:00 is 04:00 the
+    next UTC day). Naive stamps are read as UTC, matching the store's
+    convention. Raises ValueError on anything unparsable so callers' existing
+    skip-on-unparsable branches keep firing instead of forming garbage keys.
+    """
+    dt = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def utc_day(stamp: str) -> date:
+    """The UTC calendar day of a stored ISO timestamp."""
+    return _stored_timestamp(stamp).date()
+
+
+def utc_hour(stamp: str) -> int:
+    """The UTC clock hour (0-23) of a stored ISO timestamp."""
+    return _stored_timestamp(stamp).hour
+
+
+def day_key(stamp: str) -> str:
+    """Tolerant UTC-day grouping key: the ISO date when the stamp parses, else
+    the raw stamp unchanged.
+
+    Pure grouping/dedup keys (prune day buckets, per-(market, day) collapses,
+    the snapshot as-of comparison) must tolerate a malformed stamp the way the
+    old [:10] slice did -- grouping it under its raw text -- instead of raising
+    and killing the whole pass. Day/hour *judgments* (lead times, hour splits)
+    should use utc_day/utc_hour, which raise on the same input so callers'
+    skip branches fire.
+    """
+    try:
+        return utc_day(stamp).isoformat()
+    except ValueError:
+        return stamp
+
+
+def hour_key(stamp: str) -> str:
+    """Tolerant UTC-hour grouping key: str(hour) when the stamp parses, else
+    the raw [11:13] slice ("" for short/malformed stamps), matching legacy
+    slicing instead of raising. See day_key for when to use the tolerant keys.
+    """
+    try:
+        return str(utc_hour(stamp))
+    except ValueError:
+        return stamp[11:13]
 
 
 def parse_precip_bracket_label(

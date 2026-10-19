@@ -2569,3 +2569,29 @@ def test_clv_precip_market_drops_from_n_clv_not_n_bets(httpx_mock):
     assert result["n_clv"] == 1
     # No crash; mean_clv is over the one successful bet
     assert result["mean_clv"] == pytest.approx(0.80 - 0.40)  # YES CLV = 0.40
+
+
+def test_compute_calibration_by_cell_normalizes_offset_started_at():
+    """(#429) A started_at carrying a non-UTC offset judges the UTC day, not the
+    local-calendar slice: 23:00 at -05:00 on 05-29 is 04:00 UTC on 05-30, a
+    lead-0 run against a 05-30 settlement, not lead 1 (nor a phantom day key).
+    The old [:10] slice read "2026-05-29" and mis-bucketed the lead by one.
+    """
+    conn = connect(":memory:")
+    init_schema(conn)
+    _add_cell_row(
+        conn,
+        "m1",
+        "r1",
+        variable="TMAX",
+        settlement_date="2026-05-30",
+        started_at="2026-05-29T23:00:00-05:00",
+        p_win=0.90,
+        actual=71.0,
+    )
+    conn.commit()
+    rows = settled_rows(conn)
+    conn.close()
+
+    result = compute_calibration_by_cell(rows)
+    assert [(r["variable"], r["lead_time"], r["n"]) for r in result] == [("TMAX", 0, 1)]

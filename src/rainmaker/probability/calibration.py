@@ -178,7 +178,6 @@ def numeric_crps(
     sigma: NDArray[np.float64] | float,
     actual: NDArray[np.float64] | float,
     *,
-    weight: _StdCdf | None = None,
     n_grid: int = 20001,
     span: float = 8.0,
 ) -> NDArray[np.float64]:
@@ -237,9 +236,6 @@ def numeric_crps(
     cdf_u = std_cdf(u)  # (G,)
     indicator = (u[None, :] >= actual_std[:, None]).astype(np.float64)  # (N, G)
     integrand = (cdf_u[None, :] - indicator) ** 2  # (N, G)
-    if weight is not None:
-        x = mu_arr[:, None] + sigma_arr[:, None] * u[None, :]
-        integrand = integrand * weight(x)
     result: NDArray[np.float64] = sigma_arr * np.trapezoid(integrand, u, axis=1)
     return result
 
@@ -294,7 +290,7 @@ def fit_student_t_free_df(
         std_cdf = std_cdf_for(float(df))
         sigma = np.sqrt(np.maximum(va + vb * ev_arr, FIT_MIN_SIGMA**2))
         loc = mu_arr - b
-        scores = numeric_crps(std_cdf, loc, sigma, actual_arr, weight=None)
+        scores = numeric_crps(std_cdf, loc, sigma, actual_arr)
         return float(np.mean(scores))
 
     result = minimize(

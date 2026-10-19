@@ -67,6 +67,7 @@ from rainmaker.config import (
     STATION_EDGE_DELTA,
     STATIONS,
 )
+from rainmaker.domain import utc_day
 from rainmaker.tracking import _best_per_market_run, _bet_won, _filter_venue, _wilson_interval
 
 LeadFilter = Literal["all", "exclude_0", "exclude_le_0"]
@@ -123,9 +124,7 @@ def _icao_for(row: dict[str, Any]) -> str | None:
 
 def _lead_for(row: dict[str, Any]) -> int | None:
     try:
-        return (
-            date.fromisoformat(row["settlement_date"]) - date.fromisoformat(row["started_at"][:10])
-        ).days
+        return (date.fromisoformat(row["settlement_date"]) - utc_day(row["started_at"])).days
     except (ValueError, KeyError):
         return None
 

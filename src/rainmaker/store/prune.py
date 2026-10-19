@@ -7,12 +7,14 @@ outcomes row exists), delete the all-but-latest runs per (market_id, UTC day)
 from prices, predictions, and forecasts. The durable history in
 runs/markets/outcomes/tracking_snapshot/forecast_accuracy is never touched.
 
-Day grouping is done in Python (started_at[:10]) so the SQL stays portable across
+Day grouping is done in Python (day_key(started_at), a proper UTC-day parse
+rather than a raw string slice) so the SQL stays portable across
 SQLite and Postgres. Idempotent: a second run deletes nothing.
 """
 
 from collections import defaultdict
 
+from rainmaker.domain import day_key
 from rainmaker.store.db import Conn
 
 _PRUNE_TABLES = ("prices", "predictions", "forecasts")
@@ -37,7 +39,7 @@ def _runs_to_prune(conn: Conn) -> list[tuple[str, str]]:
     ).fetchall()
     members: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
     for row in (dict(r) for r in rows):
-        day = row["started_at"][:10]
+        day = day_key(row["started_at"])
         members[(row["market_id"], day)].append((row["started_at"], row["run_id"]))
     to_prune: list[tuple[str, str]] = []
     for (market_id, _day), runs in members.items():

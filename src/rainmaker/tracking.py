@@ -21,7 +21,16 @@ from scipy.stats import norm
 
 from rainmaker.backtest import COVERAGE_LEVELS, crps_gaussian, reliability_bins
 from rainmaker.config import KALSHI_STATIONS, STATIONS
-from rainmaker.domain import BucketKind, Market, parse_bucket_label, parse_precip_bracket_label
+from rainmaker.domain import (
+    BucketKind,
+    Market,
+    day_key,
+    hour_key,
+    parse_bucket_label,
+    parse_precip_bracket_label,
+    utc_day,
+    utc_hour,
+)
 from rainmaker.forecasts.base import ForecastSample
 from rainmaker.polymarket.prices import fetch_price_history, last_before
 from rainmaker.probability.calibration import (
@@ -171,13 +180,13 @@ def _latest_run_per_market_day(rows: list[dict[str, Any]]) -> list[dict[str, Any
 
     The intraday runs (#77) re-price a market many times a day; their bets are
     correlated, so counting each run separately inflates P&L and calibration
-    (#63). started_at[:10] is the UTC day (same grain as compute_live_accuracy).
+    (#63). day_key(started_at) is the UTC day (same grain as compute_live_accuracy).
     Among rows sharing a (market_id, UTC day), keep only those whose run started
     latest; (started_at, run_id) breaks an exact-timestamp tie deterministically.
     """
     latest: dict[tuple[str, str], tuple[str, str]] = {}
     for r in rows:
-        key = (r["market_id"], r["started_at"][:10])
+        key = (r["market_id"], day_key(r["started_at"]))
         marker = (r["started_at"], r["run_id"])
         if key not in latest or marker > latest[key]:
             latest[key] = marker
@@ -388,9 +397,7 @@ def compute_calibration_by_cell(
     groups: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     for r in rows:
         try:
-            lead = (
-                date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
-            ).days
+            lead = (date.fromisoformat(r["settlement_date"]) - utc_day(r["started_at"])).days
         except ValueError:
             continue  # unparsable date (e.g. test sentinel "t"): skip
         if lead < 0:
@@ -424,7 +431,7 @@ def _lead_bucket(settlement_date: str, started_at: str) -> str:
     Negatives fold into '<0 (catch-up)' rather than being dropped so every bet
     lands in exactly one bucket and dimension totals reconcile with compute_pnl.
     """
-    lead = (date.fromisoformat(settlement_date) - date.fromisoformat(started_at[:10])).days
+    lead = (date.fromisoformat(settlement_date) - utc_day(started_at)).days
     if lead < 0:
         return "<0 (catch-up)"
     if lead <= 2:
@@ -746,9 +753,7 @@ def compute_live_accuracy(conn: Conn) -> list[dict[str, Any]]:
         mu, sigma = _finite_number(params.get("mu")), _finite_number(params.get("sigma"))
         if mu is None or sigma is None or sigma <= 0:
             continue
-        lead = (
-            date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
-        ).days
+        lead = (date.fromisoformat(r["settlement_date"]) - utc_day(r["started_at"])).days
         if lead < 0:
             continue  # a run after settlement is a catch-up, not a forecast: not accuracy
         key = (station.icao, r["city"], r["variable"], lead)
@@ -802,9 +807,7 @@ def compute_live_calibration(conn: Conn) -> list[dict[str, Any]]:
         defaultdict(list)
     )
     for r in _latest_run_per_market_day([dict(row) for row in rows]):
-        lead = (
-            date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
-        ).days
+        lead = (date.fromisoformat(r["settlement_date"]) - utc_day(r["started_at"])).days
         if lead < 0:
             continue
         try:
@@ -845,9 +848,7 @@ def compute_live_calibration(conn: Conn) -> list[dict[str, Any]]:
     rel_groups: dict[tuple[str, int], list[tuple[float, bool]]] = defaultdict(list)
     for r in yes_deduped:
         try:
-            lead = (
-                date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
-            ).days
+            lead = (date.fromisoformat(r["settlement_date"]) - utc_day(r["started_at"])).days
         except ValueError:
             continue  # unparsable date (e.g. test sentinel "t"): skip
         if lead < 0:
@@ -944,7 +945,7 @@ def _latest_run_per_market_day_hour(rows: list[dict[str, Any]]) -> list[dict[str
     latest: dict[tuple[str, str, str], tuple[str, str]] = {}
     for r in rows:
         started = r["started_at"]
-        key = (r["market_id"], started[:10], started[11:13])
+        key = (r["market_id"], day_key(started), hour_key(started))
         marker = (started, r["run_id"])
         if key not in latest or marker > latest[key]:
             latest[key] = marker
@@ -1131,9 +1132,7 @@ def compute_tail_calibration(
     pit_groups: dict[tuple[str, int, int | None], list[float]] = defaultdict(list)
     for r in dedup([dict(row) for row in dist_rows]):
         try:
-            lead = (
-                date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
-            ).days
+            lead = (date.fromisoformat(r["settlement_date"]) - utc_day(r["started_at"])).days
         except ValueError:
             continue  # unparsable date (e.g. test sentinel "t"): skip
         if lead < 0:
@@ -1148,7 +1147,7 @@ def compute_tail_calibration(
         df, df_ok = _parse_df(params)
         if not df_ok:
             continue
-        hour = int(r["started_at"][11:13]) if by_hour else None
+        hour = utc_hour(r["started_at"]) if by_hour else None
         pit_groups[(r["variable"], lead, hour)].append(_cdf_at(mu, sigma, df, r["actual_value"]))
 
     yes_rows_raw = conn.execute(
@@ -1172,9 +1171,7 @@ def compute_tail_calibration(
     )
     for r in dedup([dict(row) for row in yes_rows_raw]):
         try:
-            lead = (
-                date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
-            ).days
+            lead = (date.fromisoformat(r["settlement_date"]) - utc_day(r["started_at"])).days
         except ValueError:
             continue
         if lead < 0:
@@ -1187,7 +1184,7 @@ def compute_tail_calibration(
             side, claim, event_won = "YES", p_win, won
         else:
             side, claim, event_won = "NO", 1 - p_win, not won
-        hour = int(r["started_at"][11:13]) if by_hour else None
+        hour = utc_hour(r["started_at"]) if by_hour else None
         tail_groups[(r["variable"], lead, hour, side, _tail_bin(claim))].append((claim, event_won))
 
     primary: list[dict[str, Any]] = []
@@ -1353,7 +1350,7 @@ def _effective_settled_at(row: dict[str, Any]) -> str:
     ever NULL in practice.
     """
     settled_at = row.get("settled_at")
-    return str(settled_at)[:10] if settled_at else str(row["settlement_date"])
+    return day_key(str(settled_at)) if settled_at else str(row["settlement_date"])
 
 
 def backfill_snapshots(conn: Conn, created_at: str) -> list[tuple[str, str]]:

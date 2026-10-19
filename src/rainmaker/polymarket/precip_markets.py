@@ -21,6 +21,9 @@ from rainmaker.domain import (
 )
 
 ROUND_BETWEEN_BRACKETS_UP = True  # a value exactly between two brackets resolves up
+# Kept as a named constant (not inlined) because it doubles as the frozen
+# settlement-rule assertion: tests/test_precip_markets.py pins it True as the
+# market-resolution rule confirmed from the market descriptions (#429).
 
 _MONTHS = {name: i for i, name in enumerate(calendar.month_name) if name}
 

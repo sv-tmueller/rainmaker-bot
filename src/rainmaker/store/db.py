@@ -22,6 +22,10 @@ from typing import Any
 
 PG_CONNECT_ATTEMPTS = 4
 PG_CONNECT_BACKOFF_S = 1.0
+# Seconds SQLITE_BUSY waits on another connection's write lock before erroring.
+# The sqlite3 default is 5s; made explicit and raised so a concurrent writer
+# (e.g. a settle overlapping a run) backs off instead of failing fast (#429).
+_SQLITE_BUSY_TIMEOUT_S = 30.0
 
 _SQLITE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -72,7 +76,9 @@ CREATE TABLE IF NOT EXISTS predictions (
     run_id      TEXT REFERENCES runs(id),
     market_id   TEXT REFERENCES markets(id),
     p_win       REAL,
-    confidence  REAL,
+    confidence  REAL, -- written NULL, never read, retained deliberately (#429):
+                  -- no calibrated confidence metric exists yet, and dropping a
+                  -- column needs a store migration, so it stays until one does.
     dist_params TEXT,
     edge        REAL,
     recommended INTEGER,
@@ -196,7 +202,9 @@ def connect(dsn: str, *, sleep: Callable[[float], object] = time.sleep) -> Conn:
     The Postgres path retries a bounded number of times on
     `psycopg.OperationalError` (covers connect-time timeout, connection
     refused, and DNS failure alike), with exponential backoff, then re-raises
-    the original error unchanged. The SQLite path is untouched.
+    the original error unchanged. The SQLite path sets an explicit busy
+    timeout (SQLITE_BUSY waiting on a writer's lock) rather than leaning on
+    the 5s default (#429).
     """
     if _backend_for(dsn) == "postgres":
         import psycopg
@@ -210,7 +218,7 @@ def connect(dsn: str, *, sleep: Callable[[float], object] = time.sleep) -> Conn:
                     raise
                 sleep(PG_CONNECT_BACKOFF_S * 2**attempt)
         raise AssertionError("unreachable")  # pragma: no cover
-    raw = sqlite3.connect(dsn)
+    raw = sqlite3.connect(dsn, timeout=_SQLITE_BUSY_TIMEOUT_S)
     raw.row_factory = sqlite3.Row
     raw.execute("PRAGMA foreign_keys = ON")
     return Conn(raw, "sqlite")
