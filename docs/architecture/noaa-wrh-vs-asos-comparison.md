@@ -312,7 +312,10 @@ lower tails widen slightly, e.g. TMAX|0 lower q=.05 4.12/4.19.)
 Local refit sanity proof: `uv run rainmaker backfill --city all` against a
 scratch store exited 0 and wrote 80 cells (TMAX and TMIN, leads 0-3, every
 station with in-season history), each overwriting its predecessor in place.
-Because cells are upserts keyed by (station, variable, lead), the refit purges
+That 80-cell figure is the developer's single run; the mechanism was
+independently verified on --city NYC, and the full --city all re-verification
+is pending NCEI archive stability. Because cells are upserts keyed by
+(station, variable, lead), the refit purges
 the stale generation by construction: any cell the refit does not overwrite
 retains the old sigma-era fit, which is why the operator sequence (merge,
 then trigger the prod backfill BEFORE reading new tail-check numbers)
@@ -336,3 +339,14 @@ with a det/ens gap above half the ensemble sigma, and those pools now carry
 the wider, honest sigma into the fit. The TMIN gain rides on the retarget
 plus refit, measurable in tail-check only after the prod backfill lands and
 REGIME_SINCE advances to 2026-10-19.
+
+Accepted statistic mismatch (var_b): the refit cells are fitted on the
+deterministic-archive pooled-std sigma (the backfill path has no ensemble
+members, so fit_gaussian's fallback arm supplies the pooled std), while live
+pools now carry the wider extended sigma into apply_calibration. The
+discrepancy runs in one direction: extended sigma >= archive pooled-std, so
+the live predictive sigma is somewhat wider than the fit statistic assumes.
+This is accepted for this regime because rebuilding the forecasts table's
+historical sigmas would mean a full reconstruction of every archived pool,
+while the EMOS var_b term dominates the predictive variance for well-covered
+cells anyway. Issue #435 tracks the re-basing onto live-shape sigmas.
