@@ -286,8 +286,9 @@ so a re-run only fills what is missing.
 ### Regime refit rollout (order matters)
 
 A calibration regime refit (any change that alters the forecast distribution
-feeding the fit, e.g. the #400 sigma extension or the #426 TMIN calendar-day
-retarget) invalidates every existing cell by definition: live cells were
+feeding the fit, e.g. the #400 sigma extension, the #426 TMIN calendar-day
+retarget, or the #462 unified sigma statistic with recon routing) invalidates
+every existing cell by definition: live cells were
 fitted under the old sigma/target and are stale-generation until overwritten.
 Until the prod backfill runs, the live run keeps consuming those stale cells,
 which is safe (they match the live forecast generation only if the code change
@@ -296,11 +297,14 @@ window short).
 
 Trigger order:
 
-1. Merge the PR carrying the refit (e.g. #432 for refit v2).
+1. Merge the PR carrying the refit (e.g. #432 for refit v2, #464 for refit v3).
 2. Immediately trigger the `backfill` workflow in the GitHub Actions tab
    against Supabase (`backfill --city all`). Cells are upserts keyed by
    (station, variable, lead): the refit purges the stale generation by
-   overwriting every fitted cell in place.
+   overwriting every fitted cell in place. As of #462 the backfill routes per
+   cell between reconstructed live-shape pairs (dense cells) and the archive
+   fallback; see docs/architecture/sigma-statistic-rebase-2026-10-19.md's
+   refit v3 appendix for the routing rationale.
 3. The next daily-diagnostics run picks up the new REGIME_SINCE bumped in
    the same PR and slices track/tail-check/attribution to the new regime.
    Compare the since-filtered tail ratios against the previous regime's
