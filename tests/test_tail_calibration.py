@@ -1251,6 +1251,47 @@ def test_gap_section_keeps_variables_and_leads_apart():
     assert _gap_row(result, "TMIN", 1) is None
 
 
+def test_gap_section_separates_same_run_market_by_lead_time():
+    """Two forecast rows sharing (source, model) under one (run, market) but with
+    different lead_time must rebuild as separate pools, never merge: the
+    recorder's group identity includes lead_time (record.py groups by
+    (source, model, variable, lead_time_days)). A merged pool would average
+    the two horizons into one bogus ratio."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    # One settled (market, run); the forecasts table holds the same (source,
+    # model) groups at two different lead_times (corruption-style data, but
+    # the reconstruction must not compound it).
+    _gap_insert_row(
+        conn,
+        market_id="gl1",
+        run_id="grl1",
+        started_at="2026-07-01T12:00:00+00:00",
+        settlement_date="2026-07-02",
+        det_values=[80.0],
+        ens_values=[70.0, 70.5],
+    )
+    # Second lead-time slice for the SAME (run, market): aligned families.
+    _insert_forecast_pool(
+        conn,
+        "grl1",
+        "gl1",
+        det_values=[70.0, 70.2],
+        ens_values=[70.0 + (0.5 if i % 2 == 0 else -0.5) for i in range(10)],
+        lead_time=3,
+    )
+    conn.commit()
+    result = compute_tail_calibration(conn)
+    conn.close()
+
+    row = _gap_row(result, "TMAX", 1)
+    assert row is not None
+    # Two pools, not one merged blob: the misaligned slice keeps its big
+    # ratio, the aligned slice its small one.
+    assert row["n"] == 2
+    assert row["frac_ratio_gt_10"] == 0.5  # one of the two pools is badly split
+
+
 def test_gap_section_respects_since_filter_and_dedup():
     """Same population rules as the existing sections: --since drops pre-cutoff
     runs, and intraday reruns collapse to the latest run per (market, day)."""

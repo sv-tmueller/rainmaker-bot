@@ -968,8 +968,8 @@ def compute_inter_family_gap_summary(conn: Conn, since: str | None = None) -> li
 
     Surfaces the #400 sigma blind spot alongside the tail ratios: the forecasts
     table stores per-sample rows (one row per (source, model) group with the
-    per-member values packed in values_json), so each (run, market) pool can be
-    rebuilt as ForecastSamples and fed to the existing diagnostic. A group is
+    per-member values packed in values_json), so each (run, market, lead) pool can
+    be rebuilt as ForecastSamples and fed to the existing diagnostic. A group is
     ensemble iff its model ends in "_ens" (openmeteo.parse_ensemble's naming),
     which recovers the member flag _record_forecasts collapses away.
 
@@ -997,11 +997,9 @@ def compute_inter_family_gap_summary(conn: Conn, since: str | None = None) -> li
             (since,) if since is not None else (),
         ).fetchall()
     ]
-    pools: dict[tuple[str, str], list[ForecastSample]] = defaultdict(list)
-    meta: dict[tuple[str, str], dict[str, Any]] = {}
+    pools: dict[tuple[str, str, int], list[ForecastSample]] = defaultdict(list)
+    meta: dict[tuple[str, str, int], dict[str, Any]] = {}
     for r in _latest_run_per_market_day(fc_rows):
-        if r["mkt_variable"] == "PRCP":
-            continue
         try:
             lead = (
                 date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
@@ -1010,7 +1008,11 @@ def compute_inter_family_gap_summary(conn: Conn, since: str | None = None) -> li
             continue  # unparsable date (e.g. test sentinel "t"): skip
         if lead < 0:
             continue
-        key = (r["run_id"], r["market_id"])
+        # The recorder's group identity includes lead_time (record.py groups
+        # by (source, model, variable, lead_time_days)): the same (source,
+        # model) at two lead_times is two groups, so the pool key carries
+        # lead_time too or the slices would silently merge into one pool.
+        key = (r["run_id"], r["market_id"], int(r["lead_time"]))
         meta.setdefault(key, {"variable": r["mkt_variable"], "lead": lead})
         try:
             values = json.loads(r["values_json"])
@@ -1038,8 +1040,8 @@ def compute_inter_family_gap_summary(conn: Conn, since: str | None = None) -> li
             )
 
     per_cell: dict[tuple[str, int], list[tuple[float, float]]] = defaultdict(list)
-    for (run_id, market_id), samples in pools.items():
-        info = meta.get((run_id, market_id))
+    for key, samples in pools.items():
+        info = meta.get(key)
         if info is None or not samples:
             continue
         diag = inter_family_gap(samples)
