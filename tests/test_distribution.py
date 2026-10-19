@@ -75,44 +75,56 @@ def test_fit_gaussian_realistic_mixed_pool():
 
 
 def test_fit_gaussian_uses_ensemble_sigma_when_members_present():
-    # Deterministic samples cluster at 75 (tight), ensemble members spread wider.
-    # sigma must come from ensemble member spread, not the whole pool.
-    det = [_sample(74.9), _sample(75.0), _sample(75.1)]  # tight std ~0.1
+    # Deterministic samples cluster at 75 (own group), ensemble members spread
+    # wider (second group). Since #426 the mixed pool's sigma is the extended
+    # mixture over all groups: the det group joins as a singleton component,
+    # widening beyond the pure ensemble member spread. Ens-only sigma is
+    # asserted by test_fit_gaussian_ens_only_pool_keeps_between_group_sigma.
+    det = [_grp(74.9, "nws", "nws"), _grp(75.0, "nws", "nws"), _grp(75.1, "nws", "nws")]
     ens = [_ens(70.0 + i * 0.5, i + 1) for i in range(10)]  # spread ~1.5
     ens_vals = [s.value_f for s in ens]
-    expected_sigma = float(np.std(ens_vals, ddof=1))
+    ens_std = float(np.std(ens_vals, ddof=1))
     g = fit_gaussian(det + ens, min_sigma=0.0)
-    # mu uses all samples: holds here because det and ens are one pooled group
-    all_vals = [s.value_f for s in det + ens]
-    assert g.mu == pytest.approx(float(np.mean(all_vals)))
-    # sigma uses ensemble members only
-    assert g.sigma == pytest.approx(expected_sigma)
+    # mu weights the two groups equally (per #239).
+    assert g.mu == pytest.approx((75.0 + 72.25) / 2)
+    # sigma is the 2-component mixture: ens within-variance + the det-vs-ens
+    # mean offset, strictly wider than the ens-only member std.
+    assert g.sigma > ens_std
+    diag = inter_family_gap(det + ens)
+    assert diag["extended_sigma"] is not None
+    assert g.sigma == pytest.approx(diag["extended_sigma"])
 
 
 def test_fit_gaussian_ensemble_sigma_differs_from_pooled_std():
-    # This test proves the behavior changed: pooled std != ensemble-only std.
-    # With tight deterministic samples pulling the spread down, pooled would be lower.
-    det = [_sample(75.0), _sample(75.0), _sample(75.0)]  # zero det variance
+    # Neither pooled std nor ens-only std is the answer for a mixed pool. With
+    # tight deterministic samples at 75 (own group) and a 5-member ensemble at
+    # 70..74, the extended mixture sigma differs from both candidates.
+    det = [_grp(75.0, "nws", "nws")] * 3  # zero det variance
     ens = [_ens(70.0 + i * 1.0, i + 1) for i in range(5)]  # ens std ~1.58
     ens_vals = [s.value_f for s in ens]
     ens_std = float(np.std(ens_vals, ddof=1))
     all_vals = [s.value_f for s in det + ens]
     pooled_std = float(np.std(all_vals, ddof=1))
-    # The two stds differ (pooled is diluted by the tight det cluster)
-    assert ens_std != pytest.approx(pooled_std)
     g = fit_gaussian(det + ens, min_sigma=0.0)
-    # Result should use ensemble std, not pooled std
-    assert g.sigma == pytest.approx(ens_std)
+    # The candidate sigmas pairwise differ.
+    assert ens_std != pytest.approx(pooled_std)
+    # Result uses the extended mixture sigma: wider than the ens-only std and
+    # distinct from the pooled std.
+    assert g.sigma > ens_std
+    assert g.sigma != pytest.approx(pooled_std)
+    diag = inter_family_gap(det + ens)
+    assert diag["extended_sigma"] is not None
+    assert g.sigma == pytest.approx(diag["extended_sigma"])
 
 
 def test_fit_gaussian_single_ensemble_member_uses_floor():
-    # One ensemble member + one det sample: ensemble std is 0 (single member),
-    # so the floor should apply.
+    # One ensemble member + one det sample: both groups are singletons with
+    # zero within-group variance, so the extended mixture sigma is only the
+    # between-mean offset (0.5F) and the floor still applies.
     samples = [_sample(75.0), _ens(76.0, 1)]
     g = fit_gaussian(samples, min_sigma=1.5)
     # mu from all samples
     assert g.mu == pytest.approx(75.5)
-    # ensemble std with 1 member is undefined; floor applies
     assert g.sigma == 1.5
 
 
@@ -187,6 +199,94 @@ def test_fit_gaussian_sigma_equal_weights_ensemble_groups():
     assert expected_sigma != pytest.approx(pooled_std)
     assert g.sigma == pytest.approx(expected_sigma)
     assert g.sigma != pytest.approx(pooled_std)
+
+
+# ---------------------------------------------------------------------------
+# #400/#426: fit_gaussian extends the ensemble arm's sigma with the
+# deterministic-vs-ensemble disagreement (the inter_family_gap counterfactual)
+# ---------------------------------------------------------------------------
+
+
+def test_fit_gaussian_extended_sigma_with_both_families():
+    """Mixed det+ens pool: sigma equals inter_family_gap's extended_sigma, the
+    mixture variance over ALL groups (det groups join as singleton components),
+    not the ens-only between-group sigma."""
+    dets = [
+        _grp(80.0, "nws", "nws"),
+        _grp(79.0, "open-meteo", "gfs"),
+        _grp(81.0, "open-meteo", "icon"),
+    ]
+    ens = [
+        _grp(70.0 + (0.5 if i % 2 == 0 else -0.5), "open-meteo", "gfs_ens", member=i + 1)
+        for i in range(10)
+    ]
+    pool = dets + ens
+    g = fit_gaussian(pool, min_sigma=0.0)
+    ext = inter_family_gap(pool)["extended_sigma"]
+    assert ext is not None
+    assert g.sigma == pytest.approx(ext)
+    # And it strictly exceeds the old ens-only sigma.
+    assert g.sigma > inter_family_gap(pool)["current_sigma"]
+
+
+def test_fit_gaussian_extended_sigma_flags_confidently_wrong_det_block():
+    """The scenario pinned by test_inter_family_gap_flags_confidently_wrong_
+    det_block: five deterministic models agree tightly at 80F while the
+    ensemble sits at 70F. The old fit saw only the ~1F ensemble spread; the
+    extended fit must widen sigma enough to cover the family disagreement."""
+    dets = [_grp(80.0, "open-meteo", f"det{i}") for i in range(5)]
+    ens = [
+        _grp(70.0 + (0.5 if i % 2 == 0 else -0.5), "open-meteo", "gfs_ens", member=i + 1)
+        for i in range(10)
+    ]
+    pool = dets + ens
+    g = fit_gaussian(pool, min_sigma=0.0)
+    diag = inter_family_gap(pool)
+    assert diag["extended_sigma"] is not None
+    assert diag["current_sigma"] is not None
+    assert g.sigma == pytest.approx(diag["extended_sigma"])
+    assert g.sigma > diag["current_sigma"] * 3
+
+
+def test_fit_gaussian_extension_barely_moves_aligned_families():
+    """Small agreement case (mirrors test_inter_family_gap_small_agreement_
+    case): det and ens consensuses nearly aligned, so the widened sigma stays
+    close to the ens-only sigma."""
+    dets = [_grp(70.2, "nws", "nws"), _grp(69.8, "open-meteo", "gfs")]
+    ens = [
+        _grp(70.0 + (0.5 if i % 2 == 0 else -0.5), "open-meteo", "gfs_ens", member=i + 1)
+        for i in range(10)
+    ]
+    pool = dets + ens
+    g = fit_gaussian(pool, min_sigma=0.0)
+    cur = inter_family_gap(pool)["current_sigma"]
+    assert cur is not None
+    assert g.sigma == pytest.approx(cur, rel=0.35)
+
+
+def test_fit_gaussian_ens_only_pool_keeps_between_group_sigma():
+    """No deterministic groups: the extension degenerates to today's
+    between-ensemble-group mixture sigma (unchanged behavior)."""
+    ens1 = [
+        _grp(v, "open-meteo", "gfs_ens", member=i + 1) for i, v in enumerate([70.0, 71.0, 72.0])
+    ]
+    ens2 = [
+        _grp(v, "open-meteo", "ecmwf_ens", member=i + 1)
+        for i, v in enumerate([60.0, 65.0, 70.0, 75.0, 80.0])
+    ]
+    g = fit_gaussian(ens1 + ens2, min_sigma=0.0)
+    # m1=71, v1=1; m2=70, v2=62.5; m_bar=70.5
+    # sigma^2 = 0.5 * [(1 + 0.25) + (62.5 + 0.25)] = 32.0
+    assert g.sigma == pytest.approx(32.0**0.5)
+
+
+def test_fit_gaussian_det_only_pool_stays_pooled_std():
+    """Backfill/backtest path: no ensemble members anywhere, so sigma stays
+    the pooled std (extension does not engage)."""
+    values = [72.0, 73.0, 74.0, 75.0, 76.0]
+    samples = [_sample(v) for v in values]
+    g = fit_gaussian(samples, min_sigma=0.5)
+    assert g.sigma == pytest.approx(float(np.std(values, ddof=1)))
 
 
 # ---------------------------------------------------------------------------

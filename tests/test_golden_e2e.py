@@ -1,6 +1,5 @@
 # tests/test_golden_e2e.py
 import json
-import math
 from datetime import date
 from pathlib import Path
 
@@ -88,10 +87,13 @@ def test_golden_pipeline_on_fixture_market():
 
     # All 11 buckets had an ask in the fixture, so none are excluded.
     assert report.excluded_no_ask == []
-    # mu is the mean of the 5 group means (per #239); sigma collapses to the
-    # single ensemble group's own member std (K=1).
+    # mu is the mean of the 5 group means (per #239); since the #400/#426
+    # extension sigma is the equal-weight mixture variance over ALL 5 groups
+    # (det singletons + the ensemble group): mean of (0.49, 1.69, 0.09, 1.44,
+    # 0.09, 2.5) = 1.26, sigma = sqrt(1.26) ~= 1.12, which the MIN_SIGMA_F
+    # floor lifts to 1.5. Legitimate shift from the pre-extension sqrt(2.5).
     assert report.mu == pytest.approx(70.3)
-    assert report.sigma == pytest.approx(math.sqrt(2.5))
+    assert report.sigma == pytest.approx(MIN_SIGMA_F)
     # One YES outcome per bucket, plus a NO outcome where the bucket has a NO ask.
     n_no = sum(1 for b in market.buckets if b.no_ask is not None)
     assert n_no > 0  # the feature is exercised
@@ -103,10 +105,10 @@ def test_golden_pipeline_on_fixture_market():
     assert abs(sum(o.p_win for o in yes_outcomes) - 1.0) < 1e-6
     # The mode bucket is still 70-71 (mu=70.3), priced ~0.999 in the fixture,
     # so no positive-edge recommendation survives: an efficient market yields
-    # nothing, on either side.
+    # nothing, on either side. p_win shifted with the #400/#426 sigma change.
     mode = max(yes_outcomes, key=lambda o: o.p_win)
     assert mode.bucket_label == "70-71°F"
-    assert mode.p_win == pytest.approx(0.4696169491613257)
+    assert mode.p_win == pytest.approx(0.49124317281275204)
     assert all(not o.recommended for o in report.outcomes)
     # Ranking is sorted by edge descending.
     edges = [o.edge for o in report.outcomes]

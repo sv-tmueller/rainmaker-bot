@@ -26,18 +26,20 @@ def fit_gaussian(samples: list[ForecastSample], min_sigma: float = MIN_SIGMA_F) 
     evidence; averaging by sample would let the ensemble's member count drown
     out NWS. mu is the mean of the per-group means.
 
-    sigma: when ensemble members (member is not None) are present, sigma comes
-    from ensemble spread, not inter-model disagreement (inter-model stdev is
-    only model disagreement and structurally under-disperses, see #98). With
-    multiple ensemble groups (K > 1, e.g. GFS-ens and ECMWF-ens), sigma is the
-    equal-weight mixture variance across those groups: for group k with mean
-    m_k and within-group sample variance v_k, and m_bar the mean of the m_k,
-    sigma^2 = mean_k[v_k + (m_k - m_bar)^2]. This keeps a large-membership
-    ensemble from outweighing a smaller one in the spread, the same fix as mu.
-    K=1 reduces to that group's own member std (today's single-ensemble
-    behavior); a 1-member group contributes v_k=0. When no ensemble members
-    exist (backfill/backtest path), sigma falls back to the pooled std,
-    unchanged from before.
+    sigma: when ensemble members (member is not None) are present, sigma is
+    the equal-weight mixture variance across ALL (source, model) groups -
+    ensemble groups AND deterministic groups (#426, the #400 extension): for
+    group k with mean m_k and within-group sample variance v_k, and m_bar the
+    mean of the m_k, sigma^2 = mean_k[v_k + (m_k - m_bar)^2]. Counting only
+    between-ensemble-group dispersion made K deterministic models that agree
+    with each other but sit far from the ensemble mean produce a confidently
+    narrow sigma (measured: mean family gap 1.01F, 45% of groups above 0.5
+    sigma; see the #400 appendix). A deterministic group joins as a singleton
+    component (v_k = 0), so its distance from the consensus widens sigma
+    instead of informing nothing. An ens-only pool degenerates to today's
+    between-ensemble-group mixture; a 1-member group contributes v_k=0. When
+    no ensemble members exist (backfill/backtest path: the archive has no
+    members), sigma falls back to the pooled std, unchanged from before.
 
     sigma is floored at min_sigma so a low-variance pool cannot produce false
     certainty. The bias/spread correction is Phase 4.
@@ -56,9 +58,15 @@ def fit_gaussian(samples: list[ForecastSample], min_sigma: float = MIN_SIGMA_F) 
             ens_groups[_group_key(s)].append(s.value_f)
 
     if ens_groups:
-        m_k = np.array([np.mean(vals) for vals in ens_groups.values()], dtype=float)
+        # #400/#426: every group (det + ens) joins the mixture as one
+        # component; the deterministic-vs-ensemble disagreement then widens
+        # sigma instead of being invisible to it.
+        m_k = np.array(
+            [np.mean(vals) for vals in groups.values()],
+            dtype=float,
+        )
         v_k = np.array(
-            [np.var(vals, ddof=1) if len(vals) >= 2 else 0.0 for vals in ens_groups.values()],
+            [np.var(vals, ddof=1) if len(vals) >= 2 else 0.0 for vals in groups.values()],
             dtype=float,
         )
         m_bar = m_k.mean()
