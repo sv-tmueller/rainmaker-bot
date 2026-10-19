@@ -135,7 +135,7 @@ allocations cell by cell, sometimes narrowing, sometimes widening.
 Sensitivity arm: restricting the fit-arm det set to Open-Meteo models only
 (excluding the NWS singleton; --fit-arm openmeteo) strengthens the result
 rather than rescuing it: 21 of 30 eligible cells breach, median
-abs(delta var_b) 0.121, max 0.610. The verdict is robust to the fit arm's
+abs(delta var_b) 0.121, max 0.610. The verdict holds under either fit-arm
 boundary choice.
 
 ## Verdict: MATERIAL
@@ -164,3 +164,11 @@ historical-sigma reconstruction, size:L territory).
   predictive sigma moves less than the var_b deltas suggest; the decision
   rule is on var_b as pre-registered, and the flips confirm the allocation
   between the two terms is statistic-dependent, not incidental.
+- Proxy infidelity, disclosed for #462: the fit arm floors the
+  reconstructed archive-style sigma at MIN_SIGMA_F (1.5F) before squaring,
+  whereas the real fit path (backfill.py:249, consumed at :325) floors at
+  1e-6. Tight-det pools therefore feed the EMOS objective a larger
+  ensemble_var than the real fit ever saw, which can inflate delta var_b on
+  low-spread cells. Breaches are dominated by wide-dispersion cells and the
+  sensitivity arm strengthened the result, so the MATERIAL verdict stands,
+  but #462 must not treat this proxy as exact.
