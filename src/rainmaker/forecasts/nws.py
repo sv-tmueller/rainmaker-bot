@@ -53,9 +53,9 @@ def _select_period(
     first shadows the wanted "Tonight" period (wrong night's low), and a
     fragment REPLACING the evening period matches nothing at all (silent
     zero-sample loss with ok=True). Measured blast radius: zero observed
-    events in stored history (docs/architecture/
-    tmin-night-fragment-blast-radius.md); this is defense-in-depth for a
-    legal NWS product shape.
+    events in stored history
+    (docs/architecture/tmin-night-fragment-blast-radius.md); this is
+    defense-in-depth for a legal NWS product shape.
     """
     covering: list[dict[str, Any]] = []
     first_hit: dict[str, Any] | None = None
@@ -102,6 +102,9 @@ def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]
         return parse_hourly_low(forecast_json, target)
 
     match_date = target.local_date
+    # TMAX equivalence: for daytime periods the covering-window preference
+    # coincides with first-hit on every realistic NWS shape (a daytime period
+    # ending on the target date starts on it), so TMAX selection is unchanged.
     period = _select_period(
         props["periods"],
         want_daytime=True,
