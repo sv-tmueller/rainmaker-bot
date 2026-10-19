@@ -198,7 +198,10 @@ def _record_predictions(
             "(run_id, market_id, bucket, side, p_win, confidence, dist_params, edge, "
             "recommended, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            # confidence stays NULL: no calibrated confidence metric is recorded here.
+            # confidence stays NULL: no calibrated confidence metric is recorded
+            # here, and the column is never read. Retained rather than dropped
+            # (#429): removing a column needs a store migration, so it waits
+            # until a real confidence metric fills it.
             (
                 run_id,
                 market_id,

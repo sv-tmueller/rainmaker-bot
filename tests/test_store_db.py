@@ -202,3 +202,13 @@ def test_connect_sqlite_path_needs_no_sleep_argument():
     conn = connect(":memory:")
     assert conn.backend == "sqlite"
     conn.close()
+
+
+def test_connect_sqlite_busy_timeout_is_explicit_and_raised():
+    # #429: the sqlite3 default busy timeout is 5s; connect() must set an
+    # explicit, longer one so a concurrent writer backs off instead of
+    # surfacing SQLITE_BUSY almost immediately.
+    conn = connect(":memory:")
+    ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    conn.close()
+    assert ms == 30_000

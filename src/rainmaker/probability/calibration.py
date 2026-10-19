@@ -238,6 +238,9 @@ def numeric_crps(
     indicator = (u[None, :] >= actual_std[:, None]).astype(np.float64)  # (N, G)
     integrand = (cdf_u[None, :] - indicator) ** 2  # (N, G)
     if weight is not None:
+        # Not dead despite no in-package caller passing weight: the twCRPS
+        # spike objectives consume it with a real tail weight fn
+        # (spikes/tail_objective.py, tail_weight_from_climatology). Kept (#429).
         x = mu_arr[:, None] + sigma_arr[:, None] * u[None, :]
         integrand = integrand * weight(x)
     result: NDArray[np.float64] = sigma_arr * np.trapezoid(integrand, u, axis=1)
