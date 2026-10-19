@@ -1480,11 +1480,13 @@ def _evaluate_delta(city: str, variable: str, *, best_ask: float) -> MarketRepor
 
 def test_ksfo_tmax_edge_below_delta_floor_not_recommended() -> None:
     """KSFO TMAX, full calibration, floor and sources cleared, edge in
-    [0.07, 0.12): MIN_EDGE alone would recommend it, but the +0.05 KSFO TMAX
-    delta raises the bar to 0.12, so it must not be recommended."""
-    report = _evaluate_delta("San Francisco", "TMAX", best_ask=0.92)
+    [MIN_EDGE, MIN_EDGE + delta): MIN_EDGE alone would recommend it, but the
+    +0.05 KSFO TMAX delta raises the bar, so it must not be recommended."""
+    report = _evaluate_delta("San Francisco", "TMAX", best_ask=0.85)
     outcome = report.outcomes[0]
-    assert 0.07 <= outcome.edge < 0.12, f"edge={outcome.edge} must land in [0.07, 0.12)"
+    assert MIN_EDGE <= outcome.edge < MIN_EDGE + 0.05, (
+        f"edge={outcome.edge} must land in [MIN_EDGE, MIN_EDGE + delta)"
+    )
     assert outcome.recommended is False
 
 
@@ -1492,8 +1494,8 @@ def test_klax_byte_equivalent_market_recommended() -> None:
     """The byte-equivalent market at KLAX (no station-edge-delta entry) with the
     same edge that KSFO TMAX suppressed must be recommended: the delta is
     per-(station, variable), not a blanket edge-floor raise."""
-    ksfo = _evaluate_delta("San Francisco", "TMAX", best_ask=0.92)
-    klax = _evaluate_delta("Los Angeles", "TMAX", best_ask=0.92)
+    ksfo = _evaluate_delta("San Francisco", "TMAX", best_ask=0.85)
+    klax = _evaluate_delta("Los Angeles", "TMAX", best_ask=0.85)
     assert klax.outcomes[0].edge == pytest.approx(ksfo.outcomes[0].edge)
     assert klax.outcomes[0].recommended is True
 
@@ -1501,18 +1503,20 @@ def test_klax_byte_equivalent_market_recommended() -> None:
 def test_ksfo_tmin_same_edge_recommended() -> None:
     """KSFO TMIN, same setup as the suppressed KSFO TMAX case: the delta key is
     (icao, variable), so TMIN is untouched and clears the plain MIN_EDGE bar."""
-    report = _evaluate_delta("San Francisco", "TMIN", best_ask=0.92)
+    report = _evaluate_delta("San Francisco", "TMIN", best_ask=0.85)
     outcome = report.outcomes[0]
-    assert 0.07 <= outcome.edge < 0.12
+    assert MIN_EDGE <= outcome.edge < MIN_EDGE + 0.05
     assert outcome.recommended is True
 
 
 def test_ksfo_tmax_edge_at_delta_floor_recommended() -> None:
-    """KSFO TMAX with edge >= 0.12 clears the raised bar: this is a raised
-    floor, not a blanket exclusion."""
-    report = _evaluate_delta("San Francisco", "TMAX", best_ask=0.83)
+    """KSFO TMAX with edge >= MIN_EDGE + delta clears the raised bar: this is
+    a raised floor, not a blanket exclusion."""
+    report = _evaluate_delta("San Francisco", "TMAX", best_ask=0.80)
     outcome = report.outcomes[0]
-    assert outcome.edge >= 0.12, f"edge={outcome.edge} must clear the raised 0.12 bar"
+    assert outcome.edge >= MIN_EDGE + 0.05, (
+        f"edge={outcome.edge} must clear the raised bar (MIN_EDGE + delta)"
+    )
     assert outcome.recommended is True
 
 
@@ -1546,9 +1550,9 @@ def test_ksfo_tmax_no_side_edge_below_delta_floor_not_recommended() -> None:
     the NO-side line alone (edge_no >= min_edge instead of effective_min_edge)
     would leave the rest of the suite green. This two-bucket market mirrors
     _gate_market_knyc's shape to isolate the NO outcome: edge_no lands in
-    [0.07, 0.12), so plain MIN_EDGE would recommend it but the +0.05 KSFO TMAX
-    delta must suppress it."""
-    market = _gate_market_ksfo_delta(no_ask=0.92)
+    [MIN_EDGE, MIN_EDGE + delta), so plain MIN_EDGE would recommend it but the
+    +0.05 KSFO TMAX delta must suppress it."""
+    market = _gate_market_ksfo_delta(no_ask=0.85)
     fs = _two_source_75(market.target)
     delta = STATION_EDGE_DELTA.get((market.target.station.icao, "TMAX"), 0.0)
 
@@ -1565,7 +1569,9 @@ def test_ksfo_tmax_no_side_edge_below_delta_floor_not_recommended() -> None:
     no_outcomes = [o for o in report.outcomes if o.side == "NO"]
     assert len(no_outcomes) == 1, f"expected exactly one NO outcome; got {report.outcomes}"
     outcome = no_outcomes[0]
-    assert 0.07 <= outcome.edge < 0.12, f"edge={outcome.edge} must land in [0.07, 0.12)"
+    assert MIN_EDGE <= outcome.edge < MIN_EDGE + 0.05, (
+        f"edge={outcome.edge} must land in [MIN_EDGE, MIN_EDGE + delta)"
+    )
     assert outcome.recommended is False
 
 
