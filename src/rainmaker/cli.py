@@ -867,7 +867,23 @@ def _print_gate_sweep_table(title: str, rows: list[dict[str, Any]]) -> None:
         print(_fmt_gate_sweep_row(row))
 
 
-def _gate_sweep(db_path: str, since: str | None = None) -> None:
+def _parse_leads_range(spec: str) -> set[int]:
+    """Parse a --leads spec: comma-separated ints and inclusive ranges ("0-3")."""
+    wanted: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if "-" in part:
+            lo_s, _, hi_s = part.partition("-")
+            lo, hi = int(lo_s), int(hi_s)
+            if lo > hi:
+                raise ValueError(f"empty lead range: {part}")
+            wanted.update(range(lo, hi + 1))
+        else:
+            wanted.add(int(part))
+    return wanted
+
+
+def _gate_sweep(db_path: str, since: str | None = None, leads: set[int] | None = None) -> None:
     """Replay the recommendation gate (min_edge/max_edge/floor/lead/venue) over settled history.
 
     Read-only diagnostic: no refit, no gate change, no persistence. See
@@ -880,12 +896,15 @@ def _gate_sweep(db_path: str, since: str | None = None) -> None:
     try:
         init_schema(conn)
         rows = settled_rows(conn)
-        result = run_sweep(rows, since=since)
+        result = run_sweep(rows, since=since, leads=leads)
     finally:
         conn.close()
 
     if since is not None:
         print(f"since: {since}")
+    if leads is not None:
+        parts = ",".join(str(n) for n in sorted(leads))
+        print(f"leads: {parts}")
 
     print("--- Anchors (reconciliation) ---")
     print(_GATE_SWEEP_HEADER)
@@ -1173,6 +1192,16 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help="restrict to predictions whose run started on or after this date (YYYY-MM-DD)",
     )
+    gate_sweep_cmd.add_argument(
+        "--leads",
+        type=_parse_leads_range,
+        default=None,
+        metavar="SPEC",
+        help=(
+            "restrict to rows whose lead (settlement date minus run start) is "
+            "in this set; ints and inclusive ranges, e.g. 0-3 or 0,1,2"
+        ),
+    )
 
     venue_decomp_cmd = sub.add_parser(
         "venue-decomp",
@@ -1262,7 +1291,7 @@ def main(argv: list[str] | None = None) -> None:
         _calibration_check(db)
     elif args.command == "gate-sweep":
         since = args.since.isoformat() if args.since is not None else None
-        _gate_sweep(db, since)
+        _gate_sweep(db, since, getattr(args, "leads", None))
     elif args.command == "venue-decomp":
         since = args.since.isoformat() if args.since is not None else None
         _venue_decomp(db, since)
