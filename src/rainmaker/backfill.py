@@ -280,9 +280,7 @@ def fetch_historical_lead_forecasts(
         for day, extremes in per_model_daily.items():
             if len(extremes) < 2:
                 continue  # need at least two models to estimate a spread
-            gaussians[day] = Gaussian(
-                mu=statistics.fmean(extremes), sigma=_unified_sigma(extremes)
-            )
+            gaussians[day] = Gaussian(mu=statistics.fmean(extremes), sigma=_unified_sigma(extremes))
         out[lead] = gaussians
     return out
 
@@ -392,7 +390,11 @@ def run_backfill(
     """
     recon_pairs: dict[tuple[str, str, int], list[CalibrationPair]] = {}
     if conn is not None:
-        recon_pairs, _counts = build_recon_pairs(conn)
+        # Season-window clip, same invariant as the archive path: recon pairs
+        # from runs on/after the window start only, so summer history cannot
+        # contaminate fall cells (test_seasonal_fit_avoids_cross_season_bias
+        # pins the archive side of this principle).
+        recon_pairs, _counts = build_recon_pairs(conn, since=start.isoformat())
     fitter = (
         fit_student_t_free_df
         if CALIBRATION_FAMILY.get(variable) == "student_t"

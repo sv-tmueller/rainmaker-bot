@@ -485,7 +485,8 @@ def _seed_recon_store(db_path: str, n_pairs: int, lead: int = 1) -> None:
             (market_id, 70.0 + i, f"{day}T12:00:00Z"),
         )
         conn.execute(
-            "INSERT INTO forecasts (run_id, market_id, source, model, variable, values_json, lead_time, fetched_at) "
+            "INSERT INTO forecasts "
+            "(run_id, market_id, source, model, variable, values_json, lead_time, fetched_at) "
             "VALUES (?, ?, 'nws', 'nws', 'TMAX', ?, ?, ?), "
             "(?, ?, 'open-meteo', 'gfs', 'TMAX', ?, ?, ?)",
             (
@@ -503,6 +504,34 @@ def _seed_recon_store(db_path: str, n_pairs: int, lead: int = 1) -> None:
         )
     conn.commit()
     conn.close()
+
+
+def test_run_backfill_recon_pairs_are_season_window_clipped(httpx_mock, tmp_path):
+    # Recon pairs from runs BEFORE the window start must not feed the fit
+    # (the archive path's cross-season invariant, applied to recon too).
+    db = str(tmp_path / "clip.db")
+    _seed_recon_store(db, n_pairs=MIN_CAL_SAMPLES)  # runs 2026-09-01.., lead 1
+    from rainmaker.store.db import connect
+
+    conn = connect(db)
+    try:
+        with httpx.Client() as client:
+            # Window starts AFTER every seeded run: no recon pair qualifies,
+            # so the cell falls back to the archive.
+            httpx_mock.add_response(
+                url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
+            )
+            asos_fixture = (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
+            httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
+            results = run_backfill(
+                KLGA, "TMAX", (1,), date(2026, 10, 1), date(2026, 10, 5), client, conn
+            )
+    finally:
+        conn.close()
+    assert 1 in results
+    cal, _acc = results[1]
+    # archive served the fit (fixture n=2), not the out-of-window recon pairs
+    assert cal.n_samples == 2
 
 
 def test_run_backfill_routes_dense_recon_cell_off_the_archive(httpx_mock, tmp_path):

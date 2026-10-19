@@ -18,8 +18,6 @@ import sys
 from datetime import date
 from pathlib import Path
 
-import httpx
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from rainmaker.backfill import run_backfill, season_window  # noqa: E402
@@ -39,7 +37,8 @@ from rainmaker.store.db import connect  # noqa: E402
 
 def main() -> int:
     dsn = os.environ.get("DATABASE_URL")
-    dsn_file = sys.argv[sys.argv.index("--dsn-file") + 1] if "--dsn-file" in sys.argv else "/tmp/batch462/dsn.env"
+    idx = sys.argv.index("--dsn-file") + 1 if "--dsn-file" in sys.argv else None
+    dsn_file = sys.argv[idx] if idx is not None else "/tmp/batch462/dsn.env"
     if not dsn and Path(dsn_file).exists():
         dsn = Path(dsn_file).read_text().strip()
     if not dsn:
@@ -49,7 +48,12 @@ def main() -> int:
     conn = connect(dsn)
     client = build_backfill_client()
     try:
-        recon_pairs, counts = build_recon_pairs(conn)
+        window = season_window(date.today())
+        if window is None:
+            print("season window empty; aborting", file=sys.stderr)
+            return 2
+        start, end = window
+        recon_pairs, counts = build_recon_pairs(conn, since=start.isoformat())
         print("recon cells:", len(recon_pairs), "| skip counters:", counts)
 
         # Which cells exist in the STORED calibration table (the refit's scope)?
@@ -60,13 +64,7 @@ def main() -> int:
             ).fetchall()
         }
 
-        window = season_window(date.today())
-        if window is None:
-            print("season window empty; aborting", file=sys.stderr)
-            return 2
-        start, end = window
-
-        # Compute every stored cell's post-refit fit, read-only.
+        # Group the stored cells per (station, variable) for iteration.
         by_station: dict[str, list[str]] = {}
         for station, variable, _lead in stored:
             by_station.setdefault(station, []).append(variable)
@@ -76,7 +74,9 @@ def main() -> int:
             if station is None:
                 continue
             for variable in sorted(set(by_station[station_icao])):
-                leads = tuple(sorted(l for (s, v, l) in stored if s == station_icao and v == variable))
+                leads = tuple(
+                    sorted(le for (s, v, le) in stored if s == station_icao and v == variable)
+                )
                 # Route per cell, mirroring run_backfill's rule.
                 for lead in leads:
                     cell_recon = recon_pairs.get((station_icao, variable, lead), [])

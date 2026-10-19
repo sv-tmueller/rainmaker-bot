@@ -33,12 +33,17 @@ def main() -> int:
 
     table = routing_table(pairs, min_cal_samples=MIN_CAL_SAMPLES)
     n_recon = sum(1 for r in table if r["route"] == "recon")
-    print(f"cells with recon pairs: {len(table)}; routed recon: {n_recon}; archive: {len(table) - n_recon}")
+    print(
+        f"cells with recon pairs: {len(table)};"
+        f" routed recon: {n_recon}; archive: {len(table) - n_recon}"
+    )
     print("skip counters:", json.dumps(counts, sort_keys=True))
     print()
     print(f"{'station':<7} {'var':<5} {'lead':>4} {'n_recon':>8}  route")
     for r in table:
-        print(f"{r['station']:<7} {r['variable']:<5} {r['lead']:>4} {r['n_recon']:>8}  {r['route']}")
+        print(
+            f"{r['station']:<7} {r['variable']:<5} {r['lead']:>4} {r['n_recon']:>8}  {r['route']}"
+        )
     return 0
 
 
