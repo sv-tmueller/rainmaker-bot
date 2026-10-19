@@ -13,6 +13,7 @@ from rainmaker.config import (
     MIN_SIGMA_F,
     MIN_SOURCES,
     PRECIP_VAR_FLOOR,
+    UNCALIBRATED_WIDEN,
     Station,
     Target,
     build_target,
@@ -93,7 +94,10 @@ def test_golden_pipeline_on_fixture_market():
     # 0.09, 2.5) = 1.26, sigma = sqrt(1.26) ~= 1.12, which the MIN_SIGMA_F
     # floor lifts to 1.5. Legitimate shift from the pre-extension sqrt(2.5).
     assert report.mu == pytest.approx(70.3)
-    assert report.sigma == pytest.approx(MIN_SIGMA_F)
+    # #452: the no-cell path now routes through apply_calibration, so the raw
+    # floored sigma 1.5 is widened by UNCALIBRATED_WIDEN to 1.875, matching
+    # the too-few-samples path.
+    assert report.sigma == pytest.approx(MIN_SIGMA_F * UNCALIBRATED_WIDEN)
     # One YES outcome per bucket, plus a NO outcome where the bucket has a NO ask.
     n_no = sum(1 for b in market.buckets if b.no_ask is not None)
     assert n_no > 0  # the feature is exercised
@@ -105,10 +109,11 @@ def test_golden_pipeline_on_fixture_market():
     assert abs(sum(o.p_win for o in yes_outcomes) - 1.0) < 1e-6
     # The mode bucket is still 70-71 (mu=70.3), priced ~0.999 in the fixture,
     # so no positive-edge recommendation survives: an efficient market yields
-    # nothing, on either side. p_win shifted with the #400/#426 sigma change.
+    # nothing, on either side. p_win shifted with the #400/#426 sigma change
+    # and again with #452 (the no-cell widening).
     mode = max(yes_outcomes, key=lambda o: o.p_win)
     assert mode.bucket_label == "70-71°F"
-    assert mode.p_win == pytest.approx(0.49124317281275204)
+    assert mode.p_win == pytest.approx(0.4041026340046703)
     assert all(not o.recommended for o in report.outcomes)
     # Ranking is sorted by edge descending.
     edges = [o.edge for o in report.outcomes]
@@ -356,9 +361,16 @@ def test_golden_pipeline_on_celsius_market():
     assert len(yes_outcomes) == 5
     # YES partition sums to ~1.
     assert abs(sum(o.p_win for o in yes_outcomes) - 1.0) < 1e-6
-    # Mode bucket is 38C (pool centered there).
+    # Mode bucket: with #452 the no-cell path finally widens sigma (raw pool
+    # sigma ~1.58C from the +/-2C offsets, widened by UNCALIBRATED_WIDEN to
+    # ~1.98C), so the two open tails each carry more mass than any single
+    # 1-degree interior bucket. They are symmetric about mu=38C to
+    # floating-point noise, so pin membership, not which tail wins the tie.
     mode = max(yes_outcomes, key=lambda o: o.p_win)
-    assert mode.bucket_label == "38C"
+    assert mode.bucket_label in ("36C or below", "40C or higher")
+    # The interior bucket at the pool centre is still competitive, not drowned.
+    centre = next(o for o in yes_outcomes if o.bucket_label == "38C")
+    assert centre.p_win == pytest.approx(0.19971804167063878)
     # Ranking is sorted by edge descending.
     edges = [o.edge for o in report.outcomes]
     assert edges == sorted(edges, reverse=True)

@@ -8,7 +8,7 @@ from rainmaker.config import StationPolicy
 from rainmaker.domain import Market, PrecipMonthlyMarket
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.forecasts.precip import PrecipForecastSet
-from rainmaker.probability.calibration import Calibration, Predictive, apply_calibration
+from rainmaker.probability.calibration import Calibration, apply_calibration
 from rainmaker.probability.distribution import fit_gaussian
 from rainmaker.probability.outcomes import bucket_probability
 from rainmaker.probability.precip_distribution import fit_gamma
@@ -172,12 +172,12 @@ def evaluate_market(
             "market settles in Celsius; calibration cells are Fahrenheit-only "
             "(see #402). Fit a C-unit cell before enabling this path."
         )
-    # Apply calibration only when a cell is provided; with none, use the raw fit
-    # wrapped as a Gaussian (df=None) predictive.
-    calibrated: Literal["uncalibrated", "bias_only", "full"] = "uncalibrated"
-    predictive = Predictive(mu=gaussian.mu, sigma=gaussian.sigma)
-    if calibration is not None:
-        predictive, calibrated = apply_calibration(gaussian, calibration, min_sigma=min_sigma)
+    # Route every path through apply_calibration (#452): a missing cell and a
+    # below-min-bias cell are the same "uncalibrated" regime, so both get the
+    # UNCALIBRATED_WIDEN widening floored at min_sigma. The old None shortcut
+    # predates apply_calibration and skipped the widening, leaving displayed
+    # p_win/edge inconsistent between the two equivalent paths.
+    predictive, calibrated = apply_calibration(gaussian, calibration, min_sigma=min_sigma)
     outcomes: list[RankedOutcome] = []
     excluded: list[str] = []
     for bucket in market.buckets:

@@ -16,6 +16,7 @@ from rainmaker.config import (
     PRECIP_VAR_FLOOR,
     STATION_EDGE_DELTA,
     STATION_POLICIES,
+    UNCALIBRATED_WIDEN,
     PrecipStation,
     Station,
     Target,
@@ -384,6 +385,56 @@ def test_evaluate_market_df_stays_none_on_no_calibration():
     report = evaluate_market(market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0)
     assert report.calibrated == "uncalibrated"
     assert report.df is None
+
+
+def test_no_cell_paths_share_widening():
+    """#452: calibration=None and a below-min-bias cell must widen identically.
+
+    Both are the "uncalibrated" regime, so both must route through
+    apply_calibration's widening: sigma = max(raw * UNCALIBRATED_WIDEN, min_sigma).
+    """
+    market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.20)])
+    fs = _forecast_set([70, 70, 71, 71])  # raw fit: mu=70.5, sigma floored at 1.5
+    none_report = evaluate_market(
+        market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0
+    )
+    few_report = evaluate_market(
+        market,
+        fs,
+        floor=0.5,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.0,
+        calibration=_cal(5),  # exists but n < MIN_CAL_BIAS_SAMPLES -> uncalibrated
+    )
+    assert none_report.calibrated == "uncalibrated"
+    assert few_report.calibrated == "uncalibrated"
+    # Identical widening on both no-cell paths: 1.5 * 1.25 = 1.875.
+    assert none_report.sigma == pytest.approx(1.875)
+    assert few_report.sigma == pytest.approx(1.875)
+    assert none_report.mu == few_report.mu
+    # And therefore identical displayed probabilities.
+    assert [o.p_win for o in none_report.outcomes] == [
+        pytest.approx(o.p_win) for o in few_report.outcomes
+    ]
+
+
+def test_no_cell_widening_respects_min_sigma_floor():
+    """The widened sigma is floored at min_sigma, matching apply_calibration."""
+    market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.20)])
+    # Tight pool: raw sigma ~0, so fit_gaussian floors it at min_sigma=2.0;
+    # widening 2.0 * 1.25 = 2.5 dominates the floor.
+    fs = _forecast_set([70, 70, 70, 70])
+    report = evaluate_market(market, fs, floor=0.5, min_sources=2, min_sigma=2.0, min_edge=0.0)
+    assert report.sigma == pytest.approx(2.5)
+
+
+def test_no_cell_widening_floors_at_min_sigma_when_raw_small():
+    """When raw * UNCALIBRATED_WIDEN dips below min_sigma, the floor binds."""
+    market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.20)])
+    fs = _forecast_set([70, 70, 70, 70])  # raw sigma ~0 -> fit floors at 0.8
+    report = evaluate_market(market, fs, floor=0.5, min_sources=2, min_sigma=0.8, min_edge=0.0)
+    assert report.sigma == pytest.approx(1.0)  # max(0.8 * 1.25, 0.8) = 1.0
 
 
 def test_evaluate_market_df_stays_none_on_no_samples():
@@ -1649,9 +1700,11 @@ def test_c_floor_binds_at_min_sigma_c() -> None:
     )
 
     assert report.sigma is not None
-    # The C floor must bind.
-    assert report.sigma == pytest.approx(MIN_SIGMA_C, abs=1e-6)
-    # And the floored value must be distinctly less than the F floor,
+    # The widened C floor must bind (#452: the no-cell path now widens by
+    # UNCALIBRATED_WIDEN like every other uncalibrated path). Using the F floor
+    # instead would give MIN_SIGMA_F * UNCALIBRATED_WIDEN = 1.875.
+    assert report.sigma == pytest.approx(MIN_SIGMA_C * UNCALIBRATED_WIDEN, abs=1e-6)
+    # And the widened value must be distinctly less than the raw F floor,
     # proving this test would fail if the wrong floor were passed.
     assert report.sigma < MIN_SIGMA_F
 
