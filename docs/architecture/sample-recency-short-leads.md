@@ -74,8 +74,10 @@ Staleness distribution (day resolution, US cities):
 
 | Source | n | stale fraction (staleness 0) | histogram |
 | --- | ---: | ---: | --- |
-| nws | 5,442 | 99.3% fresh | 0: 5406, 1: 34, 5: 2 |
+| nws | 5,442 | 99.3% fresh | 0: 5406, 1: 34, 97: 2 |
 | open-meteo | 44,648 | 100% fresh | 0: 44648 |
+
+(The staleness-97 pair is explained below.)
 
 Per-cell statistics (fresh = staleness 0, stale = >= 1 day):
 
@@ -87,6 +89,23 @@ Per-cell statistics (fresh = staleness 0, stale = >= 1 day):
 | open-meteo | 0 | 20,960 | 0 | 0.0% | - | - | 2.36 | - | - |
 | open-meteo | 1 | 19,112 | 0 | 0.0% | - | - | 2.66 | - | - |
 | open-meteo | 2 | 4,576 | 0 | 0.0% | - | - | 2.82 | - | - |
+
+Table completeness: the six rows above cover 50,088 of the 50,090 US-city
+rows. The per-lead counts sum to 5,440 (NWS) and 44,648 (Open-Meteo), so
+the residual against 5,442 is exactly the 2-row staleness-97 pair described
+below, not a fetch-lead-3 cell; recomputed from the export, there are no
+fetch-lead-3 rows at all. Full reconciliation: 5,442 = 1,551 + 2,759 +
+1,130 + 2 (NWS) and 44,648 = 20,960 + 19,112 + 4,576 (Open-Meteo).
+
+The staleness-97 pair: two NWS rows (market KXHIGHNY-26MAY31 and market m1,
+both NYC, settlement 2026-05-31) whose `fetched_at` is 2026-09-04, four
+months after settlement. Both come from September runs that re-recorded
+already-settled markets (m1 is a manual test market, slug `s`), so they are
+not live forecasts; the fetch-date arithmetic correctly scores them as
+ancient, and they carry no information about routine fetch staleness. Their
+|error| (MAE 12.60) reflects the absurd 97-day proxy gap, not forecast
+quality. Everything the decision rule reads comes from the lead 0-2 band,
+which excludes them.
 
 NWS by variable (leads 0-2): TMAX rho -0.016/-0.046/-0.084 (p 0.53/0.055/0.045),
 TMIN rho +0.017/-0.009 (adequate-n leads only). Nothing reaches |rho| >= 0.10
@@ -111,8 +130,9 @@ stale MAE ratio is below 1.0, opposite of the predicted degradation).
 FRESHNESS_LIMIT_HOURS stays flat 24h for all leads. The 23h-vs-1h concern is
 real in principle but unanswerable on this history: prune destroyed
 within-day resolution, and the flat gate has never admitted a measurably
-stale sample at short leads (worst observed staleness is 1 day on 0.5-0.9%
-of NWS rows).
+stale sample at short leads (worst observed staleness in the lead 0-2 band
+is 1 day, on 0.5-0.9% of NWS rows; the only higher values in the export
+are the retro-inserted staleness-97 pair, which is not a live fetch).
 
 Recommendation logged on batch #424: persist `issued_at` in `forecasts`
 prospectively (a store change, out of scope here, future batch). Today the
