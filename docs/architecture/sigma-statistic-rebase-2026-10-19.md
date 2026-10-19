@@ -172,3 +172,120 @@ historical-sigma reconstruction, size:L territory).
   low-spread cells. Breaches are dominated by wide-dispersion cells and the
   sensitivity arm strengthened the result, so the MATERIAL verdict stands,
   but #462 must not treat this proxy as exact.
+
+## Successor appendix 2026-10-19: regime refit v3 (#462)
+
+Implements the re-basing this document parked. Decision, code, and empirics
+below; the operator sequence is docs/operations/README.md's regime-refit
+runbook (merge, trigger the prod backfill BEFORE reading new tail-check
+numbers).
+
+### Decision
+
+One canonical sigma statistic, enforced in code. The #426 all-groups
+mixture computation moved from fit_gaussian's inline ensemble arm into a
+shared helper (probability/distribution.py, mixture_sigma); the apply side
+(fit_gaussian) delegates to it, and EVERY calibration-fit pair builder
+derives sigma = max(mixture_sigma(pool), MIN_SIGMA_F), ensemble_var =
+sigma**2, regardless of source. The floor is MIN_SIGMA_F on both sides,
+closing the proxy infidelity disclosed above in the correct direction (the
+old archive path floored at 1e-6; the #459 script approximated the floor by
+accident, here it is the specification). Asserted by the parity test in
+tests/test_distribution.py (identical synthetic groups through fit_gaussian
+and through the helper yield the same sigma) and pinned per path in
+tests/test_backfill.py and tests/test_backfill_recon.py.
+
+On the archive fallback the pool is one singleton group per deterministic
+model, so the unified statistic degenerates to the population std (ddof=0)
+of the model scalars, replacing the old ddof=1 stdev. Residual data
+richness (archive pools lack NWS and ensemble groups, so their sigma runs
+narrow) is a disclosed data limitation, inert for cells below
+MIN_CAL_SAMPLES and disclosed for the few full-calibration fallback cells
+(TMIN, lead 3).
+
+### Routing
+
+Hybrid, per (station, variable, lead), implemented in backfill.py's
+run_backfill (optional conn) over backfill_recon's reconstructed pairs:
+
+1. Eligibility: a reconstructed pair is usable only if its run consumed the
+   current sampling regime. TMAX sampling never changed, so all TMAX pools
+   are eligible. TMIN was retargeted to the calendar-day low at the #426
+   ship date (2026-10-19); every stored TMIN pool predates it and carries
+   the night-period low as mu, so pre-retarget TMIN pairs are excluded by a
+   dated constant (backfill_recon.TMIN_RETROFIT_DATE), not blended or
+   bias-corrected.
+2. Source: if eligible recon n >= MIN_CAL_SAMPLES (30), fit on recon pairs
+   alone; otherwise fit on archive pairs re-expressed under the unified
+   statistic.
+3. Recon pairs are clipped to the same season window as the archive path
+   (cross-season contamination guard, symmetric with the archive-side
+   seasonal-fit test).
+
+Empirical routing table (dry-run against prod, read-only; posted on #462):
+TMAX leads 0-2 route recon on all eight dense stations (n 42-45 per cell
+after the season clip, roughly half the #459 93-day population as
+projected); TMAX lead 3, all TMIN cells, and the thinner stations ride the
+archive fallback. TMIN converges to recon as post-retarget history accrues;
+the routing rule flips those cells automatically, no code change needed.
+
+Lead fidelity: the forecasts table's own lead_time column (#460) is the
+primary lead, not the UTC-day arithmetic this document's measurement used.
+Against prod the two derivations agree on 3687 of 3691 comparable rows; the
+4 disagreements are late-evening runs the UTC-day rule read one lead high,
+i.e. the column is the fix for the limitation listed above. NULL lead_time
+prevalence in the window: zero (66911 of 66911 forecast rows populated).
+
+### Refit movement (pre-flip replay, read-only, no save)
+
+Two comparisons, scripts/regime_refit_v3_preflip.py against prod:
+
+1. Against the #459 published table (93-day population): recon var_b sits in
+   the same magnitude band (0 to ~1.2), signs balanced (19 up / 28 down),
+   median |delta| 0.18. Expected: the population halves (season clip, n~45)
+   and the inclusion rules changed on purpose (see 2).
+2. Against the #459 apply arm RE-RUN on the closest comparable window
+   (--since 2026-09-01, same script, same prod): median |delta| 0.16, mean
+   0.21. Since CP1 made both arms share one statistic (mixture_sigma,
+   parity-tested), any residual delta is population composition, not the
+   statistic. The composition differences are deliberate #462 fixes:
+   - TMIN cells move most (KDAL TMIN L0 +0.60, KATL TMIN L0/+1 ~ +0.41)
+     because the recon path EXCLUDES pre-#426-retrofit TMIN pairs that the
+     #459 reconstruction blended in.
+   - The largest TMAX deltas sit on the KSFO TMAX L1/L2, KSEA TMAX L2 and
+     KBKF TMAX L2 cells (KSFO TMAX L1 var_b 1.042 -> 0.257, delta -0.785;
+     KSFO TMAX L2 delta -0.765). These cells hold recon n 42-44 after the
+     season clip and therefore route RECON in production: these values DO
+     ship, and the movement is the re-unification working as intended on
+     dense cells (var_a compensates as EMOS reallocates between terms).
+     An earlier draft of this paragraph, written before the season clip,
+     wrongly described them as n < 30 archive-routed; corrected after the
+     tester's reproduction caught it.
+   - Cells that route recon in production move modestly at lead 0: TMAX
+     lead-0 deltas are within +-0.15 on 7 of 8 dense stations (KATL +0.05,
+     KBKF +0.05, KDAL -0.09, KHOU -0.05, KSEA -0.09, KSFO -0.11, KORD
+     +0.13; KLGA -0.159 is the eighth), with var_a compensating as EMOS
+     reallocates between terms.
+
+Verdict: broad reproduction modulo window and population, as the checkpoint
+pre-registered; no unexplained divergence. The checkpoint passed.
+
+Bonus, realized: recon lead-0 pairs cure the archive lead-0 optimism caveat
+(first paragraph of backfill.py's docstring) wherever lead 0 routes recon,
+because the reconstructed pool is what the live run actually saw, not the
+fresher Previous Runs day-0 value.
+
+### Tail-check comparison slot (CP5, operator, post-merge)
+
+Expectation setting: immediate post-refit tail-check has near-zero data
+since REGIME_SINCE 2026-10-20; the honest comparison is the trend over the
+following weeks against the 2026-10-19 #426 appendix baseline, plus the
+pre-flip replay above as the leading indicator. Regression, if any, is
+recorded here and on #462.
+
+Disclosure: fit_gaussian's det-only fallback arm (ensemble-less pools)
+computes a ddof=1 pooled sample std, while the recon/archive pair builders
+use the unified ddof=0 population statistic. Unreachable in the normal
+#400/#426 regime (live pools carry ensemble members; archive pairs go
+through the pair builders, not fit_gaussian); noted so the two definitions
+are not mistaken for one.

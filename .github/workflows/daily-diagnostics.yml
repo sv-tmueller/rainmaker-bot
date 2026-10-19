@@ -42,11 +42,12 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           # REGIME_SINCE is the active calibration regime's start (first full day
-          # after the 2026-10-18 refit v2: #400 sigma extension + #426 TMIN
-          # calendar-day retarget); bump this value in the same change that
+          # after the 2026-10-19 refit v3: #462 unified sigma statistic, recon
+          # routing, and the archive re-expression; the v2 date stays in the
+          # refit v2 appendix); bump this value in the same change that
           # records the next refit (see docs/operations/README.md). Single-sourced
           # here for every --since call below.
-          REGIME_SINCE: "2026-10-19"
+          REGIME_SINCE: "2026-10-20"
         run: |
           case "$DATABASE_URL" in
             postgres://*|postgresql://*) ;;

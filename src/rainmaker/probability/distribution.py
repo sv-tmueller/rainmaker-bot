@@ -18,6 +18,34 @@ def _group_key(sample: ForecastSample) -> tuple[str, str]:
     return (sample.source, sample.model)
 
 
+Groups = dict[tuple[str, str], list[float]]
+
+
+def mixture_sigma(groups: Groups) -> float:
+    """The #426 all-groups mixture sigma, the ONE canonical sigma statistic.
+
+    Equal weight per (source, model) group; a group's component variance is
+    its within-group sample variance (0 for singletons); sigma^2 is the mean
+    over groups of (component variance + squared distance of the group mean
+    from the grand mean of group means). On a det-only pool this degenerates
+    to the population std (ddof=0) of the model scalars.
+
+    #462 invariant: this is the statistic BOTH sides of calibration consume -
+    fit_gaussian applies it to the live pool, and the calibration fit path
+    (backfill archive pairs and backfill_recon reconstructed pairs) derives
+    every CalibrationPair's sigma/ensemble_var from it, floored at
+    MIN_SIGMA_F on both sides. Fit and apply must never diverge onto
+    different sigma definitions again (the #459 measured gap).
+    """
+    means = np.array([float(np.mean(v)) for v in groups.values()], dtype=float)
+    variances = np.array(
+        [float(np.var(v, ddof=1)) if len(v) >= 2 else 0.0 for v in groups.values()],
+        dtype=float,
+    )
+    m_bar = means.mean()
+    return float(np.sqrt(np.mean(variances + (means - m_bar) ** 2)))
+
+
 def fit_gaussian(samples: list[ForecastSample], min_sigma: float = MIN_SIGMA_F) -> Gaussian:
     """Fit an uncalibrated Gaussian to the pooled sample values.
 
@@ -60,17 +88,10 @@ def fit_gaussian(samples: list[ForecastSample], min_sigma: float = MIN_SIGMA_F) 
     if ens_groups:
         # #400/#426: every group (det + ens) joins the mixture as one
         # component; the deterministic-vs-ensemble disagreement then widens
-        # sigma instead of being invisible to it.
-        m_k = np.array(
-            [np.mean(vals) for vals in groups.values()],
-            dtype=float,
-        )
-        v_k = np.array(
-            [np.var(vals, ddof=1) if len(vals) >= 2 else 0.0 for vals in groups.values()],
-            dtype=float,
-        )
-        m_bar = m_k.mean()
-        sigma = float(np.sqrt(np.mean(v_k + (m_k - m_bar) ** 2)))
+        # sigma instead of being invisible to it. Delegates to the shared
+        # mixture_sigma helper (#462): the apply side of the canonical
+        # statistic the calibration fit path also consumes.
+        sigma = mixture_sigma(groups)
     else:
         values = np.array([s.value_f for s in samples], dtype=float)
         sigma = float(values.std(ddof=1)) if values.size >= 2 else 0.0

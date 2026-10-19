@@ -59,6 +59,7 @@ from rainmaker.probability.calibration import (  # noqa: E402
     fit_calibration,
     fit_student_t_free_df,
 )
+from rainmaker.probability.distribution import mixture_sigma  # noqa: E402
 from rainmaker.store.db import connect  # noqa: E402
 
 DECISION_ABS_DVAR_B = 0.05  # pre-registered immateriality threshold (#459)
@@ -101,19 +102,11 @@ def archive_style_sigma(
 def extended_mixture_sigma(groups: dict[tuple[str, str], list[float]]) -> float:
     """The apply-arm statistic: the #426 all-groups mixture variance.
 
-    Equal weight per (source, model) group; a group's component variance is
-    its within-group sample variance (0 for singletons); sigma^2 is the mean
-    over groups of (component variance + squared distance of the group mean
-    from the grand mean of group means). Verbatim from fit_gaussian's
-    ensemble arm (probability/distribution.py).
+    Thin alias of the shared rainmaker.probability.distribution.mixture_sigma
+    helper (#462 extracted it so fit and apply cannot drift apart again);
+    kept for the call sites below, which predate the extraction.
     """
-    means = np.array([float(np.mean(v)) for v in groups.values()], dtype=float)
-    variances = np.array(
-        [float(np.var(v, ddof=1)) if len(v) >= 2 else 0.0 for v in groups.values()],
-        dtype=float,
-    )
-    m_bar = means.mean()
-    return float(np.sqrt(np.mean(variances + (means - m_bar) ** 2)))
+    return mixture_sigma(groups)
 
 
 def grouped_mu(groups: dict[tuple[str, str], list[float]]) -> float:

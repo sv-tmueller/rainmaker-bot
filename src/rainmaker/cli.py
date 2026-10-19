@@ -334,7 +334,7 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
             for var in variables:
                 now = _now_iso()
                 try:
-                    results = run_backfill(station, var, leads, start, end, client)
+                    results = run_backfill(station, var, leads, start, end, client, conn)
                 except (httpx.HTTPError, ValueError) as exc:
                     if isinstance(exc, ValidationError):
                         raise  # schema bug, not a data gap; fail loud

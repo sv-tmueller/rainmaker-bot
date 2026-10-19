@@ -13,10 +13,26 @@ std across the deterministic models) rather than a true ensemble spread. That is
 an approximation of the live pooled distribution; tighter calibration grows from
 the bot's own persisted runs over time.
 
+#462 unified statistic: every CalibrationPair, regardless of source, carries
+sigma = max(mixture_sigma(pool_groups), MIN_SIGMA_F) and ensemble_var =
+sigma**2. On the archive path the pool is one singleton group per
+deterministic model, so mixture_sigma degenerates to the POPULATION std
+(ddof=0) of the model scalars, replacing the old ddof=1 stdev, and the floor
+is MIN_SIGMA_F (was 1e-6), matching the live consumer exactly. Data richness
+still differs (archive pools lack NWS and ensemble groups, so their sigma
+runs narrow); that residual is a disclosed data limitation, not a statistic
+mismatch.
+
+Cells whose runs consumed the current sampling regime and accumulated enough
+history route to the reconstruction path instead (backfill_recon.build_recon_pairs,
+via the optional conn): those pairs ARE live-shape pools, so the residual does
+not apply to them.
+
 Lead-0 caveat: it is requested as `temperature_2m_previous_day0`, but Open-Meteo
 normalizes the response to the un-suffixed `temperature_2m_<model>` key, which is
 the most recent model run for each archived hour. That is slightly fresher than
 what the live morning run actually sees, so the lead-0 fit is mildly optimistic.
+Recon lead-0 pairs cure this caveat where they are dense enough to route recon.
 
 fetch_historical_forecasts (the historical-forecast archive, lead ~1 only) stays
 in place for backtest.py, which depends on its calendar-date framing; it is a
@@ -26,13 +42,16 @@ separate source from the Previous Runs path above.
 import calendar
 import statistics
 from datetime import date, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from rainmaker.backfill_recon import build_recon_pairs
 from rainmaker.config import (
     BACKFILL_DAYS,
     CALIBRATION_FAMILY,
+    MIN_CAL_SAMPLES,
+    MIN_SIGMA_F,
     OPENMETEO_MODELS,
     Station,
     season_start_month,
@@ -48,7 +67,10 @@ from rainmaker.probability.calibration import (
     fit_calibration,
     fit_student_t_free_df,
 )
-from rainmaker.probability.distribution import Gaussian
+from rainmaker.probability.distribution import Gaussian, mixture_sigma
+
+if TYPE_CHECKING:
+    from rainmaker.store.db import Conn
 
 NCEI_URL = "https://www.ncei.noaa.gov/access/services/data/v1"
 HISTORICAL_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
@@ -180,6 +202,18 @@ def fetch_historical_forecasts(
     return out
 
 
+def _unified_sigma(model_scalars: list[float]) -> float:
+    """The archive pool's sigma under the #462 unified statistic.
+
+    One singleton group per deterministic model, so mixture_sigma degenerates
+    to the population std (ddof=0) of the scalars; floored at MIN_SIGMA_F
+    like the live consumer (the old path floored at 1e-6, which #459 measured
+    as one half of the fit-vs-apply gap).
+    """
+    groups = {("open-meteo", f"m{i}"): [v] for i, v in enumerate(model_scalars)}
+    return max(mixture_sigma(groups), MIN_SIGMA_F)
+
+
 def fetch_historical_lead_forecasts(
     station: Station,
     leads: tuple[int, ...],
@@ -193,7 +227,8 @@ def fetch_historical_lead_forecasts(
     One request covers every requested lead. Each Gaussian is built the same way
     fetch_historical_forecasts builds one: the daily max (TMAX) or min (TMIN) of the
     hourly temperature the models forecast `lead` days before the valid day, mu =
-    mean across models, sigma = stdev across models (at least two models required
+    mean across models, sigma = the #462 unified statistic on the model scalars
+    (population std, ddof=0, floored at MIN_SIGMA_F; at least two models required
     per date; dates with fewer are dropped). `previous_dayN` is an hourly-only
     suffix, so the daily extreme is reduced here.
 
@@ -245,9 +280,7 @@ def fetch_historical_lead_forecasts(
         for day, extremes in per_model_daily.items():
             if len(extremes) < 2:
                 continue  # need at least two models to estimate a spread
-            gaussians[day] = Gaussian(
-                mu=statistics.fmean(extremes), sigma=max(statistics.stdev(extremes), 1e-6)
-            )
+            gaussians[day] = Gaussian(mu=statistics.fmean(extremes), sigma=_unified_sigma(extremes))
         out[lead] = gaussians
     return out
 
@@ -335,6 +368,7 @@ def run_backfill(
     start: date,
     end: date,
     client: httpx.Client,
+    conn: "Conn | None" = None,
 ) -> dict[int, tuple[Calibration, Accuracy]]:
     """Fetch history, build pairs, fit one calibration cell per lead, measure accuracy.
 
@@ -342,20 +376,46 @@ def run_backfill(
     overlapping actual are omitted rather than erroring (not every lead has
     enough season-window history to fit).
 
+    Routing (#462): when conn is given, cells whose reconstructed pairs
+    (backfill_recon.build_recon_pairs; live-shape pools from the forecasts
+    table, regime-eligible only) reach MIN_CAL_SAMPLES fit on those pairs
+    alone; every other cell falls back to the archive pairs re-expressed
+    under the unified statistic. conn=None keeps the pure archive behavior
+    (the pre-#462 path, still used by tests and offline runs without a
+    store).
+
     The fit family is dispatched per variable via CALIBRATION_FAMILY (#291):
     TMIN cells fit through fit_student_t_free_df (df set); every other
     variable stays on the untouched Gaussian fit_calibration (df=None).
     """
-    by_lead = fetch_historical_lead_forecasts(station, leads, start, end, client, variable)
-    actuals = venue_actuals(station, start, end, client, variable)
+    recon_pairs: dict[tuple[str, str, int], list[CalibrationPair]] = {}
+    if conn is not None:
+        # Season-window clip, same invariant as the archive path: recon pairs
+        # from runs on/after the window start only, so summer history cannot
+        # contaminate fall cells (test_seasonal_fit_avoids_cross_season_bias
+        # pins the archive side of this principle).
+        recon_pairs, _counts = build_recon_pairs(conn, since=start.isoformat())
     fitter = (
         fit_student_t_free_df
         if CALIBRATION_FAMILY.get(variable) == "student_t"
         else fit_calibration
     )
+    archive: dict[int, dict[date, Gaussian]] | None = None
+    actuals: dict[date, float] | None = None
     out: dict[int, tuple[Calibration, Accuracy]] = {}
     for lead in leads:
-        pairs = build_pairs(by_lead[lead], actuals)
+        cell_recon = recon_pairs.get((station.icao, variable, lead), [])
+        if len(cell_recon) >= MIN_CAL_SAMPLES:
+            pairs = cell_recon
+        else:
+            # Lazy archive fallback: fetched at most once, only when some
+            # cell actually routes archive.
+            if archive is None:
+                archive = fetch_historical_lead_forecasts(
+                    station, leads, start, end, client, variable
+                )
+                actuals = venue_actuals(station, start, end, client, variable)
+            pairs = build_pairs((archive or {}).get(lead, {}), actuals or {})
         if pairs:
             out[lead] = (
                 fitter(station.icao, variable, lead, pairs),
