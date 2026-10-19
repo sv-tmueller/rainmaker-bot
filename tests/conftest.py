@@ -44,11 +44,11 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def refuse_postgres_database_url() -> None:
-    """Belt-and-braces backstop for the pytest_configure hook above.
+    """Defense-in-depth backstop for the pytest_configure hook above.
 
-    Covers exotic invocations that skip conftest-level configure hooks
-    (e.g. a future plugin reorder); harmless duplication when the hook
-    already fired.
+    Any invocation that loads this conftest runs both; this fixture exists
+    purely as redundant protection for a prod-corruption guard, so the
+    hook alone never has to be load-bearing.
     """
     if _database_url_is_postgres(os.environ.get("DATABASE_URL")):
         pytest.exit(_DSN_GUARD_MESSAGE, returncode=3)

@@ -19,6 +19,8 @@ import os
 import subprocess
 import sys
 
+# Duplicated from tests/conftest.py on purpose: importing conftest in-process
+# would trip the guard on this very suite, hence the subprocess isolation.
 DSN_GUARD_MESSAGE = "REFUSING TO RUN TESTS: DATABASE_URL is a Postgres DSN"
 GUARDED_DSN = "postgresql://guard-user:hunter2-topsecret@example.invalid/db"
 GUARDED_PASSWORD = "hunter2-topsecret"
@@ -31,6 +33,9 @@ def _run_pytest(workdir_env: dict[str, str]) -> subprocess.CompletedProcess[str]
         for k, v in os.environ.items()
         if k != "PYTEST_CURRENT_TEST"  # else nested pytest misparses its header
     }
+    # Pop, not merely overwrite: the absent-DATABASE_URL case below must
+    # exercise actual absence, so the inherited value never leaks through.
+    env.pop("DATABASE_URL", None)
     env.update(workdir_env)
     return subprocess.run(
         [
