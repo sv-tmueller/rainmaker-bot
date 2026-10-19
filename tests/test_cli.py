@@ -1798,7 +1798,9 @@ def test_backfill_invalid_city_names_bad_key_and_valid_keys(monkeypatch, tmp_pat
     monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
 
     with pytest.raises(SystemExit) as exc:
-        cli.main(["backfill", "--city", "ORD", "--variable", "TMAX", "--db", str(tmp_path / "t.db")])
+        cli.main(
+            ["backfill", "--city", "ORD", "--variable", "TMAX", "--db", str(tmp_path / "t.db")]
+        )
 
     assert exc.value.code == 1
     err = capsys.readouterr().err
@@ -1819,9 +1821,7 @@ def test_backfill_invalid_city_makes_no_network_calls(monkeypatch, tmp_path):
         cli.main(["backfill", "--city", "ORD", "--db", str(tmp_path / "t.db")])
 
 
-def test_backfill_summary_counts_fitted_vs_failed_station_variables(
-    monkeypatch, tmp_path, capsys
-):
+def test_backfill_summary_counts_fitted_vs_failed_station_variables(monkeypatch, tmp_path, capsys):
     """Partial runs are legible: one final line, fitted vs failed station-variables."""
     from rainmaker.config import STATIONS
 
