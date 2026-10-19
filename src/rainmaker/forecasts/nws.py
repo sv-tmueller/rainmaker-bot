@@ -64,22 +64,30 @@ def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]
 
 
 def parse_hourly_low(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]:
-    """Calendar-day low from the hourly product, restricted to the target local day."""
+    """Calendar-day low from the hourly product, restricted to the target local day.
+
+    A sample is emitted ONLY when the target day is fully covered: all 24 local
+    hours present, first 00:00 and last 23:00. Lead-0 targets fetched in the
+    afternoon routinely get a product covering only the remainder of the day;
+    the already-observed morning min is absent, so the min over the surviving
+    hours is biased HIGH and fabricates edge on higher buckets. Partial
+    coverage yields no sample; the pool proceeds on the other sources.
+    """
     props = forecast_json["properties"]
     issued_at = datetime.fromisoformat(props["updateTime"])
     tz = ZoneInfo(target.station.timezone)
     issued_local = issued_at.astimezone(tz).date()
-    temps: list[float] = []
+    temps_by_hour: dict[int, float] = {}
     for period in props["periods"]:
         start_local = datetime.fromisoformat(period["startTime"]).astimezone(tz)
         if start_local.date() != target.local_date:
             continue
         if period["temperatureUnit"] != "F":
             raise ValueError(f"expected Fahrenheit, got {period['temperatureUnit']}")
-        temps.append(float(period["temperature"]))
-    if not temps:
+        temps_by_hour[start_local.hour] = float(period["temperature"])
+    if len(temps_by_hour) != 24 or min(temps_by_hour) != 0 or max(temps_by_hour) != 23:
         return []
-    return [_make_sample(target, issued_at, issued_local, min(temps))]
+    return [_make_sample(target, issued_at, issued_local, min(temps_by_hour.values()))]
 
 
 def fetch_raw(target: Target, client: httpx.Client) -> dict[str, Any]:

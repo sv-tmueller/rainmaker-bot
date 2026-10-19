@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -68,6 +69,33 @@ def test_parse_tmin_empty_when_target_day_absent_from_horizon():
     # horizon) also yields no sample rather than a garbage min.
     target_partial = build_target("NYC", "TMIN", date(2026, 10, 26))
     assert parse(_hourly_fixture(), target_partial) == []
+
+
+def test_parse_tmin_rejects_partially_covered_target_day():
+    # Routine lead-0 fetches happen mid-afternoon: the hourly product starts
+    # at the current hour, so the already-observed morning is absent. Taking
+    # the min over the surviving hours biases the sample HIGH and fabricates
+    # edge on higher buckets. A partial day must yield NO sample.
+    data = _hourly_fixture()
+    tz = ZoneInfo("America/New_York")
+    kept = []
+    for period in data["properties"]["periods"]:
+        lt = datetime.fromisoformat(period["startTime"]).astimezone(tz)
+        if lt.date() == date(2026, 10, 20) and lt.hour < 10:
+            continue  # simulate an afternoon fetch: morning hours gone
+        kept.append(period)
+    data["properties"]["periods"] = kept
+    target = build_target("NYC", "TMIN", date(2026, 10, 20))
+    assert parse(data, target) == []
+
+
+def test_parse_tmin_accepts_full_coverage_across_dst_free_day():
+    # Sanity for the coverage gate itself: a complete 24-hour local day
+    # (00:00 through 23:00) still yields the calendar-day min.
+    target = build_target("NYC", "TMIN", date(2026, 10, 24))
+    samples = parse(_hourly_fixture(), target)
+    assert len(samples) == 1
+    assert samples[0].value_f == 45.0
 
 
 def test_fetch_calls_points_then_forecast_and_sets_user_agent(httpx_mock):

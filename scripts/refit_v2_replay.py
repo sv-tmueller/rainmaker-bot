@@ -279,6 +279,11 @@ def score_arm(
         if not pool or not spec:
             continue
         try:
+            # Lead from the run's UTC-start date minus the settlement date:
+            # the store records started_at in UTC, so a run started after
+            # 20:00 ET already rolls to the next UTC day and reads one lead
+            # higher than the local-calendar interpretation the live
+            # pipeline's ForecastSample.lead_time_days uses.
             lead = (
                 date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
             ).days
@@ -293,7 +298,10 @@ def score_arm(
         mu = pooled_mu(groups)
         sigma = old_sigma(groups, ens_keys) if arm == "old" else new_sigma(groups)
         cell = cal_table.get((r["city_icao"], r["variable"], lead))
-        pmu, psig, pdf = apply_cell(mu, max(sigma, 1e-6), cell, MIN_SIGMA_F)
+        # Floor the raw sigma at MIN_SIGMA_F before the cell, mirroring
+        # fit_gaussian, so the var_b * sigma^2 term sees the same input the
+        # live pipeline feeds apply_calibration.
+        pmu, psig, pdf = apply_cell(mu, max(sigma, MIN_SIGMA_F), cell, MIN_SIGMA_F)
         grp = (r["variable"], lead)
         pits[grp].append(cdf_at(pmu, psig, pdf, r["actual_value"]))
         for entry in spec:
@@ -387,9 +395,8 @@ def main() -> int:
             f"{'var|lead':<10} {'n':>6} {'Brier old':>10} {'Brier new':>10}"
             f" {'d(Brier)':>9} {'u10 o/n':>13} {'l10 o/n':>13} {'u05 o/n':>13}"
         )
-        hdr = cols
-        print(hdr)
-        print("-" * len(hdr))
+        print(cols)
+        print("-" * len(cols))
         keys = sorted(set(arms["old"]) | set(arms["new"]))
         for k in keys:
             o, nw = arms["old"].get(k), arms["new"].get(k)
