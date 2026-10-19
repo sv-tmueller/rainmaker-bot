@@ -9,6 +9,7 @@ from here rather than from a specific venue package.
 import re
 from datetime import UTC, date, datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict
 
@@ -94,6 +95,31 @@ class Market(BaseModel):
     target: Target
     buckets: list[Bucket]
     venue: str = "polymarket"  # "kalshi" when discovered from Kalshi
+
+
+# ---------------------------------------------------------------------------
+# Canonical lead (#460, implements #438)
+# ---------------------------------------------------------------------------
+
+
+def canonical_lead(target: Target, now: datetime) -> int:
+    """THE lead ruler: station-local calendar-day difference to the target.
+
+    Lead is how many local calendar days away the target settles, the quantity
+    the markets settle on. Every call site that tags or gates on lead derives
+    from here: the cli gate/calibration load (anchored at the run instant), NWS
+    sample tagging (anchored at issuance), and Open-Meteo sample tagging
+    (anchored at fetch). The rulers they replaced agreed outside the 00:00-06:00
+    UTC cron window and diverged inside it, because UTC-today runs one day
+    ahead of station-local today for every US station; a naive UTC ruler then
+    both understated tomorrow's lead and marked today's still-in-play local
+    day as settled. `now` must be timezone-aware; a naive instant would be read
+    in the machine's local zone and silently pick the wrong calendar day.
+    """
+    if now.tzinfo is None:
+        raise ValueError(f"canonical_lead needs an aware instant, got naive: {now!r}")
+    local_today = now.astimezone(ZoneInfo(target.station.timezone)).date()
+    return (target.local_date - local_today).days
 
 
 # ---------------------------------------------------------------------------

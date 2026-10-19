@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from rainmaker.config import Target
+from rainmaker.domain import canonical_lead
 from rainmaker.forecasts.base import ForecastSample
 
 NWS_BASE = "https://api.weather.gov"
@@ -13,8 +14,8 @@ NWS_BASE = "https://api.weather.gov"
 def _make_sample(
     target: Target,
     issued_at: datetime,
-    issued_local_date: date,
     value_f: float,
+    lead_time_days: int,
 ) -> ForecastSample:
     return ForecastSample(
         source="nws",
@@ -23,7 +24,7 @@ def _make_sample(
         station=target.station.icao,
         variable=target.variable,
         target_date=target.local_date,
-        lead_time_days=(target.local_date - issued_local_date).days,
+        lead_time_days=lead_time_days,
         value_f=value_f,
         issued_at=issued_at,
     )
@@ -83,7 +84,9 @@ def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]
     props = forecast_json["properties"]
     issued_at = datetime.fromisoformat(props["updateTime"])
     tz = ZoneInfo(target.station.timezone)
-    issued_local = issued_at.astimezone(tz).date()
+    # Issuance anchors the canonical lead (#460): the product describes the
+    # world as of its update time, so the sample's age ruler is that instant.
+    lead = canonical_lead(target, issued_at)
 
     # TMAX is the daytime high on the target day, taken from the periods
     # product. TMIN is the CALENDAR-DAY low Polymarket settles on, taken from
@@ -116,7 +119,7 @@ def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]
         return []
     if period["temperatureUnit"] != "F":
         raise ValueError(f"expected Fahrenheit, got {period['temperatureUnit']}")
-    return [_make_sample(target, issued_at, issued_local, float(period["temperature"]))]
+    return [_make_sample(target, issued_at, float(period["temperature"]), lead)]
 
 
 def parse_hourly_low(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]:
@@ -132,7 +135,7 @@ def parse_hourly_low(forecast_json: dict[str, Any], target: Target) -> list[Fore
     props = forecast_json["properties"]
     issued_at = datetime.fromisoformat(props["updateTime"])
     tz = ZoneInfo(target.station.timezone)
-    issued_local = issued_at.astimezone(tz).date()
+    lead = canonical_lead(target, issued_at)
     temps_by_hour: dict[int, float] = {}
     for period in props["periods"]:
         start_local = datetime.fromisoformat(period["startTime"]).astimezone(tz)
@@ -143,7 +146,7 @@ def parse_hourly_low(forecast_json: dict[str, Any], target: Target) -> list[Fore
         temps_by_hour[start_local.hour] = float(period["temperature"])
     if len(temps_by_hour) != 24 or min(temps_by_hour) != 0 or max(temps_by_hour) != 23:
         return []
-    return [_make_sample(target, issued_at, issued_local, min(temps_by_hour.values()))]
+    return [_make_sample(target, issued_at, min(temps_by_hour.values()), lead)]
 
 
 def fetch_raw(target: Target, client: httpx.Client) -> dict[str, Any]:
