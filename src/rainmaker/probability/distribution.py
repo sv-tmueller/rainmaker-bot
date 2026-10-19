@@ -66,10 +66,7 @@ def fit_gaussian(samples: list[ForecastSample], min_sigma: float = MIN_SIGMA_F) 
             dtype=float,
         )
         v_k = np.array(
-            [
-                np.var(vals, ddof=1) if len(vals) >= 2 else 0.0
-                for vals in groups.values()
-            ],
+            [np.var(vals, ddof=1) if len(vals) >= 2 else 0.0 for vals in groups.values()],
             dtype=float,
         )
         m_bar = m_k.mean()
