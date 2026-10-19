@@ -386,6 +386,10 @@ OPENMETEO_MODELS = [
 ]
 OPENMETEO_ENSEMBLE_MODELS = ["gfs_seamless", "ecmwf_ifs025", "icon_seamless"]
 OPENMETEO_FORECAST_DAYS = 7
+# Flat for all leads by measurement: age at fetch barely varies in pruned
+# history (NWS stale fraction 0.5-0.9% at leads 0-2, Open-Meteo structurally
+# 0), so per-lead tightening had nothing to bite on. See
+# docs/architecture/sample-recency-short-leads.md (#427).
 FRESHNESS_LIMIT_HOURS = 24
 
 # Probability engine + ranking thresholds (uncalibrated; tune in Phase 4)
