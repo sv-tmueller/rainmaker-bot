@@ -720,6 +720,21 @@ def _tail_check(db_path: str, by_hour: bool = False, since: str | None = None) -
             f"{_fmt_tail_cell(row, 'lower_05', obs_width, exp_width)}"
         )
 
+    print("\n--- Det-vs-ens sigma gap (inter_family_gap, #400 blind spot) ---")
+    print(
+        f"{'Variable':<9} {'Lead':>4} {'n':>4} "
+        f"{'GapMean':>8} {'GapMed':>7} {'RatioMean':>9} {'RatioMed':>9} "
+        f"{'RatioP90':>9} {'>0.5s':>6} {'>1.0s':>6}"
+    )
+    for row in result["gap"]:
+        print(
+            f"{row['variable']:<9} {row['lead_time']:>4} {row['n']:>4} "
+            f"{row['gap_abs_mean']:>8.2f} {row['gap_abs_median']:>7.2f} "
+            f"{row['ratio_mean']:>9.2f} {row['ratio_median']:>9.2f} "
+            f"{row['ratio_p90']:>9.2f} {row['frac_ratio_gt_05']:>6.0%} "
+            f"{row['frac_ratio_gt_10']:>6.0%}"
+        )
+
 
 def _calibration_check(db_path: str) -> None:
     """Print every stored calibration cell. Read-only: never fits or writes."""
