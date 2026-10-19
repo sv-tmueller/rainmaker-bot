@@ -395,9 +395,7 @@ def test_no_cell_paths_share_widening():
     """
     market = _market([_bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.20)])
     fs = _forecast_set([70, 70, 71, 71])  # raw fit: mu=70.5, sigma floored at 1.5
-    none_report = evaluate_market(
-        market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0
-    )
+    none_report = evaluate_market(market, fs, floor=0.5, min_sources=2, min_sigma=1.5, min_edge=0.0)
     few_report = evaluate_market(
         market,
         fs,
