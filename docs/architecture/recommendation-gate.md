@@ -966,3 +966,115 @@ weakly larger than Polymarket's at equal liquidity, and the asks compared by
 `venue-decomp` come from differently-derived books (direct NO quote versus a
 complement of the YES bid). When comparing ROI or edge between venues, treat
 part of any NO-side gap as a measurement artifact, not necessarily alpha.
+
+## Update 2026-10-19: short-lead gate evidence sweep (#430, batch #424)
+
+The question: are `MIN_EDGE` and the YES/NO confidence floors tuned right for
+the horizons that actually produce bets? Leads 0-3 carry essentially all the
+volume: at live policy over the regime window, 778 of 818 replayed bets (95%)
+sit at leads 0-3 (lead 1 alone is 527). So tuning for "the horizons that
+produce bets" and tuning overall are close to the same problem, and the
+answer below is mostly a reconfirmation of the August decisions with one
+candidate exception.
+
+Method. `rainmaker gate-sweep --since 2026-07-18 --leads 0-3` against the
+production store (the new `--leads` filter added in #430 clips the population
+to rows whose computed lead is in the set, before the eligibility pin). Two
+windows are reported: the regime window (since 2026-07-18, the calibration
+regime `REGIME_SINCE`) and the pure-policy window (since 2026-08-14, when
+`MIN_EDGE=0.07` and `MAX_EDGE=0.25` both took effect). The regime window
+still mixes eras: its as-recorded anchor (953 bets) diverges from its
+replayed-live anchor (778) exactly because July-August rows were recorded
+under the older `MIN_EDGE=0.05`/no-cap policy. The pure-policy window's two
+anchors reconcile exactly (536/536), so it is the cleaner ruler; the regime
+window is kept because it is the wider sample.
+
+### Sweep tables (leads 0-3)
+
+Regime window (since 2026-07-18), live policy elsewhere:
+
+| Factor | Value | n | Hit% | PnL | ROI |
+| --- | --- | ---: | ---: | ---: | ---: |
+| min_edge | 0.05 | 831 | 72% | +0.39 | +0.1% |
+| min_edge | 0.07 (live) | 778 | 71% | -0.85 | -0.2% |
+| min_edge | 0.10 | 604 | 69% | +0.11 | +0.0% |
+| min_edge | 0.12 | 488 | 69% | +5.17 | +1.6% |
+| min_edge | 0.15 | 338 | 67% | +4.70 | +2.1% |
+| YES floor | 0.80 (live) | 778 | 71% | -0.85 | -0.2% |
+| YES floor | 0.85 | 778 | 71% | -0.85 | -0.2% |
+| YES floor | 0.90 | 778 | 71% | -0.85 | -0.2% |
+| NO floor | 0.70 | 792 | 70% | +0.81 | +0.1% |
+| NO floor | 0.75 (live) | 778 | 71% | -0.85 | -0.2% |
+| NO floor | 0.80 | 630 | 74% | -3.10 | -0.7% |
+| NO floor | 0.85 | 479 | 76% | -7.75 | -2.1% |
+
+Pure-policy window (since 2026-08-14), live policy elsewhere:
+
+| Factor | Value | n | Hit% | PnL | ROI |
+| --- | --- | ---: | ---: | ---: | ---: |
+| min_edge | 0.05 | 536 | 68% | -13.39 | -3.5% |
+| min_edge | 0.07 (live) | 536 | 68% | -13.39 | -3.5% |
+| min_edge | 0.10 | 430 | 67% | -7.80 | -2.6% |
+| min_edge | 0.12 | 347 | 68% | +1.52 | +0.6% |
+| min_edge | 0.15 | 246 | 67% | +4.19 | +2.6% |
+| YES floor | 0.80 (live) | 536 | 68% | -13.39 | -3.5% |
+| YES floor | 0.85 | 536 | 68% | -13.39 | -3.5% |
+| YES floor | 0.90 | 536 | 68% | -13.39 | -3.5% |
+| NO floor | 0.70 | 536 | 69% | -6.96 | -1.9% |
+| NO floor | 0.75 (live) | 536 | 68% | -13.39 | -3.5% |
+| NO floor | 0.80 | 430 | 70% | -19.16 | -6.0% |
+| NO floor | 0.85 | 327 | 72% | -17.15 | -6.7% |
+
+Note the identical rows across the YES-floor grid: at leads 0-3 every
+replay-eligible bet already clears p_win >= 0.90, so the YES floor is not
+binding anywhere in this population. Tightening it cannot change anything;
+only lowering it could, and lowering a floor admits weaker bets, so the live
+0.80 stands unless evidence emerges that sub-0.80 YES bets pay.
+
+Per-lead corroboration (replayed live policy, since 2026-07-18):
+
+| Lead | n | Hit% | PnL | ROI |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 93 | 66% | -5.49 | -8.3% |
+| 1 | 527 | 72% | +4.91 | +1.3% |
+| 2 | 154 | 69% | -0.73 | -0.7% |
+| 3 | 4 | 100% | +0.46 | +13.0% |
+
+Since 2026-08-14 the same split is bleaker at the short end (lead 0: 65 bets,
+-9.5%; lead 1: 314 bets, -3.9%; lead 2: 154 bets, -0.7%; lead 3: 3 bets,
++14.5%, negligible volume). Lead 0 is the losing horizon on both windows, and
+the OFAT lead axis agrees: excluding lead 0 lifts ROI from -0.2% to +0.9%
+(regime) and from -3.5% to -2.7% (pure era).
+
+### Recommended parameter set (advisory, not shipped)
+
+- `MIN_EDGE`: raise candidate 0.07 -> 0.12. It is the only axis with a
+  consistent, sizable improvement on both windows (regime: -0.2% -> +1.6%;
+  pure era: -3.5% -> +0.6%), monotone-ish toward higher thresholds, and it
+  simultaneously trims the weak lead-0/lead-1 populations (the combined
+  min_edge x excl-lead-0 table peaks at 0.12 too: +2.8% regime). Filed as a
+  recommendation issue for a future batch; not changed here.
+- Confidence floors: keep `CONFIDENCE_FLOOR = 0.80` and
+  `CONFIDENCE_FLOOR_NO = 0.75`. The YES floor is not binding at leads 0-3
+  (identical rows across its whole grid); the NO floor's tighter values cut
+  volume and lose money on both windows. No change.
+- `MAX_EDGE = 0.25`: unchanged; its 2026-08-14 rationale still holds on the
+  short-lead population (uncapped rows are marked lower bounds anyway).
+- Lead 0: the sweep repeats the known lead-0 weakness, but excluding lead 0
+  outright remains a separate decision (it interacts with min_edge; the
+  combined table suggests min_edge 0.12 captures most of the gain without a
+  blanket exclusion). Parked as context for whoever takes the min_edge
+  issue, not a separate recommendation.
+
+### Caveats
+
+- Sample: 536-778 replayed bets per window sounds large, but the Wilson
+  intervals overlap across neighboring min_edge rows; the 0.12-vs-0.07 gap
+  is consistent in direction on both windows but modest in magnitude.
+- Regime window mixes policy eras (see Method); the pure-policy window is
+  barely two months of settled history, all summer-adjacent weather.
+- Population pin: the min_edge 0.05 row is a loosening and therefore a
+  lower bound (footnoted in the sweep output); every tightened row is exact.
+- The sweep grades stored asks; it cannot see fills that never existed.
+- Seasonality: the window is dominated by warm-season TMAX markets; a winter
+  re-run may shift the lead mix.
