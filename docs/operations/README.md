@@ -275,6 +275,13 @@ the workflow log.
 To refresh the cloud database without handling the DSN locally, trigger the
 `backfill` workflow in the GitHub Actions tab (Run workflow). It runs
 `backfill --city all` against Supabase using the `DATABASE_URL` repo secret.
+The run is resilient to one source being down: the backfill client is bounded
+(2 attempts, 10s timeout per request), a failed (station, variable) cell is
+skipped with a stderr line, and a final `backfill summary: fitted X of Y
+station-variables` line makes a partial run legible. If the summary shows
+failures (for example NCEI down, which starves the Kalshi-only KNYC/KMDW
+cells), re-trigger the workflow once the source recovers; cells are upserts,
+so a re-run only fills what is missing.
 
 ### Regime refit rollout (order matters)
 

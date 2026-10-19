@@ -39,7 +39,7 @@ from rainmaker.forecasts.nws import NwsSource
 from rainmaker.forecasts.openmeteo import OpenMeteoSource
 from rainmaker.forecasts.precip import PrecipForecastSet, build_precip_forecast_set
 from rainmaker.gate_sweep import run_sweep
-from rainmaker.httpclient import build_client
+from rainmaker.httpclient import build_backfill_client, build_client
 from rainmaker.kalshi.client import discover_kalshi_markets, discover_kalshi_precip_markets
 from rainmaker.pnl_backtest import backtest_pnl, render_pnl_report
 from rainmaker.polymarket.client import (
@@ -281,11 +281,22 @@ def _distinct_stations() -> list[Station]:
 
 def _backfill_stations(city: str) -> list[Station]:
     """Stations to calibrate: all of them for 'all', else every venue's station
-    for the named city (NYC and Chicago each resolve to two)."""
+    for the named city (NYC and Chicago each resolve to two).
+
+    An unrecognized key fails loudly here: it names the offending key and the
+    valid ones, so a typo reads as a typo, not a crash."""
     stations = _distinct_stations()
     if city == "all":
         return sorted(stations, key=lambda s: s.icao)
-    return [s for s in stations if s.city == city]
+    matched = [s for s in stations if s.city == city]
+    if not matched:
+        valid = ", ".join(sorted({s.city for s in stations}))
+        print(
+            f"unknown --city '{city}'. valid keys: {valid}, all",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    return matched
 
 
 def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_path: str) -> None:
@@ -306,9 +317,10 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
     if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
-    client = build_client(60.0)
+    client = build_backfill_client()
     label = _db_label(db_path)
-    succeeded = 0
+    fitted = 0
+    failed = 0
     try:
         init_schema(conn)
         for station in stations:
@@ -320,6 +332,7 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
                     if isinstance(exc, ValidationError):
                         raise  # schema bug, not a data gap; fail loud
                     print(f"{station.city}: backfill failed: {exc}", file=sys.stderr)
+                    failed += 1
                     continue
                 if not results:
                     continue
@@ -342,11 +355,15 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
                         f"{df_segment} "
                         f"mae={acc.mae_f:.2f}F n={cal.n_samples} -> {label}"
                     )
-                succeeded += 1
+                fitted += 1
     finally:
         client.close()
         conn.close()
-    if succeeded == 0:
+    print(
+        f"backfill summary: fitted {fitted} of {fitted + failed} station-variables"
+        + ("" if failed == 0 else f", failed {failed}")
+    )
+    if fitted == 0:
         raise SystemExit(1)
 
 

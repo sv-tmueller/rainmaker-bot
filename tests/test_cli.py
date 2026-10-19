@@ -1785,3 +1785,89 @@ def test_gate_sweep_command_leads_rejects_garbage(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit):
         cli.main(["gate-sweep", "--db", str(tmp_path / "t.db"), "--leads", "foo"])
+
+
+# ---------------------------------------------------------------------------
+# Backfill resilience and loud errors (#449 / #446 / #443)
+
+
+def test_backfill_invalid_city_names_bad_key_and_valid_keys(monkeypatch, tmp_path, capsys):
+    """A typo must not look like a crash: name the offending key and the valid
+    ones on stderr, then exit 1."""
+    monkeypatch.setattr(cli, "run_backfill", _fake_run_backfill)  # must never be reached
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["backfill", "--city", "ORD", "--variable", "TMAX", "--db", str(tmp_path / "t.db")])
+
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert "ORD" in err
+    assert "all" in err
+    for key in ("NYC", "Chicago"):
+        assert key in err
+
+
+def test_backfill_invalid_city_makes_no_network_calls(monkeypatch, tmp_path):
+    """Validation happens before any fetch: no client, no store connection."""
+    monkeypatch.setattr(
+        cli, "connect", lambda *a, **k: pytest.fail("connect() reached despite invalid --city")
+    )
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: pytest.fail("client built"))
+
+    with pytest.raises(SystemExit):
+        cli.main(["backfill", "--city", "ORD", "--db", str(tmp_path / "t.db")])
+
+
+def test_backfill_summary_counts_fitted_vs_failed_station_variables(
+    monkeypatch, tmp_path, capsys
+):
+    """Partial runs are legible: one final line, fitted vs failed station-variables."""
+    from rainmaker.config import STATIONS
+
+    fail_city = sorted(STATIONS)[0]
+
+    def _mixed(station, variable, leads, start, end, client):
+        if station.icao == STATIONS[fail_city].icao:
+            raise httpx.ConnectError("down")
+        return _fake_run_backfill(station, variable, leads, start, end, client)
+
+    monkeypatch.setattr(cli, "run_backfill", _mixed)
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+    db = tmp_path / "t.db"
+
+    cli.main(["backfill", "--city", "all", "--variable", "TMAX", "--db", str(db)])
+
+    out = capsys.readouterr().out
+    total = len(cli._distinct_stations())
+    # fail_city resolves to one station here (sorted-first city has no Kalshi twin);
+    # every other station fits one station-variable (TMAX only)
+    assert f"fitted {total - 1}" in out
+    assert "failed 1" in out
+
+
+def test_backfill_dead_source_continues_and_summarizes(monkeypatch, tmp_path, capsys):
+    """Incident regression (#446): KMDW/KNYC actuals come from NCEI; when NCEI
+    is hard-down the run skips those station-variables, still fits the rest,
+    and the final summary makes the partial run legible."""
+    from rainmaker.config import KALSHI_STATIONS
+
+    dead_icaos = {KALSHI_STATIONS["NYC"].icao, KALSHI_STATIONS["Chicago"].icao}
+
+    def _mixed(station, variable, leads, start, end, client):
+        if station.icao in dead_icaos:
+            raise httpx.ConnectTimeout("ncei down")
+        return _fake_run_backfill(station, variable, leads, start, end, client)
+
+    monkeypatch.setattr(cli, "run_backfill", _mixed)
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+    db = tmp_path / "t.db"
+
+    cli.main(["backfill", "--city", "all", "--variable", "TMAX", "--db", str(db)])
+
+    captured = capsys.readouterr()
+    out = captured.out
+    total = len(cli._distinct_stations())
+    assert f"fitted {total - len(dead_icaos)}" in out
+    assert f"failed {len(dead_icaos)}" in out
+    assert "ncei down" in captured.err  # the failure itself is not swallowed
