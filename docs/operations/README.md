@@ -276,6 +276,34 @@ To refresh the cloud database without handling the DSN locally, trigger the
 `backfill` workflow in the GitHub Actions tab (Run workflow). It runs
 `backfill --city all` against Supabase using the `DATABASE_URL` repo secret.
 
+### Regime refit rollout (order matters)
+
+A calibration regime refit (any change that alters the forecast distribution
+feeding the fit, e.g. the #400 sigma extension or the #426 TMIN calendar-day
+retarget) invalidates every existing cell by definition: live cells were
+fitted under the old sigma/target and are stale-generation until overwritten.
+Until the prod backfill runs, the live run keeps consuming those stale cells,
+which is safe (they match the live forecast generation only if the code change
+has NOT merged yet; after merge and before backfill they mismatch, so keep the
+window short).
+
+Trigger order:
+
+1. Merge the PR carrying the refit (e.g. #432 for refit v2).
+2. Immediately trigger the `backfill` workflow in the GitHub Actions tab
+   against Supabase (`backfill --city all`). Cells are upserts keyed by
+   (station, variable, lead): the refit purges the stale generation by
+   overwriting every fitted cell in place.
+3. The next daily-diagnostics run picks up the new REGIME_SINCE bumped in
+   the same PR and slices track/tail-check/attribution to the new regime.
+   Compare the since-filtered tail ratios against the previous regime's
+   numbers to confirm the intended distortion (e.g. the #404 TMIN wedge)
+   disappeared.
+
+Between steps 1 and 2 the live run is misaligned by construction: new
+forecast generation, old calibration cells. Expect degraded recommendations
+for that window; keep it to hours, not days.
+
 ## The dashboard
 
 `dashboard/` is a read-only Next.js app showing today's recommended bets and the
