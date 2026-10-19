@@ -252,13 +252,20 @@ Two comparisons, scripts/regime_refit_v3_preflip.py against prod:
    - TMIN cells move most (KDAL TMIN L0 +0.60, KATL TMIN L0/+1 ~ +0.41)
      because the recon path EXCLUDES pre-#426-retrofit TMIN pairs that the
      #459 reconstruction blended in.
-   - Large TMAX deltas sit on cells with recon n < 30 (KSFO TMAX L1/L2,
-     KSEA TMAX L2, KBKF TMAX L2), which route ARCHIVE in production, so
-     those recon var_b values never ship.
-   - Cells that actually route recon in production move modestly: TMAX
+   - The largest TMAX deltas sit on the KSFO TMAX L1/L2, KSEA TMAX L2 and
+     KBKF TMAX L2 cells (KSFO TMAX L1 var_b 1.042 -> 0.257, delta -0.785;
+     KSFO TMAX L2 delta -0.765). These cells hold recon n 42-44 after the
+     season clip and therefore route RECON in production: these values DO
+     ship, and the movement is the re-unification working as intended on
+     dense cells (var_a compensates as EMOS reallocates between terms).
+     An earlier draft of this paragraph, written before the season clip,
+     wrongly described them as n < 30 archive-routed; corrected after the
+     tester's reproduction caught it.
+   - Cells that route recon in production move modestly at lead 0: TMAX
      lead-0 deltas are within +-0.15 on 7 of 8 dense stations (KATL +0.05,
      KBKF +0.05, KDAL -0.09, KHOU -0.05, KSEA -0.09, KSFO -0.11, KORD
-     +0.13), with var_a compensating as EMOS reallocates between terms.
+     +0.13; KLGA -0.159 is the eighth), with var_a compensating as EMOS
+     reallocates between terms.
 
 Verdict: broad reproduction modulo window and population, as the checkpoint
 pre-registered; no unexplained divergence. The checkpoint passed.
@@ -275,3 +282,10 @@ since REGIME_SINCE 2026-10-20; the honest comparison is the trend over the
 following weeks against the 2026-10-19 #426 appendix baseline, plus the
 pre-flip replay above as the leading indicator. Regression, if any, is
 recorded here and on #462.
+
+Disclosure: fit_gaussian's det-only fallback arm (ensemble-less pools)
+computes a ddof=1 pooled sample std, while the recon/archive pair builders
+use the unified ddof=0 population statistic. Unreachable in the normal
+#400/#426 regime (live pools carry ensemble members; archive pairs go
+through the pair builders, not fit_gaussian); noted so the two definitions
+are not mistaken for one.
