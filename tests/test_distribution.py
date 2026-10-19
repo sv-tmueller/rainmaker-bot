@@ -3,8 +3,13 @@ from datetime import date
 import numpy as np
 import pytest
 
+from rainmaker.config import MIN_SIGMA_F
 from rainmaker.forecasts.base import ForecastSample
-from rainmaker.probability.distribution import fit_gaussian, inter_family_gap
+from rainmaker.probability.distribution import (
+    fit_gaussian,
+    inter_family_gap,
+    mixture_sigma,
+)
 
 
 def _sample(value_f: float, member: int | None = None) -> ForecastSample:
@@ -339,3 +344,55 @@ def test_inter_family_gap_small_agreement_case():
     diag = inter_family_gap(dets + ens)
     assert diag["gap"] == pytest.approx(0.0, abs=0.5)
     assert diag["ratio"] == pytest.approx(0.0, abs=0.5)
+
+
+# ---------------------------------------------------------------------------
+# #462: one canonical sigma statistic. Parity between the apply side
+# (fit_gaussian) and the shared mixture_sigma helper the fit side consumes.
+# ---------------------------------------------------------------------------
+
+
+def test_mixture_sigma_matches_fit_gaussian_exactly():
+    """Identical synthetic groups through fit_gaussian and through the shared
+    mixture_sigma helper must yield the same sigma (#462 acceptance criterion
+    1): the helper IS the fit-side pair builder's statistic, so equality here
+    is the fit-vs-apply parity assertion."""
+    pool = [
+        _grp(80.0, "nws", "nws"),
+        _grp(79.0, "open-meteo", "gfs"),
+        _grp(81.0, "open-meteo", "icon"),
+    ] + [
+        _grp(70.0 + (0.5 if i % 2 == 0 else -0.5), "open-meteo", "gfs_ens", member=i + 1)
+        for i in range(10)
+    ]
+    g = fit_gaussian(pool, min_sigma=0.0)
+    groups: dict[tuple[str, str], list[float]] = {}
+    for s in pool:
+        groups.setdefault((s.source, s.model), []).append(s.value_f)
+    assert g.sigma == pytest.approx(mixture_sigma(groups))
+
+
+def test_mixture_sigma_det_only_is_population_std():
+    """Det-only pools (the archive fallback's shape): the mixture over
+    singleton groups degenerates to the population std of the model scalars,
+    ddof=0, replacing the archive path's old ddof=1 stdev (#462)."""
+    scalars = [72.0, 74.0, 79.0]
+    groups = {("open-meteo", f"m{i}"): [v] for i, v in enumerate(scalars)}
+    assert mixture_sigma(groups) == pytest.approx(float(np.std(scalars, ddof=0)))
+
+
+def test_mixture_sigma_known_two_component_value():
+    """Two groups, hand-computed: m1=71,v1=1; m2=70,v2=62.5; m_bar=70.5;
+    sigma^2 = 0.5*[(1+0.25)+(62.5+0.25)] = 32.0 (pins the helper to the same
+    value the ens-only pin below asserts through fit_gaussian)."""
+    groups = {
+        ("open-meteo", "gfs_ens"): [70.0, 71.0, 72.0],
+        ("open-meteo", "ecmwf_ens"): [60.0, 65.0, 70.0, 75.0, 80.0],
+    }
+    assert mixture_sigma(groups) == pytest.approx(32.0**0.5)
+
+
+def test_canonical_statistic_floor_constant_shared():
+    """The floor applied on BOTH sides is MIN_SIGMA_F, not the old archive
+    1e-6: the unified pair builders must floor with this constant."""
+    assert MIN_SIGMA_F == 1.5
