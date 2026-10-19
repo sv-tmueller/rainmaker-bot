@@ -32,7 +32,7 @@ from rainmaker.config import (
     Station,
     Target,
 )
-from rainmaker.domain import Market, PrecipTarget
+from rainmaker.domain import Market, PrecipTarget, canonical_lead
 from rainmaker.forecasts.aggregate import aggregate
 from rainmaker.forecasts.base import ForecastSet
 from rainmaker.forecasts.nws import NwsSource
@@ -93,6 +93,12 @@ def _today() -> date:
     return datetime.now(UTC).date()
 
 
+def _now() -> datetime:
+    """Aware run instant. Anchors the canonical lead (#460) and stays a seam
+    for tests freezing the cron window; _today() remains the report/stamp date."""
+    return datetime.now(UTC)
+
+
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -141,6 +147,7 @@ def _write_reports(report: Report, reports_dir: str) -> list[Path]:
 def _run(reports_dir: str, db_path: str) -> None:
     started_at = _now_iso()
     today = _today()
+    run_started = _now()
     if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db_path)
@@ -159,7 +166,7 @@ def _run(reports_dir: str, db_path: str) -> None:
             if market.target.variable not in SUPPORTED_VARIABLES:
                 print(f"skipped {market.id}: unsupported variable {market.target.variable}")
                 continue
-            lead_time = (market.target.local_date - today).days
+            lead_time = canonical_lead(market.target, run_started)
             if lead_time < 0:  # the day is over: a closed/settling market, not bettable
                 print(f"skipped {market.id}: settled ({market.target.local_date})")
                 continue
@@ -194,7 +201,7 @@ def _run(reports_dir: str, db_path: str) -> None:
             if market.target.variable not in SUPPORTED_VARIABLES:
                 print(f"skipped {market.id}: unsupported variable {market.target.variable}")
                 continue
-            lead_time = (market.target.local_date - today).days
+            lead_time = canonical_lead(market.target, run_started)
             if lead_time < 0:  # the day is over: a closed/settling market, not bettable
                 print(f"skipped {market.id}: settled ({market.target.local_date})")
                 continue

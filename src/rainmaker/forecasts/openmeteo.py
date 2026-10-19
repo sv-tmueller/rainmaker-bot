@@ -10,6 +10,7 @@ from rainmaker.config import (
     OPENMETEO_MODELS,
     Target,
 )
+from rainmaker.domain import canonical_lead
 from rainmaker.forecasts.base import ForecastSample
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -135,7 +136,7 @@ class OpenMeteoSource:
     def __init__(self, client: httpx.Client) -> None:
         self.client = client
 
-    def fetch(self, target: Target) -> list[ForecastSample]:
+    def fetch(self, target: Target, now: datetime | None = None) -> list[ForecastSample]:
         samples = parse_multimodel(fetch_raw_multimodel(target, self.client), target)
         for ens_model in OPENMETEO_ENSEMBLE_MODELS:
             data = fetch_raw_ensemble(target, self.client, ens_model)
@@ -145,5 +146,17 @@ class OpenMeteoSource:
         # available; without it issued_at stayed None and the aggregate
         # freshness gate treated every Open-Meteo sample as fresh forever
         # (#401). Parsing stays pure (issued_at=None); only the source stamps.
-        now = datetime.now(UTC)
-        return [s.model_copy(update={"issued_at": now}) for s in samples]
+        now = now or datetime.now(UTC)
+        # The same instant anchors the canonical lead (#460): the parsed
+        # lead_time_days is the daily-array index, which follows whatever day
+        # the payload happens to start on, not the run's station-local day.
+        # Re-tag so the persisted lead is the same ruler the gate uses.
+        return [
+            s.model_copy(
+                update={
+                    "issued_at": now,
+                    "lead_time_days": canonical_lead(target, now),
+                }
+            )
+            for s in samples
+        ]

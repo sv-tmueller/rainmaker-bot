@@ -1,6 +1,6 @@
 # tests/test_cli.py
 import sqlite3
-from datetime import date
+from datetime import UTC, date, datetime
 
 import httpx
 import pytest
@@ -69,6 +69,7 @@ def test_run_builds_report_and_writes_files(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set())
     monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 5, 31))
+    monkeypatch.setattr(cli, "_now", lambda: datetime(2026, 5, 31, 12, 0, tzinfo=UTC))
     db = tmp_path / "t.db"
 
     cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(db)])
@@ -118,6 +119,7 @@ def test_run_includes_kalshi_high_temp_market(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set())
     monkeypatch.setattr(cli.httpx, "Client", lambda **kw: _DummyClient())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 5, 31))
+    monkeypatch.setattr(cli, "_now", lambda: datetime(2026, 5, 31, 12, 0, tzinfo=UTC))
     db = tmp_path / "t.db"
 
     cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(db)])
@@ -136,6 +138,7 @@ def test_run_processes_tmin_market(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set("TMIN"))
     monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 5, 31))
+    monkeypatch.setattr(cli, "_now", lambda: datetime(2026, 5, 31, 12, 0, tzinfo=UTC))
     db = tmp_path / "t.db"
 
     cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(db)])
@@ -172,6 +175,7 @@ def test_run_skips_settled_market(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "_forecast_for", lambda target, client: _forecast_set())
     monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 1))
+    monkeypatch.setattr(cli, "_now", lambda: datetime(2026, 6, 1, 12, 0, tzinfo=UTC))
 
     db = tmp_path / "t.db"
     cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(db)])
@@ -181,6 +185,48 @@ def test_run_skips_settled_market(monkeypatch, tmp_path, capsys):
     conn = connect(str(db))
     assert count_rows(conn, "predictions") == 0  # settled market not evaluated
     conn.close()
+
+
+def test_run_gate_uses_station_local_lead_inside_cron_window(monkeypatch, tmp_path, capsys):
+    # #460/#438: at 00:30 UTC (20:30 EDT May 31) UTC-today is already June 1,
+    # one day ahead of station-local today. The old UTC ruler then called
+    # May 31 (still in play, 3.5 hours of local day left) lead -1 -> settled,
+    # and June 1 lead 0. The canonical ruler must call them 0 and 1.
+    leads: list[int] = []
+
+    def _forecast(target, client):
+        return _forecast_set()
+
+    orig_load = cli.load_calibration
+
+    def _spy_load(conn, station, variable, lead_time):
+        leads.append(lead_time)
+        return orig_load(conn, station, variable, lead_time)
+
+    tomorrow = _market("TMAX").model_copy(
+        update={
+            "id": "m2",
+            "slug": "s2",
+            "title": "Highest temperature in NYC on June 1?",
+            "target": build_target("NYC", "TMAX", date(2026, 6, 1)),
+        }
+    )
+
+    monkeypatch.setattr(cli, "fetch_weather_events", lambda client: [])
+    monkeypatch.setattr(cli, "discover_markets", lambda client: [_market("TMAX"), tomorrow])
+    monkeypatch.setattr(cli, "discover_precip_markets", lambda client: [])
+    monkeypatch.setattr(cli, "_forecast_for", _forecast)
+    monkeypatch.setattr(cli, "load_calibration", _spy_load)
+    monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 1))  # the old buggy ruler
+    monkeypatch.setattr(cli, "_now", lambda: datetime(2026, 6, 1, 0, 30, tzinfo=UTC))
+
+    db = tmp_path / "t.db"
+    cli.main(["run", "--reports-dir", str(tmp_path), "--db", str(db)])
+
+    out = capsys.readouterr().out
+    assert "settled" not in out.lower()  # May 31 is still in play at 20:30 EDT
+    assert sorted(leads) == [0, 1]  # today-local and one-local-day-out, not {-1, 0}
 
 
 def test_run_fetches_weather_events_once(monkeypatch, tmp_path):
