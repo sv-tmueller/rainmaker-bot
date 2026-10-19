@@ -29,6 +29,54 @@ def _make_sample(
     )
 
 
+def _select_period(
+    periods: list[dict[str, Any]],
+    *,
+    want_daytime: bool,
+    match_date: date,
+    target_date: date,
+    tz: ZoneInfo,
+) -> dict[str, Any] | None:
+    """Period matcher for the periods product (#450, implements #434).
+
+    Matches on the period COVERING the wanted window, not the first one that
+    merely begins on the match date. Preference order:
+
+    1. A period of the wanted kind whose END date is the target date - it
+       covers the window the target settles on. Among several, one starting
+       in the afternoon/evening (start hour >= 12) is the full period rather
+       than a post-midnight residual fragment.
+    2. Fallback: the legacy first-hit on start date == match_date.
+
+    Why not first-hit alone: for TMIN any night period BEGINNING on the
+    match date qualifies, so a post-midnight "Overnight" fragment listed
+    first shadows the wanted "Tonight" period (wrong night's low), and a
+    fragment REPLACING the evening period matches nothing at all (silent
+    zero-sample loss with ok=True). Measured blast radius: zero observed
+    events in stored history
+    (docs/architecture/tmin-night-fragment-blast-radius.md); this is
+    defense-in-depth for a legal NWS product shape.
+    """
+    covering: list[dict[str, Any]] = []
+    first_hit: dict[str, Any] | None = None
+    for period in periods:
+        if period["isDaytime"] != want_daytime:
+            continue
+        start_local = datetime.fromisoformat(period["startTime"]).astimezone(tz)
+        end_local = datetime.fromisoformat(period["endTime"]).astimezone(tz)
+        if end_local.date() == target_date:
+            covering.append(period)
+        if first_hit is None and start_local.date() == match_date:
+            first_hit = period
+    for period in covering:
+        start_local = datetime.fromisoformat(period["startTime"]).astimezone(tz)
+        if start_local.hour >= 12:
+            return period
+    if covering:
+        return covering[0]
+    return first_hit
+
+
 def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]:
     if target.variable not in ("TMAX", "TMIN"):
         raise NotImplementedError(f"unsupported variable {target.variable!r}")
@@ -54,13 +102,21 @@ def parse(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]
         return parse_hourly_low(forecast_json, target)
 
     match_date = target.local_date
-    for period in props["periods"]:
-        start_local = datetime.fromisoformat(period["startTime"]).astimezone(tz)
-        if period["isDaytime"] and start_local.date() == match_date:
-            if period["temperatureUnit"] != "F":
-                raise ValueError(f"expected Fahrenheit, got {period['temperatureUnit']}")
-            return [_make_sample(target, issued_at, issued_local, float(period["temperature"]))]
-    return []
+    # TMAX equivalence: for daytime periods the covering-window preference
+    # coincides with first-hit on every realistic NWS shape (a daytime period
+    # ending on the target date starts on it), so TMAX selection is unchanged.
+    period = _select_period(
+        props["periods"],
+        want_daytime=True,
+        match_date=match_date,
+        target_date=target.local_date,
+        tz=tz,
+    )
+    if period is None:
+        return []
+    if period["temperatureUnit"] != "F":
+        raise ValueError(f"expected Fahrenheit, got {period['temperatureUnit']}")
+    return [_make_sample(target, issued_at, issued_local, float(period["temperature"]))]
 
 
 def parse_hourly_low(forecast_json: dict[str, Any], target: Target) -> list[ForecastSample]:

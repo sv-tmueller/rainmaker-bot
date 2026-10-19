@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from rainmaker.config import build_target
-from rainmaker.forecasts.nws import NwsSource, parse
+from rainmaker.forecasts.nws import NwsSource, _select_period, parse
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -96,6 +96,127 @@ def test_parse_tmin_accepts_full_coverage_across_dst_free_day():
     samples = parse(_hourly_fixture(), target)
     assert len(samples) == 1
     assert samples[0].value_f == 45.0
+
+
+def _fragment_leading_periods() -> list[dict]:
+    """Night-fragment-leading period list, the hostile shape from #434.
+
+    Built like a real post-midnight periods product: a residual "Overnight"
+    fragment covering 00:00-06:00 of May 31 (the END of the May 30/31 night)
+    precedes the wanted "Tonight" period (May 31 18:00 -> June 1 06:00).
+    Both begin on May 31, so the legacy first-hit predicate cannot tell them
+    apart. Times are America/New_York (-04:00), matching the KLGA fixture.
+    """
+    return [
+        {
+            "number": 1,
+            "name": "Overnight",
+            "startTime": "2026-05-31T00:00:00-04:00",
+            "endTime": "2026-05-31T06:00:00-04:00",
+            "isDaytime": False,
+            "temperature": 48,
+            "temperatureUnit": "F",
+        },
+        {
+            "number": 2,
+            "name": "Today",
+            "startTime": "2026-05-31T06:00:00-04:00",
+            "endTime": "2026-05-31T18:00:00-04:00",
+            "isDaytime": True,
+            "temperature": 71,
+            "temperatureUnit": "F",
+        },
+        {
+            "number": 3,
+            "name": "Tonight",
+            "startTime": "2026-05-31T18:00:00-04:00",
+            "endTime": "2026-06-01T06:00:00-04:00",
+            "isDaytime": False,
+            "temperature": 62,
+            "temperatureUnit": "F",
+        },
+    ]
+
+
+def test_matcher_prefers_covering_night_over_fragment_shadowing():
+    # Corruption mode (#434): TMIN target June 1 wants the night ENDING on
+    # June 1. The leading Overnight fragment also begins on the match date
+    # (May 31), so first-hit returns its residual 48F of the ENDING night -
+    # anchoring the forecast on the wrong night entirely.
+    tz = ZoneInfo("America/New_York")
+    picked = _select_period(
+        _fragment_leading_periods(),
+        want_daytime=False,
+        match_date=date(2026, 5, 31),
+        target_date=date(2026, 6, 1),
+        tz=tz,
+    )
+    assert picked is not None
+    assert picked["name"] == "Tonight"
+    assert picked["temperature"] == 62
+
+
+def test_matcher_covers_ongoing_night_when_evening_period_dropped():
+    # Silent-loss mode (#434): lead-0 TMIN (target May 31, match date May 30,
+    # the ongoing night). The WFO replaced the originating "Tonight" period
+    # (May 30 18:00 -> May 31 06:00) with the post-midnight fragment, so the
+    # list holds ONLY the fragment among nights. It begins on May 31, not the
+    # match date, so first-hit finds nothing and the source silently yields
+    # zero samples. The fragment ENDS on the target date, i.e. it covers the
+    # remainder of the wanted window: it must be selected.
+    periods = [p for p in _fragment_leading_periods() if p["name"] != "Tonight"]
+    tz = ZoneInfo("America/New_York")
+    picked = _select_period(
+        periods,
+        want_daytime=False,
+        match_date=date(2026, 5, 30),
+        target_date=date(2026, 5, 31),
+        tz=tz,
+    )
+    assert picked is not None
+    assert picked["name"] == "Overnight"
+
+
+def test_matcher_keeps_first_hit_as_fallback_without_covering_candidate():
+    # No qualifying period ends on the target date (both candidates end on
+    # May 31 for a June 1 target): first-hit on the match date stands.
+    periods = [
+        {
+            "number": 1,
+            "name": "Overnight",
+            "startTime": "2026-05-31T00:00:00-04:00",
+            "endTime": "2026-05-31T06:00:00-04:00",
+            "isDaytime": False,
+            "temperature": 48,
+            "temperatureUnit": "F",
+        }
+    ]
+    tz = ZoneInfo("America/New_York")
+    picked = _select_period(
+        periods,
+        want_daytime=False,
+        match_date=date(2026, 5, 31),
+        target_date=date(2026, 6, 1),
+        tz=tz,
+    )
+    assert picked is not None
+    assert picked["name"] == "Overnight"
+
+
+def test_matcher_tmax_still_matches_first_daytime_period():
+    # TMAX semantics are untouched: the daytime period starting on the
+    # target date is the covering window by construction.
+    tz = ZoneInfo("America/New_York")
+    picked = _select_period(
+        _fragment_leading_periods(),
+        want_daytime=True,
+        match_date=date(2026, 5, 31),
+        target_date=date(2026, 5, 31),
+        tz=tz,
+    )
+    assert picked is not None
+    assert picked["name"] == "Today"
+    assert picked["temperature"] == 71
 
 
 def test_fetch_calls_points_then_forecast_and_sets_user_agent(httpx_mock):
