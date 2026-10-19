@@ -23,16 +23,32 @@ _DSN_GUARD_MESSAGE = (
 )
 
 
+def _database_url_is_postgres(dsn: str | None) -> bool:
+    """An empty-string DSN is treated as unset: some shells and CI wrappers
+    export DATABASE_URL="" when no DSN is configured, and the CLI treats
+    falsy the same way (cli._datastore falls back to the SQLite default).
+    """
+    return bool(dsn) and dsn.startswith(("postgres://", "postgresql://"))
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Abort the run before collection if DATABASE_URL is a Postgres DSN.
+
+    Fires before any test module is imported, closing the window a
+    session-scoped autouse fixture leaves open (module-level code in a test
+    module would already have run by the time the fixture executes).
+    """
+    if _database_url_is_postgres(os.environ.get("DATABASE_URL")):
+        pytest.exit(_DSN_GUARD_MESSAGE, returncode=3)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def refuse_postgres_database_url() -> None:
-    """Abort the session before any test runs if DATABASE_URL is Postgres.
+    """Belt-and-braces backstop for the pytest_configure hook above.
 
-    Session-scoped and autouse, so it wraps every test regardless of what a
-    given invocation selects. An empty-string DSN is treated as unset: some
-    shells and CI wrappers export DATABASE_URL="" when no DSN is configured,
-    and the CLI treats falsy the same way (cli._datastore falls back to the
-    SQLite default).
+    Covers exotic invocations that skip conftest-level configure hooks
+    (e.g. a future plugin reorder); harmless duplication when the hook
+    already fired.
     """
-    dsn = os.environ.get("DATABASE_URL")
-    if dsn and dsn.startswith(("postgres://", "postgresql://")):
+    if _database_url_is_postgres(os.environ.get("DATABASE_URL")):
         pytest.exit(_DSN_GUARD_MESSAGE, returncode=3)
