@@ -22,6 +22,7 @@ from scipy.stats import norm
 from rainmaker.backtest import COVERAGE_LEVELS, crps_gaussian, reliability_bins
 from rainmaker.config import KALSHI_STATIONS, STATIONS
 from rainmaker.domain import BucketKind, Market, parse_bucket_label, parse_precip_bracket_label
+from rainmaker.forecasts.base import ForecastSample
 from rainmaker.polymarket.prices import fetch_price_history, last_before
 from rainmaker.probability.calibration import (
     Accuracy,
@@ -30,6 +31,7 @@ from rainmaker.probability.calibration import (
     numeric_crps,
     std_cdf_for,
 )
+from rainmaker.probability.distribution import inter_family_gap
 from rainmaker.probability.outcomes import settles
 from rainmaker.probability.precip_outcomes import precip_settles
 from rainmaker.store.db import Conn
@@ -950,6 +952,124 @@ def _latest_run_per_market_day_hour(rows: list[dict[str, Any]]) -> list[dict[str
     return [r for r in rows if (r["market_id"], r["run_id"]) in keep]
 
 
+def _percentile(sorted_values: list[float], q: float) -> float:
+    """Linear-interpolation percentile over an ascending list (numpy default)."""
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    pos = q * (len(sorted_values) - 1)
+    lo_i = int(math.floor(pos))
+    hi_i = min(lo_i + 1, len(sorted_values) - 1)
+    frac = pos - lo_i
+    return sorted_values[lo_i] * (1 - frac) + sorted_values[hi_i] * frac
+
+
+def compute_inter_family_gap_summary(conn: Conn, since: str | None = None) -> list[dict[str, Any]]:
+    """Reconstructed-pool inter_family_gap stats per (variable, lead) (#428).
+
+    Surfaces the #400 sigma blind spot alongside the tail ratios: the forecasts
+    table stores per-sample rows (one row per (source, model) group with the
+    per-member values packed in values_json), so each (run, market) pool can be
+    rebuilt as ForecastSamples and fed to the existing diagnostic. A group is
+    ensemble iff its model ends in "_ens" (openmeteo.parse_ensemble's naming),
+    which recovers the member flag _record_forecasts collapses away.
+
+    Population: settled temperature markets only (variable != 'PRCP', matching
+    the rest of tail-check), deduped to the latest run per (market, UTC day)
+    with the same intraday-rerun collapse, restricted by since on
+    runs.started_at like the other sections. Pools whose diagnostic yields no
+    ratio (either family missing, or zero current sigma) are excluded from the
+    aggregates rather than counted as 0. Read-only: SELECTs only.
+    """
+    fc_rows = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT f.run_id AS run_id, f.market_id AS market_id, "
+            "f.source AS source, f.model AS model, "
+            "f.values_json AS values_json, f.lead_time AS lead_time, "
+            "m.variable AS mkt_variable, m.settlement_date AS settlement_date, "
+            "r.started_at AS started_at "
+            "FROM forecasts f "
+            "JOIN markets m ON m.id = f.market_id "
+            "JOIN runs r ON r.id = f.run_id "
+            "JOIN outcomes o ON o.market_id = f.market_id "
+            "WHERE o.actual_value IS NOT NULL AND m.variable != 'PRCP'"
+            + (" AND r.started_at >= ?" if since is not None else ""),
+            (since,) if since is not None else (),
+        ).fetchall()
+    ]
+    pools: dict[tuple[str, str], list[ForecastSample]] = defaultdict(list)
+    meta: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in _latest_run_per_market_day(fc_rows):
+        if r["mkt_variable"] == "PRCP":
+            continue
+        try:
+            lead = (
+                date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
+            ).days
+        except ValueError:
+            continue  # unparsable date (e.g. test sentinel "t"): skip
+        if lead < 0:
+            continue
+        key = (r["run_id"], r["market_id"])
+        meta.setdefault(key, {"variable": r["mkt_variable"], "lead": lead})
+        try:
+            values = json.loads(r["values_json"])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(values, list):
+            continue
+        is_ens = r["model"].endswith("_ens")
+        for i, v in enumerate(values):
+            fv = _finite_number(v)
+            if fv is None:
+                continue
+            pools[key].append(
+                ForecastSample(
+                    source=r["source"],
+                    model=r["model"],
+                    member=(i + 1) if is_ens else None,
+                    station="",
+                    variable=r["mkt_variable"],
+                    target_date=date.fromisoformat(r["settlement_date"]),
+                    lead_time_days=int(r["lead_time"]),
+                    value_f=fv,
+                    issued_at=None,
+                )
+            )
+
+    per_cell: dict[tuple[str, int], list[tuple[float, float]]] = defaultdict(list)
+    for (run_id, market_id), samples in pools.items():
+        info = meta.get((run_id, market_id))
+        if info is None or not samples:
+            continue
+        diag = inter_family_gap(samples)
+        gap, sigma, ratio = diag["gap"], diag["current_sigma"], diag["ratio"]
+        if gap is None or sigma is None or ratio is None:
+            continue
+        per_cell[(info["variable"], info["lead"])].append((abs(gap), ratio))
+
+    rows: list[dict[str, Any]] = []
+    for (variable, lead), pairs in sorted(per_cell.items()):
+        gaps = sorted(g for g, _ in pairs)
+        ratios = sorted(r for _, r in pairs)
+        n = len(pairs)
+        rows.append(
+            {
+                "variable": variable,
+                "lead_time": lead,
+                "n": n,
+                "gap_abs_mean": sum(gaps) / n,
+                "gap_abs_median": _percentile(gaps, 0.5),
+                "ratio_mean": sum(ratios) / n,
+                "ratio_median": _percentile(ratios, 0.5),
+                "ratio_p90": _percentile(ratios, 0.9),
+                "frac_ratio_gt_05": sum(1 for x in ratios if x > 0.5) / n,
+                "frac_ratio_gt_10": sum(1 for x in ratios if x > 1.0) / n,
+            }
+        )
+    return rows
+
+
 def compute_tail_calibration(
     conn: Conn, by_hour: bool = False, since: str | None = None
 ) -> dict[str, list[dict[str, Any]]]:
@@ -974,6 +1094,12 @@ def compute_tail_calibration(
 
     Secondary ("pit"): P(PIT > 1-q)/q and P(PIT < q)/q at q = 0.10 and 0.05 from
     the stored (mu, sigma, actual) triples, one row per (variable, lead[, hour]).
+
+    Gap ("gap"): inter_family_gap stats (#400/#428) per (variable, lead) from
+    forecast pools reconstructed out of the forecasts table, one row per
+    (variable, lead): |gap| and |gap|/sigma summarized as mean/median(/p90 for
+    the ratio) plus the fraction of pools above 0.5 and 1.0 sigma. Monitors the
+    sigma blind spot daily until the deferred fit-extension refit lands.
     """
     dedup = _latest_run_per_market_day_hour if by_hour else _latest_run_per_market_day
 
@@ -1100,7 +1226,11 @@ def compute_tail_calibration(
             {"variable": variable, "lead_time": lead, "hour": hour, **_pit_tail_ratios(pits)}
         )
 
-    return {"primary": primary, "pit": pit}
+    # The gap section is hour-independent (--by-hour splits the tail populations
+    # by run hour, but the family gap is a property of the pool, not the hour).
+    gap = compute_inter_family_gap_summary(conn, since=since)
+
+    return {"primary": primary, "pit": pit, "gap": gap}
 
 
 _SNAPSHOT_VENUES: tuple[tuple[str, str | None], ...] = (

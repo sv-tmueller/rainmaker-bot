@@ -89,6 +89,84 @@ def _pit_row(result, variable, lead, hour=None):
     return None
 
 
+def _gap_row(result, variable, lead):
+    for row in result["gap"]:
+        if row["variable"] == variable and row["lead_time"] == lead:
+            return row
+    return None
+
+
+def _insert_forecast_pool(
+    conn,
+    run_id: str,
+    market_id: str,
+    *,
+    det_values: list[float],
+    ens_values: list[float],
+    lead_time: int = 1,
+    variable: str = "TMAX",
+):
+    """Seed the forecasts table the way _record_forecasts writes it: one row
+    per (source, model) group, per-member values packed into values_json."""
+    rows = [("open-meteo", f"det{j}", [v]) for j, v in enumerate(det_values)]
+    rows += [("open-meteo", "gfs_ens", ens_values)]
+    for source, model, values in rows:
+        conn.execute(
+            "INSERT INTO forecasts "
+            "(run_id, market_id, source, model, variable, values_json, lead_time, fetched_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                market_id,
+                source,
+                model,
+                variable,
+                json.dumps(values),
+                lead_time,
+                "t",
+            ),
+        )
+
+
+def _gap_insert_row(
+    conn,
+    market_id: str,
+    run_id: str,
+    *,
+    started_at: str,
+    settlement_date: str,
+    variable: str = "TMAX",
+    lead_time: int = 1,
+    det_values: list[float],
+    ens_values: list[float],
+):
+    """A settled (market, run) row plus its forecast pool, for the gap section."""
+    _insert_row(
+        conn,
+        market_id=market_id,
+        run_id=run_id,
+        started_at=started_at,
+        settlement_date=settlement_date,
+        p_win=0.5,
+        mu=70.0,
+        sigma=2.0,
+        actual=70.0,
+        bucket_kind="range",
+        lo=70,
+        hi=71,
+        variable=variable,
+    )
+    _insert_forecast_pool(
+        conn,
+        run_id,
+        market_id,
+        det_values=det_values,
+        ens_values=ens_values,
+        lead_time=lead_time,
+        variable=variable,
+    )
+
+
 def test_pit_tail_ratios_reports_observed_and_expected_counts():
     """obs/exp counts sit alongside each ratio, additive to the returned dict.
 
@@ -1070,7 +1148,7 @@ def test_tail_check_pit_columns_stay_aligned_at_four_digit_counts(tmp_path, caps
         "lower_05_obs": 0,
         "lower_05_exp": 500.00,
     }
-    fake_result = {"primary": [], "pit": [small_row, large_row]}
+    fake_result = {"primary": [], "pit": [small_row, large_row], "gap": []}
     monkeypatch.setattr(
         "rainmaker.cli.compute_tail_calibration",
         lambda conn, by_hour=False, since=None: fake_result,
@@ -1078,7 +1156,208 @@ def test_tail_check_pit_columns_stay_aligned_at_four_digit_counts(tmp_path, caps
 
     _tail_check(db)
 
-    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
-    pit_header_and_rows = lines[-3:]  # PIT header, small_row, large_row
+    out = capsys.readouterr().out
+    lines = [line for line in out.splitlines() if line.strip()]
+    # The gap section (#428) trails the PIT section; isolate the PIT block
+    # (skip the section title line: it is prose, not a column-aligned row).
+    pit_title = next(i for i, ln in enumerate(lines) if "PIT tail-occurrence" in ln)
+    pit_header_and_rows = lines[pit_title + 1 : pit_title + 4]  # header + 2 rows
     widths = {len(line) for line in pit_header_and_rows}
     assert len(widths) == 1, f"PIT lines are not equal width: {pit_header_and_rows}"
+
+
+# ---------------------------------------------------------------------------
+# #428: inter_family_gap surfacing (sigma blind-spot monitoring)
+# ---------------------------------------------------------------------------
+
+
+def test_gap_section_aggregates_ratio_stats_per_variable_lead():
+    """Three (run, market) pools with known gaps aggregate into one row per
+    (variable, lead): mean/median/p90 of the per-pool |gap|/sigma ratios.
+
+    Pool 1: dets tight at 80, ens at 70 +- 0.5 -> ratio ~20. Pools 2 and 3:
+    dets and ens aligned at 70 -> ratio ~0.2 each. Mean sits above the median
+    (two small, one huge); p90 interpolates toward the huge one.
+    """
+    conn = connect(":memory:")
+    init_schema(conn)
+    _gap_insert_row(
+        conn,
+        market_id="gm1",
+        run_id="gr1",
+        started_at="2026-07-01T12:00:00+00:00",
+        settlement_date="2026-07-02",
+        det_values=[80.0, 80.0, 80.0],
+        ens_values=[70.0 + (0.5 if i % 2 == 0 else -0.5) for i in range(10)],
+    )
+    for j in (2, 3):
+        _gap_insert_row(
+            conn,
+            market_id=f"gm{j}",
+            run_id=f"gr{j}",
+            started_at="2026-07-01T12:00:00+00:00",
+            settlement_date="2026-07-02",
+            det_values=[70.0, 70.2],
+            ens_values=[70.0 + (0.5 if i % 2 == 0 else -0.5) for i in range(10)],
+        )
+    conn.commit()
+    result = compute_tail_calibration(conn)
+    conn.close()
+
+    row = _gap_row(result, "TMAX", 1)
+    assert row is not None
+    assert row["n"] == 3
+    # ratios ~ (20, 0.2, 0.2): mean above the median, p90 pulled toward 20
+    assert row["ratio_mean"] > row["ratio_median"]
+    assert row["ratio_median"] > 0.0
+    assert row["ratio_p90"] > row["ratio_mean"]
+
+    # gap magnitudes (degrees F) travel with the row too: (10, 0.1, 0.1) -> ~3.4
+    assert row["gap_abs_mean"] == pytest.approx(3.4, abs=0.6)
+
+
+def test_gap_section_keeps_variables_and_leads_apart():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _gap_insert_row(
+        conn,
+        market_id="ga1",
+        run_id="gra1",
+        started_at="2026-07-01T12:00:00+00:00",
+        settlement_date="2026-07-02",
+        variable="TMAX",
+        lead_time=1,
+        det_values=[80.0],
+        ens_values=[70.0, 70.5],
+    )
+    _gap_insert_row(
+        conn,
+        market_id="ga2",
+        run_id="gra2",
+        started_at="2026-07-01T12:00:00+00:00",
+        settlement_date="2026-07-04",
+        variable="TMIN",
+        lead_time=3,
+        det_values=[50.0],
+        ens_values=[48.0, 48.5],
+    )
+    conn.commit()
+    result = compute_tail_calibration(conn)
+    conn.close()
+
+    assert _gap_row(result, "TMAX", 1) is not None
+    assert _gap_row(result, "TMIN", 3) is not None
+    assert _gap_row(result, "TMAX", 3) is None
+    assert _gap_row(result, "TMIN", 1) is None
+
+
+def test_gap_section_respects_since_filter_and_dedup():
+    """Same population rules as the existing sections: --since drops pre-cutoff
+    runs, and intraday reruns collapse to the latest run per (market, day)."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    _gap_insert_row(
+        conn,
+        market_id="gb1",
+        run_id="grb-old",
+        started_at="2026-05-31T12:00:00+00:00",  # before the cutoff
+        settlement_date="2026-06-01",
+        det_values=[80.0],
+        ens_values=[70.0, 70.5],
+    )
+    _gap_insert_row(
+        conn,
+        market_id="gb2",
+        run_id="grb-late",
+        started_at="2026-07-10T20:00:00+00:00",  # latest: survives the dedup
+        settlement_date="2026-07-11",
+        det_values=[80.0],
+        ens_values=[70.0, 70.5],
+    )
+    # gb2 also had an earlier intraday run the same UTC day. The gap section
+    # reads the forecasts table (not predictions), so the superseded 08:00 run
+    # only needs its runs + forecasts rows, seeded after its market exists.
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        ("grb-early", "2026-07-10T08:00:00+00:00", "ok"),
+    )
+    _insert_forecast_pool(conn, "grb-early", "gb2", det_values=[70.0], ens_values=[70.0, 70.5])
+    conn.commit()
+    unfiltered = compute_tail_calibration(conn)
+    filtered = compute_tail_calibration(conn, since="2026-07-01")
+    conn.close()
+
+    row_u = _gap_row(unfiltered, "TMAX", 1)
+    assert row_u is not None
+    assert row_u["n"] == 2  # gb1's pool + gb2's latest run only
+    row_f = _gap_row(filtered, "TMAX", 1)
+    assert row_f is not None
+    assert row_f["n"] == 1  # pre-cutoff pool gone
+
+
+def test_gap_section_skips_pools_without_both_families():
+    """A pool with only ensemble rows (or only dets) has no gap to speak of;
+    it must be excluded from the aggregated stats, not counted as ratio 0."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    _gap_insert_row(
+        conn,
+        market_id="gc1",
+        run_id="grc1",
+        started_at="2026-07-01T12:00:00+00:00",
+        settlement_date="2026-07-02",
+        det_values=[80.0],
+        ens_values=[70.0, 70.5],
+    )
+    # ens-only pool: no det groups -> inter_family_gap yields ratio None
+    _insert_row(
+        conn,
+        market_id="gc2",
+        run_id="grc2",
+        started_at="2026-07-01T12:00:00+00:00",
+        settlement_date="2026-07-02",
+        p_win=0.5,
+        mu=70.0,
+        sigma=2.0,
+        actual=70.0,
+        bucket_kind="range",
+        lo=70,
+        hi=71,
+    )
+    _insert_forecast_pool(conn, "grc2", "gc2", det_values=[], ens_values=[70.0, 71.0, 72.0])
+    conn.commit()
+    result = compute_tail_calibration(conn)
+    conn.close()
+
+    row = _gap_row(result, "TMAX", 1)
+    assert row is not None
+    assert row["n"] == 1  # only the cross-family pool counts
+
+
+def test_cli_tail_check_prints_gap_section(tmp_path, capsys):
+    """The rendered output carries a gap section header and the per-row stats."""
+    db = str(tmp_path / "tail.db")
+    conn = connect(db)
+    init_schema(conn)
+    _gap_insert_row(
+        conn,
+        market_id="gd1",
+        run_id="grd1",
+        started_at="2026-07-01T12:00:00+00:00",
+        settlement_date="2026-07-02",
+        det_values=[80.0, 80.0, 80.0],
+        ens_values=[70.0 + (0.5 if i % 2 == 0 else -0.5) for i in range(10)],
+    )
+    conn.commit()
+    conn.close()
+
+    _tail_check(db)
+
+    out = capsys.readouterr().out
+    assert "Det-vs-ens sigma gap" in out
+    assert "Ratio" in out  # column header present
+    # the gap section's own TMAX row: after the section header, n=1, a
+    # formatted ratio (>0), and a gap magnitude in degrees
+    section = out.split("Det-vs-ens sigma gap")[1]
+    line = next(ln for ln in section.splitlines() if "TMAX" in ln)
+    assert " 1 " in line  # n column
