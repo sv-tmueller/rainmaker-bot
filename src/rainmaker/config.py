@@ -405,9 +405,10 @@ CONFIDENCE_FLOOR = 0.80
 # See docs/architecture/recommendation-gate.md for the sweep table.
 CONFIDENCE_FLOOR_NO = 0.75
 MIN_SOURCES = 2
-# Raised from 0.05 (#350): see the 2026-08-13 dated update in
-# docs/architecture/recommendation-gate.md for the gate-sweep evidence.
-MIN_EDGE = 0.07
+# Raised from 0.05 (#350), then 0.07 -> 0.12 (#440): see the 2026-08-13 and
+# 2026-10-19 dated updates in docs/architecture/recommendation-gate.md for the
+# gate-sweep evidence (short-lead sweep, leads 0-3, both windows improve).
+MIN_EDGE = 0.12
 # Upper edge cap (#356): see the 2026-08-14 dated update in
 # docs/architecture/recommendation-gate.md for the gate-sweep evidence.
 MAX_EDGE = 0.25

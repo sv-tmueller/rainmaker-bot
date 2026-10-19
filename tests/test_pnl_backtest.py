@@ -627,6 +627,7 @@ def test_backtest_pnl_replays_closed_markets_end_to_end(httpx_mock):
             on_or_after=date(2026, 3, 1),
             leads=(0, 1, 2, 3),
             calibration_lookup=lambda icao, lead: _full_cal(),
+            min_edge=0.05,  # replay mechanics, not the live floor (#440)
             max_edge=None,  # this test is about replay mechanics, not the cap (#356)
         )
     assert result is not None
@@ -812,13 +813,10 @@ def test_backtest_pnl_trades_mode_uses_fill_as_ask(httpx_mock):
     Fill coverage: market 1 uses fills at leads {0,1}, market 2 at leads {1,2} -> 4 total.
     The recommended "38F or higher" NO bet wins everywhere it is placed (actuals
     34F/35F). Trades mode raises the NO ask to 0.90 at both fill-affected leads
-    (market1-lead0, market2-lead1), cutting each one's edge relative to the 0.85
-    mid-mode price. Market1-lead0's edge still clears the live MIN_EDGE (#350: 0.07),
-    so it stays recommended at a reduced payout (0.15 -> 0.10). Market2-lead1's edge
-    lands just below the live MIN_EDGE, so that bet drops out entirely rather than
-    being repriced: 7 bets instead of the mid-mode 8, total_pnl = 1.20 - 0.05
-    (market1-lead0's reduced payout) - 0.15 (market2-lead1's bet removed) = 1.00
-    (not 1.10, the total under the pre-#350 MIN_EDGE=0.05).
+    (market1-lead0, market2-lead1). Under the live MIN_EDGE (#440: 0.12) only the
+    three highest-edge lead-market combinations survive (the fill-affected bets
+    at 0.90 asks and one of the 0.85-ask bets sit below the floor), so 3 bets
+    place, each winning: total_pnl = 3 * 0.15 = 0.45.
     """
     httpx_mock.add_response(
         url=re.compile(re.escape(HISTORICAL_FORECAST_URL)), json=_hist_fixture()
@@ -847,14 +845,12 @@ def test_backtest_pnl_trades_mode_uses_fill_as_ask(httpx_mock):
     assert result.fill_coverage is not None
     # two markets, four leads each = 8 total lead-market combinations
     assert result.fill_coverage.n_leads == 8
-    # market 1: fills at leads {0,1}; market 2: fills at leads {1,2} -> 4 total
+    # market 1: fills at leads {0,1}; market 2 at leads {1,2} -> 4 total
     assert result.fill_coverage.fills_used == 4
-    # End-to-end: market2-lead1's fill-driven edge drop takes it below the live
-    # MIN_EDGE, so only 7 of the 8 lead-market combinations end up as bets.
-    assert result.overall.n_bets == 7
-    # market1-lead0 pays the reduced 0.10 (0.90 ask); market2-lead1 contributes
-    # nothing (bet removed): total_pnl = 1.20 - 0.05 - 0.15 = 1.00.
-    assert result.overall.total_pnl == pytest.approx(1.00)
+    # End-to-end: under the live MIN_EDGE (#440: 0.12) only the three
+    # highest-edge combinations survive; each wins: 3 * 0.15 = 0.45.
+    assert result.overall.n_bets == 3
+    assert result.overall.total_pnl == pytest.approx(0.45)
 
 
 def test_replay_market_fill_coverage_distribution_per_market(httpx_mock):
@@ -1514,6 +1510,7 @@ def test_backtest_pnl_trades_mode_one_market_degrades_other_keeps_fills(
             leads=(0, 1, 2, 3),
             ask_source="trades",
             calibration_lookup=lambda icao, lead: _full_cal(),
+            min_edge=0.05,  # fill-fetch degrade, not the live floor (#440)
             max_edge=None,  # this test is about fill-fetch degrade, not the cap (#356)
         )
     assert result is not None
@@ -1555,6 +1552,7 @@ def test_backtest_pnl_trades_mode_all_408_degrades_to_mid_totals(
             leads=(0, 1, 2, 3),
             ask_source="trades",
             calibration_lookup=lambda icao, lead: _full_cal(),
+            min_edge=0.05,  # all-408 degrade, not the live floor (#440)
             max_edge=None,  # this test is about the all-408 degrade, not the cap (#356)
         )
     assert result is not None

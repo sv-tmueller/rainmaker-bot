@@ -140,14 +140,14 @@ def test_loosening_no_floor_admits_sibling_only_when_recommended_row_exists():
     rows = [
         # m1: YES bucket recommended at base (makes m1 sweep-eligible); NO
         # sibling failed the base NO floor (0.75), not edge.
-        _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.08, recommended=1, ask=0.60),
+        _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.15, recommended=1, ask=0.60),
         _row(
             market_id="m1",
             run_id="r1",
             bucket="72-73°F",
             side="NO",
             p_win=0.70,
-            edge=0.10,
+            edge=0.20,
             recommended=0,
             ask=0.20,
             actual_value=72.0,
@@ -159,7 +159,7 @@ def test_loosening_no_floor_admits_sibling_only_when_recommended_row_exists():
             bucket="80-81°F",
             side="NO",
             p_win=0.70,
-            edge=0.10,
+            edge=0.20,
             recommended=0,
             ask=0.20,
             actual_value=80.0,
@@ -170,7 +170,7 @@ def test_loosening_no_floor_admits_sibling_only_when_recommended_row_exists():
 
     loosened = replay_policy(rows, Policy(label="loose", floor_no=0.70))
     assert loosened["n_bets"] == 1  # still only m1: its NO sibling now outranks the YES one
-    assert loosened["staked"] == pytest.approx(0.20)  # the NO sibling (edge 0.10) is the new pick
+    assert loosened["staked"] == pytest.approx(0.20)  # the NO sibling (edge 0.20) is the new pick
 
 
 # (d) --------------------------------------------------------------------
@@ -183,7 +183,7 @@ def test_ksfo_tmax_row_must_clear_base_plus_station_delta():
         city="San Francisco",
         variable="TMAX",
         p_win=0.85,
-        edge=0.07,  # clears base (0.07) but not base + KSFO/TMAX delta (0.12)
+        edge=0.13,  # clears base (0.12) but not base + KSFO/TMAX delta (0.17)
         recommended=1,  # stored recommended from an earlier era, before the delta applied
         ask=0.60,
     )
@@ -196,9 +196,9 @@ def test_ksfo_tmax_row_must_clear_base_plus_station_delta():
         city="San Francisco",
         variable="TMAX",
         p_win=0.85,
-        # Clears base + delta (0.12) with margin: an exact 0.12 literal falls
-        # just short of 0.07 + 0.05 in float arithmetic (0.12000000000000001).
-        edge=0.13,
+        # Clears base + delta (0.17) with margin: an exact 0.17 literal falls
+        # just short of 0.12 + 0.05 in float arithmetic.
+        edge=0.18,
         recommended=1,
         ask=0.55,
     )
