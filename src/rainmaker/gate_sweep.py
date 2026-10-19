@@ -233,7 +233,11 @@ def replay_policy(rows: list[dict[str, Any]], policy: Policy) -> dict[str, Any]:
     return {"label": policy.label, "lower_bound": policy.is_loosening, **_score(bets)}
 
 
-def run_sweep(rows: list[dict[str, Any]], since: str | None = None) -> dict[str, Any]:
+def run_sweep(
+    rows: list[dict[str, Any]],
+    since: str | None = None,
+    leads: set[int] | None = None,
+) -> dict[str, Any]:
     """Build the two anchors, six OFAT grids, and two combined tables.
 
     since (an ISO "YYYY-MM-DD" string) restricts to rows whose run started on
@@ -242,9 +246,25 @@ def run_sweep(rows: list[dict[str, Any]], since: str | None = None) -> dict[str,
     settled_rows()'s latest-run-per-(market, UTC day) result, and since is a
     monotone on-or-after threshold, so filtering here gives the same
     surviving winners as filtering before the dedup would have.
+
+    leads (an inclusive set of lead-day integers, or None for no
+    restriction) additionally keeps only rows whose computed lead
+    (settlement_date minus run-start date) is in the set. Rows whose lead
+    cannot be computed are dropped when a restriction is active, mirroring
+    the lead-filter treatment of unparseable dates. Applied before the
+    eligibility pin, so the anchors and every grid see the same clipped
+    population (#430's short-lead evidence sweep).
     """
     if since is not None:
         rows = [r for r in rows if r["started_at"] >= since]
+    if leads is not None:
+        wanted = frozenset(leads)
+        kept: list[dict[str, Any]] = []
+        for r in rows:
+            lead = _lead_for(r)
+            if lead is not None and lead in wanted:
+                kept.append(r)
+        rows = kept
 
     anchors = {
         "as_recorded": as_recorded(rows),

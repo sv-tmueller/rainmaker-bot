@@ -1696,7 +1696,7 @@ def _fake_sweep_result(lower_bound: bool = False) -> dict:
 
 def test_gate_sweep_command_prints_anchors_and_ofat_tables(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
-    monkeypatch.setattr(cli, "run_sweep", lambda rows, since=None: _fake_sweep_result())
+    monkeypatch.setattr(cli, "run_sweep", lambda rows, since=None, leads=None: _fake_sweep_result())
 
     cli.main(["gate-sweep", "--db", str(tmp_path / "t.db")])
 
@@ -1721,7 +1721,7 @@ def test_gate_sweep_command_since_flag_is_wired_through(monkeypatch, tmp_path, c
 
     monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
 
-    def _run_sweep(rows, since=None):
+    def _run_sweep(rows, since=None, leads=None):
         captured["since"] = since
         return _fake_sweep_result()
 
@@ -1736,9 +1736,52 @@ def test_gate_sweep_command_since_flag_is_wired_through(monkeypatch, tmp_path, c
 
 def test_gate_sweep_command_prints_lower_bound_footnote_when_present(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
-    monkeypatch.setattr(cli, "run_sweep", lambda rows, since=None: _fake_sweep_result(True))
+    monkeypatch.setattr(
+        cli, "run_sweep", lambda rows, since=None, leads=None: _fake_sweep_result(True)
+    )
 
     cli.main(["gate-sweep", "--db", str(tmp_path / "t.db")])
 
     out = capsys.readouterr().out
     assert "lower bound" in out
+
+
+def test_gate_sweep_command_leads_flag_is_wired_through(monkeypatch, tmp_path, capsys):
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
+
+    def _run_sweep(rows, since=None, leads=None):
+        captured["since"] = since
+        captured["leads"] = leads
+        return _fake_sweep_result()
+
+    monkeypatch.setattr(cli, "run_sweep", _run_sweep)
+
+    cli.main(["gate-sweep", "--db", str(tmp_path / "t.db"), "--leads", "0-3"])
+
+    assert captured["leads"] == {0, 1, 2, 3}
+    out = capsys.readouterr().out
+    assert "leads: 0,1,2,3" in out
+
+
+def test_gate_sweep_command_leads_accepts_csv_form(monkeypatch, tmp_path, capsys):
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
+    monkeypatch.setattr(
+        cli,
+        "run_sweep",
+        lambda rows, since=None, leads=None: captured.update(leads=leads) or _fake_sweep_result(),
+    )
+
+    cli.main(["gate-sweep", "--db", str(tmp_path / "t.db"), "--leads", "0,1,2"])
+
+    assert captured["leads"] == {0, 1, 2}
+
+
+def test_gate_sweep_command_leads_rejects_garbage(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
+    monkeypatch.setattr(cli, "run_sweep", lambda rows, since=None, leads=None: _fake_sweep_result())
+
+    with pytest.raises(SystemExit):
+        cli.main(["gate-sweep", "--db", str(tmp_path / "t.db"), "--leads", "foo"])

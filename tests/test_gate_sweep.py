@@ -496,3 +496,69 @@ def test_loosening_no_floor_grid_row_is_flagged_as_a_lower_bound():
     assert loose_no_floor.is_loosening is True
     live_row = Policy(label="live")
     assert live_row.is_loosening is False
+
+
+# --leads (#430) ---------------------------------------------------------
+
+
+def test_leads_restricts_population_to_requested_lead_values():
+    """leads="0-3" keeps rows whose computed lead is 0..3 inclusive."""
+    rows = [
+        _row(
+            market_id="m1",
+            run_id="r1",
+            p_win=0.85,
+            edge=0.20,
+            recommended=1,
+            ask=0.60,
+            settlement_date="2026-05-30",
+            started_at="2026-05-30T00:00:00",  # lead 0
+        ),
+        _row(
+            market_id="m2",
+            run_id="r1",
+            bucket="72-73°F",
+            p_win=0.85,
+            edge=0.20,
+            recommended=1,
+            ask=0.55,
+            actual_value=72.0,
+            settlement_date="2026-05-30",
+            started_at="2026-05-27T00:00:00",  # lead 3
+        ),
+        _row(
+            market_id="m3",
+            run_id="r1",
+            bucket="74-75°F",
+            p_win=0.85,
+            edge=0.20,
+            recommended=1,
+            ask=0.50,
+            actual_value=74.0,
+            settlement_date="2026-05-30",
+            started_at="2026-05-24T00:00:00",  # lead 6, outside 0-3
+        ),
+    ]
+    full = run_sweep(rows)
+    assert full["anchors"]["as_recorded"]["n_bets"] == 3
+
+    clipped = run_sweep(rows, leads={0, 1, 2, 3})
+    assert clipped["anchors"]["as_recorded"]["n_bets"] == 2
+    assert clipped["anchors"]["as_recorded"]["staked"] == pytest.approx(1.15)
+
+
+def test_leads_none_keeps_every_row_including_negative_catch_up_leads():
+    rows = [
+        _row(
+            market_id="m1",
+            run_id="r1",
+            p_win=0.85,
+            edge=0.20,
+            recommended=1,
+            ask=0.60,
+            settlement_date="2026-05-30",
+            started_at="2026-05-31T00:00:00",  # lead -1 (catch-up run)
+        )
+    ]
+    assert run_sweep(rows)["anchors"]["as_recorded"]["n_bets"] == 1
+    assert run_sweep(rows, leads=None)["anchors"]["as_recorded"]["n_bets"] == 1
