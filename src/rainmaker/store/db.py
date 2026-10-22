@@ -16,8 +16,9 @@ with name-keyed rows). Portability rules (see CLAUDE.md / spec data model):
 """
 
 import sqlite3
+import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
 PG_CONNECT_ATTEMPTS = 4
@@ -168,6 +169,74 @@ def _translate(sql: str, n_params: int) -> str:
     return sql.replace("?", "%s")
 
 
+class ReadMeter:
+    """Process-wide count of what store reads pulled back (#468).
+
+    Bytes are the summed payload size of returned values (len() for str/bytes,
+    0 for NULL, 8 for numbers), so it is a lower bound on the wire size. It is
+    good for comparing commands, not for matching a provider's egress bill.
+    """
+
+    def __init__(self) -> None:
+        self.rows = 0
+        self.bytes = 0
+        self.connections = 0
+
+    def reset(self) -> None:
+        self.rows = 0
+        self.bytes = 0
+        self.connections = 0
+
+    def add_row(self, row: Any) -> None:
+        self.rows += 1
+        values = row.values() if isinstance(row, Mapping) else row
+        for value in values:
+            if value is None:
+                continue
+            if isinstance(value, str | bytes):
+                self.bytes += len(value)
+            else:
+                self.bytes += 8
+
+    def line(self) -> str:
+        return f"store read: {self.rows:,} rows, ~{self.bytes / 1_000_000:.1f} MB"
+
+
+READ_METER = ReadMeter()
+
+
+def report_reads() -> None:
+    """Print the read meter's one-line summary to stderr."""
+    print(READ_METER.line(), file=sys.stderr)
+
+
+class _MeteredCursor:
+    """Cursor proxy that feeds fetched rows to READ_METER; all else passes through."""
+
+    def __init__(self, cursor: Any) -> None:
+        self._cursor = cursor
+
+    def fetchall(self) -> Any:
+        rows = self._cursor.fetchall()
+        for row in rows:
+            READ_METER.add_row(row)
+        return rows
+
+    def fetchone(self) -> Any:
+        row = self._cursor.fetchone()
+        if row is not None:
+            READ_METER.add_row(row)
+        return row
+
+    def __iter__(self) -> Iterator[Any]:
+        for row in self._cursor:
+            READ_METER.add_row(row)
+            yield row
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+
 class Conn:
     """Uniform wrapper over a sqlite3 or psycopg connection.
 
@@ -178,13 +247,14 @@ class Conn:
     def __init__(self, raw: Any, backend: str) -> None:
         self._raw = raw
         self.backend = backend
+        READ_METER.connections += 1
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> Any:
         if self.backend == "postgres":
             sql = _translate(sql, len(params))
         if params:
-            return self._raw.execute(sql, params)
-        return self._raw.execute(sql)
+            return _MeteredCursor(self._raw.execute(sql, params))
+        return _MeteredCursor(self._raw.execute(sql))
 
     def commit(self) -> None:
         self._raw.commit()

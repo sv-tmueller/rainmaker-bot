@@ -5,11 +5,14 @@ import pytest
 
 from rainmaker.store.db import (
     PG_CONNECT_ATTEMPTS,
+    READ_METER,
+    Conn,
     _backend_for,
     _schema_for,
     _translate,
     connect,
     init_schema,
+    report_reads,
 )
 
 FAKE_DSN = "postgresql://fake:fake@localhost/fake"
@@ -212,3 +215,96 @@ def test_connect_sqlite_busy_timeout_is_explicit_and_raised():
     ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
     conn.close()
     assert ms == 30_000
+
+
+def _meter_conn() -> Conn:
+    READ_METER.reset()
+    conn = connect(":memory:")
+    conn.execute("CREATE TABLE t (a TEXT, b REAL, c TEXT)")
+    conn.execute("INSERT INTO t VALUES ('abcde', 1.5, NULL)")
+    conn.execute("INSERT INTO t VALUES ('xy', 2.5, 'k')")
+    conn.commit()
+    return conn
+
+
+def test_read_meter_counts_rows_and_bytes_on_fetchall():
+    conn = _meter_conn()
+    rows = conn.execute("SELECT a, b, c FROM t ORDER BY a").fetchall()
+    assert len(rows) == 2
+    # row 1: 'abcde'=5 + REAL=8 + NULL=0; row 2: 'xy'=2 + 8 + 'k'=1
+    assert READ_METER.rows == 2
+    assert READ_METER.bytes == 13 + 11
+
+
+def test_read_meter_counts_fetchone_and_ignores_exhausted_cursor():
+    conn = _meter_conn()
+    cur = conn.execute("SELECT a, b, c FROM t ORDER BY a")
+    assert cur.fetchone() is not None
+    assert (READ_METER.rows, READ_METER.bytes) == (1, 13)
+    assert cur.fetchone() is not None
+    assert cur.fetchone() is None
+    assert (READ_METER.rows, READ_METER.bytes) == (2, 24)
+
+
+def test_read_meter_counts_iteration():
+    conn = _meter_conn()
+    seen = [r["a"] for r in conn.execute("SELECT a, b, c FROM t ORDER BY a")]
+    assert seen == ["abcde", "xy"]
+    assert (READ_METER.rows, READ_METER.bytes) == (2, 24)
+
+
+def test_read_meter_ignores_ddl_and_inserts_and_passes_rowcount_through():
+    conn = _meter_conn()
+    assert (READ_METER.rows, READ_METER.bytes) == (0, 0)
+    cur = conn.execute("DELETE FROM t WHERE a = ?", ("xy",))
+    assert cur.rowcount == 1
+    assert (READ_METER.rows, READ_METER.bytes) == (0, 0)
+
+
+def test_read_meter_counts_connections():
+    READ_METER.reset()
+    assert READ_METER.connections == 0
+    connect(":memory:")
+    connect(":memory:")
+    assert READ_METER.connections == 2
+
+
+class _FakePgCursor:
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def fetchall(self):
+        out, self._rows = self._rows, []
+        return out
+
+
+class _FakePgRaw:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def execute(self, sql, params=()):
+        return _FakePgCursor(self._rows)
+
+
+def test_read_meter_sizes_dict_rows_by_value_not_key():
+    READ_METER.reset()
+    conn = Conn(_FakePgRaw([{"a_long_column_name": "abc", "n": None, "x": 1.0}]), "postgres")
+    conn.execute("SELECT 1").fetchall()
+    assert READ_METER.rows == 1
+    assert READ_METER.bytes == 3 + 0 + 8
+
+
+def test_read_meter_line_format_uses_thousands_separators_and_decimal_mb():
+    READ_METER.reset()
+    READ_METER.rows = 41203
+    READ_METER.bytes = 18_400_000
+    assert READ_METER.line() == "store read: 41,203 rows, ~18.4 MB"
+
+
+def test_report_reads_prints_the_line_to_stderr_only(capsys):
+    READ_METER.reset()
+    READ_METER.rows = 3
+    report_reads()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "store read: 3 rows, ~0.0 MB\n"
