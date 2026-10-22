@@ -443,4 +443,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from rainmaker.store.db import READ_METER, report_reads
+
+    try:
+        raise SystemExit(main())
+    finally:
+        if READ_METER.connections:
+            report_reads()
