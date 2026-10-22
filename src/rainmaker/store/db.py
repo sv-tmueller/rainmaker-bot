@@ -157,6 +157,21 @@ def _backend_for(dsn: str) -> str:
     return "postgres" if dsn.startswith(("postgres://", "postgresql://")) else "sqlite"
 
 
+def refuse_prod_dsn(dsn: str, *, allow_prod: bool) -> None:
+    """Abort an ad hoc script that would read a Postgres store without opt-in.
+
+    Every full prod read counts against the Supabase free-tier egress quota
+    (#469). The message never includes the DSN (it carries the password).
+    """
+    if _backend_for(dsn) == "postgres" and not allow_prod:
+        raise SystemExit(
+            "refusing to read a Postgres DSN without --allow-prod: ad hoc analysis"
+            " runs against a local store by default, and every full prod read"
+            " counts against the Supabase free-tier egress quota (#469). Pass"
+            " --allow-prod to read prod on purpose."
+        )
+
+
 def _schema_for(backend: str) -> str:
     return _POSTGRES_SCHEMA if backend == "postgres" else _SQLITE_SCHEMA
 
