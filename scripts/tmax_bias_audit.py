@@ -13,8 +13,8 @@ Usage:
     # Local SQLite (demo):
     python scripts/tmax_bias_audit.py
 
-    # Production (requires DATABASE_URL):
-    DATABASE_URL="postgresql://..." python scripts/tmax_bias_audit.py
+    # Production (requires DATABASE_URL and an explicit opt-in, #469):
+    DATABASE_URL="postgresql://..." python scripts/tmax_bias_audit.py --allow-prod
 
 Outputs:
     - Per (city, lead) bias table (forecast mean minus actual mean)
@@ -24,6 +24,7 @@ Outputs:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import statistics
@@ -36,7 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from rainmaker.config import STATION_EDGE_DELTA, STATION_POLICIES, STATIONS
-from rainmaker.store.db import connect, init_schema
+from rainmaker.store.db import connect, init_schema, refuse_prod_dsn
 
 AUDIT_CITIES = ["Los Angeles", "San Francisco", "Dallas", "Houston"]
 TARGET_VARIABLE = "TMAX"
@@ -44,9 +45,10 @@ THRESHOLD_GATE_BIAS_F = 3.0  # deg F: bias above this suggests gating/exclusion
 THRESHOLD_TIGHTEN_BIAS_F = 1.5  # deg F: bias above this suggests tightening
 
 
-def get_db_conn():
-    """Connect to the store."""
+def get_db_conn(allow_prod: bool = False):
+    """Connect to the store; a Postgres DSN needs allow_prod (#469)."""
     dsn = os.environ.get("DATABASE_URL", "rainmaker.db")
+    refuse_prod_dsn(dsn, allow_prod=allow_prod)
     conn = connect(dsn)
     init_schema(conn)
     return conn
@@ -287,7 +289,14 @@ def identify_refit_cell(city, lead):
 
 
 def main():
-    conn = get_db_conn()
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--allow-prod",
+        action="store_true",
+        help="permit reading a Postgres (prod) DSN; refused by default (#469)",
+    )
+    args = ap.parse_args()
+    conn = get_db_conn(allow_prod=args.allow_prod)
 
     print("=" * 80)
     print("ISSUE #373: HOT-CITY TMAX CALIBRATION AUDIT")

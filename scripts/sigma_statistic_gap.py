@@ -30,7 +30,10 @@ also excluded from the comparison). Read-only SELECTs; DSN never echoed.
 
 Usage:
     uv run python scripts/sigma_statistic_gap.py \
-        [--dsn-file PATH] [--since YYYY-MM-DD] [--output FILE]
+        [--dsn-file PATH] [--since YYYY-MM-DD] [--output FILE] [--allow-prod]
+
+A Postgres DSN is refused unless --allow-prod is passed (#469): run against a
+local store, and read prod only when the answer needs it.
 """
 
 from __future__ import annotations
@@ -60,7 +63,7 @@ from rainmaker.probability.calibration import (  # noqa: E402
     fit_student_t_free_df,
 )
 from rainmaker.probability.distribution import mixture_sigma  # noqa: E402
-from rainmaker.store.db import connect  # noqa: E402
+from rainmaker.store.db import connect, refuse_prod_dsn  # noqa: E402
 
 DECISION_ABS_DVAR_B = 0.05  # pre-registered immateriality threshold (#459)
 DECISION_MIN_N = 40  # cells below this n are exempt from the threshold
@@ -256,6 +259,11 @@ def main() -> int:
         help="which singleton groups count as the archive-style det set"
         " (openmeteo excludes the NWS singleton; sensitivity arm)",
     )
+    ap.add_argument(
+        "--allow-prod",
+        action="store_true",
+        help="permit reading a Postgres (prod) DSN; refused by default (#469)",
+    )
     args = ap.parse_args()
 
     dsn = os.environ.get("DATABASE_URL")
@@ -264,6 +272,7 @@ def main() -> int:
     if not dsn:
         print("DATABASE_URL not set and no --dsn-file readable; aborting", file=sys.stderr)
         return 2
+    refuse_prod_dsn(dsn, allow_prod=args.allow_prod)
     conn = connect(dsn)  # never echo the DSN
     try:
         cells, rows = fetch_cells_and_history(conn, args.since)

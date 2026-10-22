@@ -44,7 +44,7 @@ CALIBRATION_FAMILY dispatch unchanged), and the fitted var_b compared:
 
 Tool: scripts/sigma_statistic_gap.py (kept beside refit_v2_replay.py;
 read-only SELECTs, DSN via --dsn-file, never echoed). Results regenerate
-with `uv run python scripts/sigma_statistic_gap.py`.
+with `uv run python scripts/sigma_statistic_gap.py --allow-prod`.
 
 ## Population
 

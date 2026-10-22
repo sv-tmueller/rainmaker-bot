@@ -3,8 +3,12 @@
 Emits per-(station, variable, lead) recon counts and the recon/archive route
 (split at MIN_CAL_SAMPLES), plus the skip counters that gate CP3 (containment:
 widespread NULL lead_time or pool decode gaps park CP3). Never echoes the DSN.
+
+A Postgres DSN is refused unless --allow-prod is passed (#469). Usage:
+    uv run python scripts/regime_refit_v3_dryrun.py [DSN_FILE] [--allow-prod]
 """
 
+import argparse
 import json
 import os
 import sys
@@ -14,17 +18,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from rainmaker.backfill_recon import build_recon_pairs, routing_table  # noqa: E402
 from rainmaker.config import MIN_CAL_SAMPLES  # noqa: E402
-from rainmaker.store.db import connect  # noqa: E402
+from rainmaker.store.db import connect, refuse_prod_dsn  # noqa: E402
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("dsn_file", nargs="?", default="/tmp/batch462/dsn.env")
+    ap.add_argument(
+        "--allow-prod",
+        action="store_true",
+        help="permit reading a Postgres (prod) DSN; refused by default (#469)",
+    )
+    args = ap.parse_args()
+
     dsn = os.environ.get("DATABASE_URL")
-    dsn_file = sys.argv[1] if len(sys.argv) > 1 else "/tmp/batch462/dsn.env"
-    if not dsn and Path(dsn_file).exists():
-        dsn = Path(dsn_file).read_text().strip()
+    if not dsn and Path(args.dsn_file).exists():
+        dsn = Path(args.dsn_file).read_text().strip()
     if not dsn:
         print("no DSN available", file=sys.stderr)
         return 2
+    refuse_prod_dsn(dsn, allow_prod=args.allow_prod)
     conn = connect(dsn)
     try:
         pairs, counts = build_recon_pairs(conn)

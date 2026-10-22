@@ -57,6 +57,23 @@ you mean to touch prod.
   reason, US Polymarket settlement degrades to the ASOS fallback
   automatically; no manual intervention is needed.
 
+## Ad hoc analysis and prod reads
+
+Run measurements against a local store, not prod. Every full read of the prod
+Supabase database counts against the free-tier egress quota (the 2026-10-19
+spike, #465).
+
+- The five analysis scripts in `scripts/` (`sigma_statistic_gap.py`,
+  `refit_v2_replay.py`, `regime_refit_v3_dryrun.py`,
+  `regime_refit_v3_preflip.py`, `tmax_bias_audit.py`) refuse a Postgres DSN
+  unless you pass `--allow-prod`. A SQLite path needs no flag.
+- Pass the flag only when the question needs prod data. Run once and keep the
+  output instead of re-reading.
+- The `rainmaker` CLI has no such guard, because the scheduled workflows need
+  prod. The rule still applies to hand runs with `DATABASE_URL` exported.
+- There is no backup-restore tooling yet to build a local copy of prod (it
+  would need a local Postgres 17).
+
 ## Commands
 
 - `uv run rainmaker run`: discover live US-city temperature markets, forecast,
