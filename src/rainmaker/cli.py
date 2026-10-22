@@ -11,6 +11,7 @@ import httpx
 from pydantic import ValidationError
 
 from rainmaker.backfill import run_backfill, season_window
+from rainmaker.backfill_recon import build_recon_pairs
 from rainmaker.backtest import BacktestPair, backtest_real, backtest_synthetic, render_report
 from rainmaker.config import (
     BACKFILL_DAYS,
@@ -330,11 +331,15 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
     failed = 0
     try:
         init_schema(conn)
+        # One build per invocation (#466). Season-window clip, same invariant
+        # as the archive path: recon pairs from runs on/after the window start
+        # only, so summer history cannot contaminate fall cells.
+        recon_pairs, _counts = build_recon_pairs(conn, since=start.isoformat())
         for station in stations:
             for var in variables:
                 now = _now_iso()
                 try:
-                    results = run_backfill(station, var, leads, start, end, client, conn)
+                    results = run_backfill(station, var, leads, start, end, client, recon_pairs)
                 except (httpx.HTTPError, ValueError) as exc:
                     if isinstance(exc, ValidationError):
                         raise  # schema bug, not a data gap; fail loud

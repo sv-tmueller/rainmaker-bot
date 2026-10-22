@@ -452,7 +452,7 @@ def test_backfill_cli_saves_a_row_per_lead_and_station(httpx_mock, tmp_path, mon
 
 # ---------------------------------------------------------------------------
 # #462 routing: recon pairs from the store beat the archive fallback when the
-# cell reached MIN_CAL_SAMPLES; conn=None keeps the pure archive path.
+# cell reached MIN_CAL_SAMPLES; no recon pairs keeps the pure archive path.
 # ---------------------------------------------------------------------------
 
 
@@ -506,49 +506,23 @@ def _seed_recon_store(db_path: str, n_pairs: int, lead: int = 1) -> None:
     conn.close()
 
 
-def test_run_backfill_recon_pairs_are_season_window_clipped(httpx_mock, tmp_path):
-    # Recon pairs from runs BEFORE the window start must not feed the fit
-    # (the archive path's cross-season invariant, applied to recon too).
-    db = str(tmp_path / "clip.db")
-    _seed_recon_store(db, n_pairs=MIN_CAL_SAMPLES)  # runs 2026-09-01.., lead 1
-    from rainmaker.store.db import connect
-
-    conn = connect(db)
-    try:
-        with httpx.Client() as client:
-            # Window starts AFTER every seeded run: no recon pair qualifies,
-            # so the cell falls back to the archive.
-            httpx_mock.add_response(
-                url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
-            )
-            asos_fixture = (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
-            httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
-            results = run_backfill(
-                KLGA, "TMAX", (1,), date(2026, 10, 1), date(2026, 10, 5), client, conn
-            )
-    finally:
-        conn.close()
-    assert 1 in results
-    cal, _acc = results[1]
-    # archive served the fit (fixture n=2), not the out-of-window recon pairs
-    assert cal.n_samples == 2
-
-
 def test_run_backfill_routes_dense_recon_cell_off_the_archive(httpx_mock, tmp_path):
     # A store holding >= MIN_CAL_SAMPLES recon pairs for (KLGA, TMAX, 1):
     # the cell must fit on those WITHOUT touching the archive HTTP APIs.
     db = str(tmp_path / "recon.db")
     _seed_recon_store(db, n_pairs=MIN_CAL_SAMPLES)
+    from rainmaker.backfill_recon import build_recon_pairs
     from rainmaker.store.db import connect
 
     conn = connect(db)
     try:
-        with httpx.Client() as client:
-            results = run_backfill(
-                KLGA, "TMAX", (1,), date(2026, 9, 1), date(2026, 9, 30), client, conn
-            )
+        recon_pairs, _counts = build_recon_pairs(conn, since="2026-09-01")
     finally:
         conn.close()
+    with httpx.Client() as client:
+        results = run_backfill(
+            KLGA, "TMAX", (1,), date(2026, 9, 1), date(2026, 9, 30), client, recon_pairs
+        )
     assert 1 in results
     cal, acc = results[1]
     assert cal.n_samples == MIN_CAL_SAMPLES
@@ -567,24 +541,26 @@ def test_run_backfill_thin_recon_cell_falls_back_to_archive(httpx_mock, tmp_path
     )
     asos_fixture = (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
     httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
+    from rainmaker.backfill_recon import build_recon_pairs
     from rainmaker.store.db import connect
 
     conn = connect(db)
     try:
-        with httpx.Client() as client:
-            results = run_backfill(
-                KLGA, "TMAX", (1,), date(2026, 3, 1), date(2026, 3, 2), client, conn
-            )
+        recon_pairs, _counts = build_recon_pairs(conn, since="2026-03-01")
     finally:
         conn.close()
+    with httpx.Client() as client:
+        results = run_backfill(
+            KLGA, "TMAX", (1,), date(2026, 3, 1), date(2026, 3, 2), client, recon_pairs
+        )
     assert 1 in results
     # the archive served the fit (fixture pairs), not the 3 recon pairs
     cal, _acc = results[1]
     assert cal.n_samples == 2
 
 
-def test_run_backfill_conn_none_keeps_pure_archive_path(httpx_mock):
-    # conn=None (default): identical to the pre-#462 behavior, no store read.
+def test_run_backfill_without_recon_pairs_keeps_pure_archive_path(httpx_mock):
+    # recon_pairs=None (default): identical to the pre-#462 behavior, no store read.
     httpx_mock.add_response(
         url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
     )
@@ -843,7 +819,24 @@ def _read_characterization_rows(db_path: str) -> dict[tuple[str, str, int], dict
     return out
 
 
-def _run_characterization_backfill(tmp_path, monkeypatch) -> dict[tuple[str, str, int], Any]:
+class _CountingConn:
+    """Test-local connection wrapper: records every SQL string executed."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.sql: list[str] = []
+
+    def execute(self, sql, params=()):
+        self.sql.append(sql)
+        return self._inner.execute(sql, params)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def _run_characterization_backfill(
+    tmp_path, monkeypatch, connections: list[_CountingConn] | None = None
+) -> dict[tuple[str, str, int], Any]:
     import rainmaker.backfill as backfill_mod
     import rainmaker.cli as cli
 
@@ -851,6 +844,15 @@ def _run_characterization_backfill(tmp_path, monkeypatch) -> dict[tuple[str, str
     _seed_characterization_store(db)
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 10, 30))
     monkeypatch.setattr(cli, "build_backfill_client", lambda: _Closable())
+    if connections is not None:
+        real_connect = cli.connect
+
+        def counting_connect(dsn):
+            wrapped = _CountingConn(real_connect(dsn))
+            connections.append(wrapped)
+            return wrapped
+
+        monkeypatch.setattr(cli, "connect", counting_connect)
 
     def fake_archive(station, leads, start, end, client, variable="TMAX"):
         if (station.icao, variable) != ("KLGA", "TMAX"):
@@ -871,6 +873,17 @@ def _run_characterization_backfill(tmp_path, monkeypatch) -> dict[tuple[str, str
     monkeypatch.setattr(backfill_mod, "venue_actuals", fake_actuals)
     _backfill("all", "all", 45, (0, 1, 2, 3), db)
     return _read_characterization_rows(db)
+
+
+def test_backfill_cli_reads_the_forecasts_table_once_per_run(tmp_path, monkeypatch):
+    # The recon pools are built once per invocation, not once per
+    # (station, variable) cell (#466). The per-cell build issued 26 forecasts
+    # SELECTs here.
+    connections: list[_CountingConn] = []
+    _run_characterization_backfill(tmp_path, monkeypatch, connections)
+    assert len(connections) == 1
+    forecast_reads = [q for q in connections[0].sql if "FROM forecasts" in q]
+    assert len(forecast_reads) == 1
 
 
 def test_backfill_cli_characterization_pins_every_calibration_row(tmp_path, monkeypatch):
