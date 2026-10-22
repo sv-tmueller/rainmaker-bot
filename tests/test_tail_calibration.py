@@ -12,12 +12,14 @@ import re
 import pytest
 from scipy.stats import norm
 
+from rainmaker import tracking
 from rainmaker.cli import _tail_check
-from rainmaker.store.db import connect, init_schema
+from rainmaker.store.db import Conn, connect, init_schema
 from rainmaker.tracking import (
     MIN_TAIL_N,
     _pit_tail_ratios,
     compute_calibration_by_cell,
+    compute_inter_family_gap_summary,
     compute_tail_calibration,
     settled_rows,
 )
@@ -1673,3 +1675,142 @@ def test_cli_tail_check_unfiltered_prints_since_only_note(tmp_path, capsys):
 
     _tail_check(db, since=_CHAR_SINCE)
     assert "since-only" not in capsys.readouterr().out
+
+
+class _RecordingConn:
+    """Wraps a real Conn and records (sql, params, rows returned) per statement."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.calls: list[tuple[str, tuple, int]] = []
+
+    def execute(self, sql, params=()):
+        rows = self._conn.execute(sql, params).fetchall()
+        self.calls.append((sql, tuple(params), len(rows)))
+
+        class _Result:
+            def fetchall(self):
+                return rows
+
+        return _Result()
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+_CHAR_KEPT_PAIRS = {
+    ("r-a1-2000", "a1"),
+    ("r-a1-d2", "a1"),
+    ("r-b1-y", "b1"),
+    ("r-c1-utc", "c1"),
+    ("r-d2", "d2"),
+    ("r-f1", "f1"),
+    ("r-g1", "g1"),
+    ("r-h", "h1"),
+    ("r-h", "h2"),
+}
+
+
+def _bound_pairs(params):
+    return {(params[i], params[i + 1]) for i in range(0, len(params), 2)}
+
+
+def _member_fetches(rec):
+    return [c for c in rec.calls if "values_json" in c[0]]
+
+
+def test_gap_member_fetch_binds_and_returns_only_kept_pairs():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _seed_gap_characterization(conn)
+    rec = _RecordingConn(conn)
+
+    gap = compute_inter_family_gap_summary(rec, since=_CHAR_SINCE)
+
+    assert gap == pytest.approx(_CHAR_GAP, rel=1e-9, abs=1e-12)
+    fetches = _member_fetches(rec)
+    assert len(fetches) == 1
+    _sql, params, n_rows = fetches[0]
+    assert _bound_pairs(params) == _CHAR_KEPT_PAIRS
+    # Superseded intraday rows (r-a1-0800, r-a1-1400, r-b1-x, r-c1-off) and the
+    # excluded markets never come back with member lists: exactly the kept
+    # pairs' forecast rows are transferred.
+    expected = conn.execute(
+        "SELECT COUNT(*) AS n FROM forecasts WHERE "
+        + " OR ".join("(run_id = ? AND market_id = ?)" for _ in _CHAR_KEPT_PAIRS),
+        [x for pair in sorted(_CHAR_KEPT_PAIRS) for x in pair],
+    ).fetchone()["n"]
+    assert n_rows == expected
+    conn.close()
+
+
+def test_gap_key_query_does_not_carry_values_json():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _seed_gap_characterization(conn)
+    rec = _RecordingConn(conn)
+
+    compute_inter_family_gap_summary(rec, since=_CHAR_SINCE)
+    conn.close()
+
+    key_calls = [c for c in rec.calls if "values_json" not in c[0]]
+    assert len(key_calls) == 1
+    assert "forecasts" in key_calls[0][0]
+    assert key_calls[0][1] == (_CHAR_SINCE,)
+
+
+def test_gap_member_fetch_chunks_by_pair(monkeypatch):
+    monkeypatch.setattr(tracking, "_GAP_FETCH_CHUNK_PAIRS", 2)
+    conn = connect(":memory:")
+    init_schema(conn)
+    _seed_gap_characterization(conn)
+    rec = _RecordingConn(conn)
+
+    gap = compute_inter_family_gap_summary(rec, since=_CHAR_SINCE)
+    conn.close()
+
+    assert gap == pytest.approx(_CHAR_GAP, rel=1e-9, abs=1e-12)
+    fetches = _member_fetches(rec)
+    assert len(fetches) == 5  # 9 kept pairs, 2 per statement
+    assert all(len(p) <= 4 for _s, p, _n in fetches)
+    assert set().union(*(_bound_pairs(p) for _s, p, _n in fetches)) == _CHAR_KEPT_PAIRS
+
+
+def test_gap_member_fetch_chunk_stays_under_the_bound_variable_limit():
+    assert tracking._GAP_FETCH_CHUNK_PAIRS * 2 <= 500
+
+
+def test_gap_member_fetch_placeholders_match_params_on_postgres_translation():
+    """Conn('postgres') raises on a placeholder/param count mismatch before it
+    reaches the driver, so a stub raw connection proves the statement shape."""
+    sqls: list[tuple[str, tuple]] = []
+
+    class _Cur:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class _Raw:
+        def execute(self, sql, params=()):
+            sqls.append((sql, tuple(params)))
+            if "values_json" in sql:
+                return _Cur([])
+            return _Cur(
+                [
+                    {
+                        "market_id": f"m{i}",
+                        "run_id": f"r{i}",
+                        "started_at": "2026-07-10T10:00:00+00:00",
+                        "mkt_variable": "TMAX",
+                        "settlement_date": "2026-07-11",
+                    }
+                    for i in range(3)
+                ]
+            )
+
+    assert compute_inter_family_gap_summary(Conn(_Raw(), "postgres"), since="2026-07-01") == []
+    sql, params = sqls[-1]
+    assert "values_json" in sql
+    assert sql.count("%s") == len(params) == 6
