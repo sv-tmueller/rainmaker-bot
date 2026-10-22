@@ -206,7 +206,12 @@ READ_METER = ReadMeter()
 
 
 def report_reads() -> None:
-    """Print the read meter's one-line summary to stderr."""
+    """Print the read meter's one-line summary to stderr.
+
+    Stdout is flushed first: piped to a file it is block-buffered, so without
+    this the line would land above the command's own output in a CI log.
+    """
+    sys.stdout.flush()
     print(READ_METER.line(), file=sys.stderr)
 
 

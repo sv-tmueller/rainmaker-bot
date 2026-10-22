@@ -443,10 +443,10 @@ def main():
 
 
 if __name__ == "__main__":
-    # Imported here, not at module top, so the hunk stays confined to this block.
-    from rainmaker.store.db import report_reads
+    from rainmaker.store.db import READ_METER, report_reads
 
     try:
         raise SystemExit(main())
     finally:
-        report_reads()
+        if READ_METER.connections:
+            report_reads()

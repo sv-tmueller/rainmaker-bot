@@ -1937,25 +1937,25 @@ def _seeded_reader(db: str, n_rows: int):
 
 
 METERED_COMMANDS = [
-    ("run", "_run", []),
-    ("settle", "_settle", []),
-    ("prune", "_prune", []),
-    ("snapshot", "_snapshot", []),
-    ("track", "_track", []),
-    ("tail-check", "_tail_check", []),
-    ("attribution", "_attribution", []),
-    ("clv", "_clv", []),
-    ("backfill", "_backfill", []),
+    ("run", "_run"),
+    ("settle", "_settle"),
+    ("prune", "_prune"),
+    ("snapshot", "_snapshot"),
+    ("track", "_track"),
+    ("tail-check", "_tail_check"),
+    ("attribution", "_attribution"),
+    ("clv", "_clv"),
+    ("backfill", "_backfill"),
 ]
 
 
-@pytest.mark.parametrize(("command", "handler", "extra"), METERED_COMMANDS)
+@pytest.mark.parametrize(("command", "handler"), METERED_COMMANDS)
 def test_store_command_prints_one_read_meter_line_to_stderr(
-    monkeypatch, tmp_path, capsys, command, handler, extra
+    monkeypatch, tmp_path, capsys, command, handler
 ):
     db = str(tmp_path / "t.db")
     monkeypatch.setattr(cli, handler, _seeded_reader(db, 3))
-    cli.main([command, "--db", db, *extra])
+    cli.main([command, "--db", db])
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "store read: 3 rows, ~0.0 MB\n"

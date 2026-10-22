@@ -308,3 +308,25 @@ def test_report_reads_prints_the_line_to_stderr_only(capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "store read: 3 rows, ~0.0 MB\n"
+
+
+def test_report_reads_flushes_stdout_before_writing_the_stderr_line(monkeypatch):
+    events: list[tuple[str, str]] = []
+
+    class Recorder:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def write(self, text: str) -> int:
+            events.append((self.name + ".write", text))
+            return len(text)
+
+        def flush(self) -> None:
+            events.append((self.name + ".flush", ""))
+
+    monkeypatch.setattr("sys.stdout", Recorder("stdout"))
+    monkeypatch.setattr("sys.stderr", Recorder("stderr"))
+    READ_METER.reset()
+    report_reads()
+    names = [name for name, _ in events]
+    assert names.index("stdout.flush") < names.index("stderr.write")
