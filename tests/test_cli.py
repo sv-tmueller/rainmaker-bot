@@ -1917,3 +1917,101 @@ def test_backfill_dead_source_continues_and_summarizes(monkeypatch, tmp_path, ca
     assert f"fitted {total - len(dead_icaos)}" in out
     assert f"failed {len(dead_icaos)}" in out
     assert "ncei down" in captured.err  # the failure itself is not swallowed
+
+
+def _seeded_reader(db: str, n_rows: int):
+    """A stub command handler that reads n_rows from a seeded temp SQLite."""
+
+    def handler(*args, **kwargs):
+        conn = connect(db)
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS seed (a TEXT)")
+            for _ in range(n_rows):
+                conn.execute("INSERT INTO seed VALUES ('xx')")
+            conn.commit()
+            conn.execute("SELECT a FROM seed").fetchall()
+        finally:
+            conn.close()
+
+    return handler
+
+
+METERED_COMMANDS = [
+    ("run", "_run", []),
+    ("settle", "_settle", []),
+    ("prune", "_prune", []),
+    ("snapshot", "_snapshot", []),
+    ("track", "_track", []),
+    ("tail-check", "_tail_check", []),
+    ("attribution", "_attribution", []),
+    ("clv", "_clv", []),
+    ("backfill", "_backfill", []),
+]
+
+
+@pytest.mark.parametrize(("command", "handler", "extra"), METERED_COMMANDS)
+def test_store_command_prints_one_read_meter_line_to_stderr(
+    monkeypatch, tmp_path, capsys, command, handler, extra
+):
+    db = str(tmp_path / "t.db")
+    monkeypatch.setattr(cli, handler, _seeded_reader(db, 3))
+    cli.main([command, "--db", db, *extra])
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "store read: 3 rows, ~0.0 MB\n"
+
+
+def test_read_meter_line_still_prints_when_the_command_exits_nonzero(monkeypatch, tmp_path, capsys):
+    db = str(tmp_path / "t.db")
+    reader = _seeded_reader(db, 2)
+
+    def failing(*args, **kwargs):
+        reader()
+        raise SystemExit(1)
+
+    monkeypatch.setattr(cli, "_settle", failing)
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["settle", "--db", db])
+    assert excinfo.value.code == 1
+    assert capsys.readouterr().err == "store read: 2 rows, ~0.0 MB\n"
+
+
+def test_read_meter_line_still_prints_when_the_command_crashes(monkeypatch, tmp_path, capsys):
+    db = str(tmp_path / "t.db")
+    reader = _seeded_reader(db, 2)
+
+    def crashing(*args, **kwargs):
+        reader()
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cli, "_settle", crashing)
+    with pytest.raises(RuntimeError, match="boom"):
+        cli.main(["settle", "--db", db])
+    assert capsys.readouterr().err == "store read: 2 rows, ~0.0 MB\n"
+
+
+def test_read_meter_resets_between_main_calls(monkeypatch, tmp_path, capsys):
+    db = str(tmp_path / "t.db")
+    monkeypatch.setattr(cli, "_settle", _seeded_reader(db, 3))
+    cli.main(["settle", "--db", db])
+    capsys.readouterr()
+    cli.main(["settle", "--db", db])
+    # without a reset the second line would be cumulative (3 + 6 = 9 rows)
+    assert capsys.readouterr().err == "store read: 6 rows, ~0.0 MB\n"
+
+
+def test_no_read_meter_line_for_a_command_that_never_touches_the_store(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_backtest", lambda *a, **k: None)
+    cli.main(["backtest"])
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_real_track_command_reports_its_store_reads_on_stderr(tmp_path, capsys):
+    db = str(tmp_path / "t.db")
+    cli.main(["track", "--db", db])
+    captured = capsys.readouterr()
+    assert captured.err.count("store read:") == 1
+    assert captured.err.endswith(" MB\n")
+    assert "store read:" not in captured.out

@@ -48,4 +48,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Imported here, not at module top, so the hunk stays confined to this block.
+    from rainmaker.store.db import report_reads
+
+    try:
+        raise SystemExit(main())
+    finally:
+        report_reads()

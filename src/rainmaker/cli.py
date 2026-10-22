@@ -58,7 +58,7 @@ from rainmaker.settlement_divergence import (
     run_spike,
     summarise,
 )
-from rainmaker.store.db import connect, init_schema
+from rainmaker.store.db import READ_METER, connect, init_schema, report_reads
 from rainmaker.store.prune import prune_settled
 from rainmaker.store.query import list_calibration_cells, load_calibration
 from rainmaker.store.record import (
@@ -1050,6 +1050,20 @@ def _venue_decomp(db_path: str, since: str | None = None) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    """Run one command, then print the store read meter line to stderr (#468).
+
+    The finally covers a SystemExit and a crash, so a failed run still reports
+    what it pulled. A command that never opened a store connection stays silent.
+    """
+    READ_METER.reset()
+    try:
+        _main(argv)
+    finally:
+        if READ_METER.connections:
+            report_reads()
+
+
+def _main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="rainmaker")
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="produce the daily edge-ranked report")
