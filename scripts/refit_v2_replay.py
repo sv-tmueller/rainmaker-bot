@@ -21,11 +21,12 @@ own contribution.
 
 DSN handling: DATABASE_URL must be set externally (never echoed). The script
 reads it from the environment or from a file passed via --dsn-file, without
-printing its value.
+printing its value. A Postgres DSN is refused unless --allow-prod is passed
+(#469): run against a local store, and read prod only when the answer needs it.
 
 Usage:
     DATABASE_URL="postgresql://..." uv run python scripts/refit_v2_replay.py \
-        [--dsn-file PATH] [--since YYYY-MM-DD] [--output FILE]
+        [--dsn-file PATH] [--since YYYY-MM-DD] [--output FILE] [--allow-prod]
 
 Queries are read-only SELECTs; nothing is written to the datastore.
 """
@@ -55,7 +56,7 @@ from rainmaker.config import (  # noqa: E402
 )
 from rainmaker.probability.calibration import std_cdf_for  # noqa: E402
 from rainmaker.probability.outcomes import settles  # noqa: E402
-from rainmaker.store.db import connect  # noqa: E402
+from rainmaker.store.db import connect, refuse_prod_dsn  # noqa: E402
 
 # ----------------------------------------------------------------------------
 # Old sigma definition (pre-#426): equal-weight mixture over ENSEMBLE groups
@@ -348,6 +349,11 @@ def main() -> int:
     ap.add_argument("--dsn-file", default="/tmp/batch424/dsn.env")
     ap.add_argument("--since", default=None, help="restrict to runs started on/after this date")
     ap.add_argument("--output", default="scripts/refit_v2_replay_results.json")
+    ap.add_argument(
+        "--allow-prod",
+        action="store_true",
+        help="permit reading a Postgres (prod) DSN; refused by default (#469)",
+    )
     args = ap.parse_args()
 
     dsn = os.environ.get("DATABASE_URL")
@@ -356,6 +362,7 @@ def main() -> int:
     if not dsn:
         print("DATABASE_URL not set and no --dsn-file readable; aborting", file=sys.stderr)
         return 2
+    refuse_prod_dsn(dsn, allow_prod=args.allow_prod)
     # Never echo the DSN.
     conn = connect(dsn)
     try:

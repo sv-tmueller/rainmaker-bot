@@ -7,12 +7,14 @@ resulting var_b against the #459 apply-arm table (the var_b the live path's
 statistic implies). Broad reproduction of those values is the checkpoint's
 green light; large unexplained divergence stops the checkpoint.
 
-Read-only SELECTs; DSN never echoed. Usage:
-    uv run python scripts/regime_refit_v3_preflip.py [--dsn-file PATH]
+Read-only SELECTs; DSN never echoed. A Postgres DSN is refused unless
+--allow-prod is passed (#469). Usage:
+    uv run python scripts/regime_refit_v3_preflip.py [--dsn-file PATH] [--allow-prod]
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from datetime import date
@@ -32,18 +34,26 @@ from rainmaker.probability.calibration import (  # noqa: E402
     fit_calibration,
     fit_student_t_free_df,
 )
-from rainmaker.store.db import connect  # noqa: E402
+from rainmaker.store.db import connect, refuse_prod_dsn  # noqa: E402
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--dsn-file", default="/tmp/batch462/dsn.env")
+    ap.add_argument(
+        "--allow-prod",
+        action="store_true",
+        help="permit reading a Postgres (prod) DSN; refused by default (#469)",
+    )
+    args = ap.parse_args()
+
     dsn = os.environ.get("DATABASE_URL")
-    idx = sys.argv.index("--dsn-file") + 1 if "--dsn-file" in sys.argv else None
-    dsn_file = sys.argv[idx] if idx is not None else "/tmp/batch462/dsn.env"
-    if not dsn and Path(dsn_file).exists():
-        dsn = Path(dsn_file).read_text().strip()
+    if not dsn and Path(args.dsn_file).exists():
+        dsn = Path(args.dsn_file).read_text().strip()
     if not dsn:
         print("no DSN available", file=sys.stderr)
         return 2
+    refuse_prod_dsn(dsn, allow_prod=args.allow_prod)
 
     conn = connect(dsn)
     client = build_backfill_client()

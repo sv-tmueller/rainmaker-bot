@@ -404,6 +404,10 @@ forecasts into an expected ranked report.
   (`/plugin install orchestrai@orchestrai`); local-only edits are
   overwritten by the next install.
 - Don't introduce a new dependency without saying why in the PR body.
+- Don't point agent or ad hoc measurements at prod Supabase. Run them against a
+  local store. The analysis scripts in `scripts/` refuse a Postgres DSN unless
+  you pass `--allow-prod`; pass it only when the answer needs prod data, because
+  every full read costs free-tier egress (#469).
 
 ## When in doubt
 

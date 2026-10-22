@@ -931,7 +931,7 @@ To complete the full audit, run `scripts/tmax_bias_audit.py` with
 `DATABASE_URL` set to the Supabase Postgres DSN:
 
 ```bash
-DATABASE_URL="postgresql://..." uv run python scripts/tmax_bias_audit.py
+DATABASE_URL="postgresql://..." uv run python scripts/tmax_bias_audit.py --allow-prod
 ```
 
 The production store has:
