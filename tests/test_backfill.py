@@ -905,8 +905,24 @@ def test_backfill_cli_characterization_pins_every_calibration_row(tmp_path, monk
     # Student-t dispatch for TMIN (df set), Gaussian (df None) for TMAX.
     assert rows[("KLGA", "TMIN", 0)]["df"] is not None
     assert rows[("KLGA", "TMAX", 1)]["df"] is None
+    # L-BFGS-B output differs across platforms (macOS vs Linux) by up to ~1.4e-5
+    # relative, so the float fields use a looser tolerance. Counts and the
+    # df-is-None split stay exact. Every cell is checked before failing, so one
+    # platform drift does not hide the others.
+    mismatches = []
     for key, expected in CHARACTERIZATION_EXPECTED.items():
-        assert rows[key] == pytest.approx(expected, rel=1e-6, abs=1e-9), key
+        got = rows[key]
+        for field in ("n_samples", "acc_n"):
+            if got[field] != expected[field]:
+                mismatches.append((key, field, got[field], expected[field]))
+        if (got["df"] is None) != (expected["df"] is None):
+            mismatches.append((key, "df", got["df"], expected["df"]))
+        for field in ("bias", "var_a", "var_b", "df", "mae_f"):
+            if expected[field] is None:
+                continue
+            if got[field] != pytest.approx(expected[field], rel=1e-4, abs=1e-9):
+                mismatches.append((key, field, got[field], expected[field]))
+    assert not mismatches
 
 
 def _char_row(

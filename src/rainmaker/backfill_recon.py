@@ -11,8 +11,9 @@ exactly (the #400/#417 method, precedent scripts/sigma_statistic_gap.py and
 refit_v2_replay.py) - and reduces it to CalibrationPairs carrying the ONE
 canonical statistic (mixture_sigma, floored at MIN_SIGMA_F on both sides).
 
-Query patterns are lifted verbatim from scripts/sigma_statistic_gap.py
-(proven): predictions with dist_params joined to settled outcomes, collapsed
+Query patterns are derived from scripts/sigma_statistic_gap.py (proven;
+the forecasts query is narrowed to (run_id, market_id) pairs here, #466):
+predictions with dist_params joined to settled outcomes, collapsed
 to the latest run per (market, UTC day) (prune.py already enforces this
 physically for settled markets; the collapse is defensive), forecasts-table
 pools decoded from values_json, Kalshi venue and station exclusion,
@@ -169,10 +170,12 @@ def fetch_pools(
     """Reconstruct pools and their leads from per-sample forecast rows.
 
     Returns ({(run_id, market_id): {(source, model): [values]}},
-    {(run_id, market_id): lead_or_None}), lifted verbatim from
-    scripts/sigma_statistic_gap.py.fetch_pools (chunked row-value IN queries on
-    (run_id, market_id); values_json decoded defensively: bad or empty JSON
-    rows are skipped, not fatal) plus the lead_time column the script lacked.
+    {(run_id, market_id): lead_or_None}), derived from
+    scripts/sigma_statistic_gap.py.fetch_pools. The query is narrowed to
+    (run_id, market_id) pairs here (#466; the script uses run_id IN (...) plus
+    a Python filter): chunked row-value IN queries; values_json decoded
+    defensively (bad or empty JSON rows are skipped, not fatal); plus the
+    lead_time column the script lacked.
     """
     pools: dict[tuple[str, str], Pool] = defaultdict(dict)
     leads: dict[tuple[str, str], int | None] = {}
