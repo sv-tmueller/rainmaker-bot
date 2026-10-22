@@ -34,7 +34,12 @@ refit's decision doc) is directly comparable to live numbers. `track` and
 `tail-check` run twice in the workflow (once plain, once with `--since`) to
 get both views; `attribution --since` prints both views from a single
 invocation instead, sharing one settled-rows read internally so the workflow
-never issues a second full-history query for it (#334). When a refit lands (a
+never issues a second full-history query for it (#334). The det-vs-ens sigma
+gap section of `tail-check` is since-only (#467): it rebuilds forecast pools
+from the member lists in the `forecasts` table, the largest read in the
+command, so a plain `tail-check` skips it and prints a one-line note instead.
+Pass `--since YYYY-MM-DD` to get the table; even then only the latest run per
+(market, UTC day) has its member lists fetched. When a refit lands (a
 prod `backfill` re-run), update the `--since` value passed in the
 `diagnostics` job of `daily-diagnostics.yml` in the same change that records
 the refit.

@@ -7,16 +7,19 @@ approximate. No RNG.
 
 import json
 import math
+import re
 
 import pytest
 from scipy.stats import norm
 
+from rainmaker import tracking
 from rainmaker.cli import _tail_check
-from rainmaker.store.db import connect, init_schema
+from rainmaker.store.db import Conn, connect, init_schema
 from rainmaker.tracking import (
     MIN_TAIL_N,
     _pit_tail_ratios,
     compute_calibration_by_cell,
+    compute_inter_family_gap_summary,
     compute_tail_calibration,
     settled_rows,
 )
@@ -1213,6 +1216,9 @@ def test_tail_check_pit_columns_stay_aligned_at_four_digit_counts(tmp_path, caps
 # ---------------------------------------------------------------------------
 
 
+_GAP_SINCE = "2026-01-01"  # before every seeded run: the gap section is since-only (#467)
+
+
 def test_gap_section_aggregates_ratio_stats_per_variable_lead():
     """Three (run, market) pools with known gaps aggregate into one row per
     (variable, lead): mean/median/p90 of the per-pool |gap|/sigma ratios.
@@ -1243,7 +1249,7 @@ def test_gap_section_aggregates_ratio_stats_per_variable_lead():
             ens_values=[70.0 + (0.5 if i % 2 == 0 else -0.5) for i in range(10)],
         )
     conn.commit()
-    result = compute_tail_calibration(conn)
+    result = compute_tail_calibration(conn, since=_GAP_SINCE)
     conn.close()
 
     row = _gap_row(result, "TMAX", 1)
@@ -1284,7 +1290,7 @@ def test_gap_section_keeps_variables_and_leads_apart():
         ens_values=[48.0, 48.5],
     )
     conn.commit()
-    result = compute_tail_calibration(conn)
+    result = compute_tail_calibration(conn, since=_GAP_SINCE)
     conn.close()
 
     assert _gap_row(result, "TMAX", 1) is not None
@@ -1323,7 +1329,7 @@ def test_gap_section_separates_same_run_market_by_lead_time():
         lead_time=3,
     )
     conn.commit()
-    result = compute_tail_calibration(conn)
+    result = compute_tail_calibration(conn, since=_GAP_SINCE)
     conn.close()
 
     row = _gap_row(result, "TMAX", 1)
@@ -1366,16 +1372,16 @@ def test_gap_section_respects_since_filter_and_dedup():
     )
     _insert_forecast_pool(conn, "grb-early", "gb2", det_values=[70.0], ens_values=[70.0, 70.5])
     conn.commit()
-    unfiltered = compute_tail_calibration(conn)
-    filtered = compute_tail_calibration(conn, since="2026-07-01")
+    wide = compute_tail_calibration(conn, since="2026-05-01")
+    narrow = compute_tail_calibration(conn, since="2026-07-01")
     conn.close()
 
-    row_u = _gap_row(unfiltered, "TMAX", 1)
-    assert row_u is not None
-    assert row_u["n"] == 2  # gb1's pool + gb2's latest run only
-    row_f = _gap_row(filtered, "TMAX", 1)
-    assert row_f is not None
-    assert row_f["n"] == 1  # pre-cutoff pool gone
+    row_w = _gap_row(wide, "TMAX", 1)
+    assert row_w is not None
+    assert row_w["n"] == 2  # gb1's pool + gb2's latest run only
+    row_n = _gap_row(narrow, "TMAX", 1)
+    assert row_n is not None
+    assert row_n["n"] == 1  # pre-cutoff pool gone
 
 
 def test_gap_section_skips_pools_without_both_families():
@@ -1409,7 +1415,7 @@ def test_gap_section_skips_pools_without_both_families():
     )
     _insert_forecast_pool(conn, "grc2", "gc2", det_values=[], ens_values=[70.0, 71.0, 72.0])
     conn.commit()
-    result = compute_tail_calibration(conn)
+    result = compute_tail_calibration(conn, since=_GAP_SINCE)
     conn.close()
 
     row = _gap_row(result, "TMAX", 1)
@@ -1434,7 +1440,7 @@ def test_cli_tail_check_prints_gap_section(tmp_path, capsys):
     conn.commit()
     conn.close()
 
-    _tail_check(db)
+    _tail_check(db, since=_GAP_SINCE)
 
     out = capsys.readouterr().out
     assert "Det-vs-ens sigma gap" in out
@@ -1444,3 +1450,367 @@ def test_cli_tail_check_prints_gap_section(tmp_path, capsys):
     section = out.split("Det-vs-ens sigma gap")[1]
     line = next(ln for ln in section.splitlines() if "TMAX" in ln)
     assert " 1 " in line  # n column
+
+
+# ---------------------------------------------------------------------------
+# #467: the gap section's population and output are pinned before the fetch
+# is restructured (characterization: written green against the old code)
+# ---------------------------------------------------------------------------
+
+_CHAR_SINCE = "2026-07-01T00:00:00+00:00"
+
+
+def _char_market(conn, market_id, settlement_date, *, variable="TMAX", actual=70.0, settled=True):
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, outcome_spec) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (market_id, "NYC", variable, settlement_date, "[]"),
+    )
+    if settled:
+        conn.execute(
+            "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+            (market_id, actual, "t"),
+        )
+
+
+def _char_run(conn, run_id, started_at):
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)", (run_id, started_at, "ok")
+    )
+
+
+def _char_fc(conn, run_id, market_id, model, values, *, lead_time=1, variable="TMAX"):
+    conn.execute(
+        "INSERT INTO forecasts "
+        "(run_id, market_id, source, model, variable, values_json, lead_time, fetched_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, market_id, "open-meteo", model, variable, json.dumps(values), lead_time, "t"),
+    )
+
+
+def _char_pool(conn, run_id, market_id, shift, **kw):
+    """Det + ens groups whose values depend on shift, so each run's pool differs."""
+    _char_fc(conn, run_id, market_id, "det0", [71.3 + shift], **kw)
+    _char_fc(conn, run_id, market_id, "det1", [69.9 + shift / 2], **kw)
+    _char_fc(
+        conn,
+        run_id,
+        market_id,
+        "gfs_ens",
+        [70.0 + 0.37 * i - shift / 3 for i in range(7)],
+        **kw,
+    )
+
+
+def _seed_gap_characterization(conn):
+    # A: three intraday runs on one UTC day, then a second day for the same market.
+    _char_market(conn, "a1", "2026-07-12")
+    for rid, at, shift in (
+        ("r-a1-0800", "2026-07-10T08:00:00+00:00", 1.0),
+        ("r-a1-1400", "2026-07-10T14:00:00+00:00", 5.0),
+        ("r-a1-2000", "2026-07-10T20:00:00+00:00", 2.5),
+        ("r-a1-d2", "2026-07-11T09:00:00+00:00", 0.4),
+    ):
+        _char_run(conn, rid, at)
+        _char_pool(conn, rid, "a1", shift)
+    # B: an exact started_at tie; the larger run_id wins.
+    _char_market(conn, "b1", "2026-07-13")
+    for rid in ("r-b1-x", "r-b1-y"):
+        _char_run(conn, rid, "2026-07-12T12:00:00+00:00")
+    _char_pool(conn, "r-b1-x", "b1", 6.0)
+    _char_pool(conn, "r-b1-y", "b1", 0.2)
+    # C: an off-UTC stamp that crosses midnight, against a plain UTC stamp.
+    _char_market(conn, "c1", "2026-07-14", variable="TMIN")
+    _char_run(conn, "r-c1-off", "2026-07-12T23:30:00-05:00")
+    _char_run(conn, "r-c1-utc", "2026-07-13T01:00:00+00:00")
+    _char_pool(conn, "r-c1-off", "c1", 3.0, variable="TMIN")
+    _char_pool(conn, "r-c1-utc", "c1", 1.5, variable="TMIN")
+    # D: one run before the cutoff and one exactly on it.
+    _char_market(conn, "d1", "2026-07-01")
+    _char_run(conn, "r-d1", "2026-06-30T23:59:59+00:00")
+    _char_pool(conn, "r-d1", "d1", 2.0)
+    _char_market(conn, "d2", "2026-07-02")
+    _char_run(conn, "r-d2", _CHAR_SINCE)
+    _char_pool(conn, "r-d2", "d2", 1.1)
+    # E: a PRCP market, a market with no outcome, a NULL actual: all excluded.
+    _char_market(conn, "e1", "2026-07-05", variable="PRCP")
+    _char_market(conn, "e2", "2026-07-05", settled=False)
+    _char_market(conn, "e3", "2026-07-05", actual=None)
+    _char_run(conn, "r-e", "2026-07-04T10:00:00+00:00")
+    _char_pool(conn, "r-e", "e1", 1.0, variable="PRCP")
+    _char_pool(conn, "r-e", "e2", 1.0)
+    _char_pool(conn, "r-e", "e3", 1.0)
+    # F: two lead_time slices under one (run, market).
+    _char_market(conn, "f1", "2026-07-08")
+    _char_run(conn, "r-f1", "2026-07-07T10:00:00+00:00")
+    _char_pool(conn, "r-f1", "f1", 0.7, lead_time=1)
+    _char_pool(conn, "r-f1", "f1", 4.0, lead_time=3)
+    # G: an ens-only pool (no ratio), plus two markets whose groups are inserted
+    # interleaved, so f.id order differs from per-pair order.
+    _char_market(conn, "g1", "2026-07-09")
+    _char_run(conn, "r-g1", "2026-07-08T10:00:00+00:00")
+    _char_fc(conn, "r-g1", "g1", "gfs_ens", [70.0, 71.0, 72.5])
+    _char_market(conn, "h1", "2026-07-16")
+    _char_market(conn, "h2", "2026-07-16")
+    _char_run(conn, "r-h", "2026-07-15T10:00:00+00:00")
+    _char_fc(conn, "r-h", "h1", "det0", [72.2])
+    _char_fc(conn, "r-h", "h2", "det0", [68.4])
+    _char_fc(conn, "r-h", "h1", "gfs_ens", [70.1, 70.9, 71.4, 69.7])
+    _char_fc(conn, "r-h", "h2", "gfs_ens", [69.2, 70.3, 70.1, 69.9])
+    _char_fc(conn, "r-h", "h2", "det1", [70.7])
+    _char_fc(conn, "r-h", "h1", "det1", [69.5])
+    conn.commit()
+
+
+def _gap_block(out):
+    return out.split("--- Det-vs-ens sigma gap")[1]
+
+
+# Captured from the pre-#467 implementation on the seed above.
+_CHAR_GAP = [
+    {
+        "variable": "TMAX",
+        "lead_time": 1,
+        "n": 7,
+        "gap_abs_mean": 0.8247619047618997,
+        "gap_abs_median": 0.32499999999998863,
+        "ratio_mean": 1.0731657871084173,
+        "ratio_median": 0.4234130868902321,
+        "ratio_p90": 2.4250648108907153,
+        "frac_ratio_gt_05": 0.42857142857142855,
+        "frac_ratio_gt_10": 0.14285714285714285,
+    },
+    {
+        "variable": "TMAX",
+        "lead_time": 2,
+        "n": 1,
+        "gap_abs_mean": 2.1983333333333377,
+        "gap_abs_median": 2.1983333333333377,
+        "ratio_mean": 2.750352954054053,
+        "ratio_median": 2.750352954054053,
+        "ratio_p90": 2.750352954054053,
+        "frac_ratio_gt_05": 1.0,
+        "frac_ratio_gt_10": 1.0,
+    },
+    {
+        "variable": "TMIN",
+        "lead_time": 1,
+        "n": 1,
+        "gap_abs_mean": 1.1149999999999807,
+        "gap_abs_median": 1.1149999999999807,
+        "ratio_mean": 1.3949856908734843,
+        "ratio_median": 1.3949856908734843,
+        "ratio_p90": 1.3949856908734843,
+        "frac_ratio_gt_05": 1.0,
+        "frac_ratio_gt_10": 1.0,
+    },
+]
+_CHAR_BLOCK = (
+    " (inter_family_gap, #400 blind spot) ---\n"
+    "Variable  Lead    n  GapMean  GapMed RatioMean  RatioMed  RatioP90  >0.5s  >1.0s\n"
+    "TMAX         1    7     0.82    0.32      1.07      0.42      2.43    43%    14%\n"
+    "TMAX         2    1     2.20    2.20      2.75      2.75      2.75   100%   100%\n"
+    "TMIN         1    1     1.11    1.11      1.39      1.39      1.39   100%   100%\n"
+)
+
+
+def test_gap_section_characterization_since_filtered(tmp_path, capsys):
+    """Pins the since-filtered gap rows and rendered block (#467 byte-identity)."""
+    db = str(tmp_path / "char.db")
+    conn = connect(db)
+    init_schema(conn)
+    _seed_gap_characterization(conn)
+    gap = compute_tail_calibration(conn, since=_CHAR_SINCE)["gap"]
+    conn.close()
+
+    assert gap == pytest.approx(_CHAR_GAP, rel=1e-9, abs=1e-12)
+    assert [(r["variable"], r["lead_time"], r["n"]) for r in gap] == [
+        (r["variable"], r["lead_time"], r["n"]) for r in _CHAR_GAP
+    ]
+
+    _tail_check(db, since=_CHAR_SINCE)
+    assert _gap_block(capsys.readouterr().out) == _CHAR_BLOCK
+
+
+class _SpyConn:
+    """Records every statement while delegating to a real Conn (test-local)."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.statements: list[str] = []
+
+    def execute(self, sql, params=()):
+        self.statements.append(sql)
+        return self._conn.execute(sql, params)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_tail_check_without_since_never_reads_forecasts():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _seed_gap_characterization(conn)
+    spy = _SpyConn(conn)
+
+    result = compute_tail_calibration(spy)
+    conn.close()
+
+    assert result["gap"] == []
+    assert spy.statements  # the other sections did query
+    assert not [s for s in spy.statements if re.search(r"\bforecasts\b", s)]
+
+
+def test_cli_tail_check_unfiltered_prints_since_only_note(tmp_path, capsys):
+    db = str(tmp_path / "note.db")
+    conn = connect(db)
+    init_schema(conn)
+    _seed_gap_characterization(conn)
+    conn.close()
+
+    _tail_check(db)
+    out = capsys.readouterr().out
+    assert "--- Det-vs-ens sigma gap: since-only, run with --since YYYY-MM-DD (#467) ---" in out
+    assert "GapMean" not in out  # no table header either
+
+    _tail_check(db, since=_CHAR_SINCE)
+    assert "since-only" not in capsys.readouterr().out
+
+
+class _RecordingConn:
+    """Wraps a real Conn and records (sql, params, rows returned) per statement."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.calls: list[tuple[str, tuple, int]] = []
+
+    def execute(self, sql, params=()):
+        rows = self._conn.execute(sql, params).fetchall()
+        self.calls.append((sql, tuple(params), len(rows)))
+
+        class _Result:
+            def fetchall(self):
+                return rows
+
+        return _Result()
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+_CHAR_KEPT_PAIRS = {
+    ("r-a1-2000", "a1"),
+    ("r-a1-d2", "a1"),
+    ("r-b1-y", "b1"),
+    ("r-c1-utc", "c1"),
+    ("r-d2", "d2"),
+    ("r-f1", "f1"),
+    ("r-g1", "g1"),
+    ("r-h", "h1"),
+    ("r-h", "h2"),
+}
+
+
+def _bound_pairs(params):
+    return {(params[i], params[i + 1]) for i in range(0, len(params), 2)}
+
+
+def _member_fetches(rec):
+    return [c for c in rec.calls if "values_json" in c[0]]
+
+
+def test_gap_member_fetch_binds_and_returns_only_kept_pairs():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _seed_gap_characterization(conn)
+    rec = _RecordingConn(conn)
+
+    gap = compute_inter_family_gap_summary(rec, since=_CHAR_SINCE)
+
+    assert gap == pytest.approx(_CHAR_GAP, rel=1e-9, abs=1e-12)
+    fetches = _member_fetches(rec)
+    assert len(fetches) == 1
+    _sql, params, n_rows = fetches[0]
+    assert _bound_pairs(params) == _CHAR_KEPT_PAIRS
+    # Superseded intraday rows (r-a1-0800, r-a1-1400, r-b1-x, r-c1-off) and the
+    # excluded markets never come back with member lists: exactly the kept
+    # pairs' forecast rows are transferred.
+    expected = conn.execute(
+        "SELECT COUNT(*) AS n FROM forecasts WHERE "
+        + " OR ".join("(run_id = ? AND market_id = ?)" for _ in _CHAR_KEPT_PAIRS),
+        [x for pair in sorted(_CHAR_KEPT_PAIRS) for x in pair],
+    ).fetchone()["n"]
+    assert n_rows == expected
+    conn.close()
+
+
+def test_gap_key_query_does_not_carry_values_json():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _seed_gap_characterization(conn)
+    rec = _RecordingConn(conn)
+
+    compute_inter_family_gap_summary(rec, since=_CHAR_SINCE)
+    conn.close()
+
+    key_calls = [c for c in rec.calls if "values_json" not in c[0]]
+    assert len(key_calls) == 1
+    assert "forecasts" in key_calls[0][0]
+    assert key_calls[0][1] == (_CHAR_SINCE,)
+
+
+def test_gap_member_fetch_chunks_by_pair(monkeypatch):
+    monkeypatch.setattr(tracking, "_GAP_FETCH_CHUNK_PAIRS", 2)
+    conn = connect(":memory:")
+    init_schema(conn)
+    _seed_gap_characterization(conn)
+    rec = _RecordingConn(conn)
+
+    gap = compute_inter_family_gap_summary(rec, since=_CHAR_SINCE)
+    conn.close()
+
+    assert gap == pytest.approx(_CHAR_GAP, rel=1e-9, abs=1e-12)
+    fetches = _member_fetches(rec)
+    assert len(fetches) == 5  # 9 kept pairs, 2 per statement
+    assert all(len(p) <= 4 for _s, p, _n in fetches)
+    assert set().union(*(_bound_pairs(p) for _s, p, _n in fetches)) == _CHAR_KEPT_PAIRS
+
+
+def test_gap_member_fetch_chunk_stays_under_the_bound_variable_limit():
+    assert tracking._GAP_FETCH_CHUNK_PAIRS * 2 <= 500
+
+
+def test_gap_member_fetch_placeholders_match_params_on_postgres_translation():
+    """Conn('postgres') raises on a placeholder/param count mismatch before it
+    reaches the driver, so a stub raw connection proves the statement shape."""
+    sqls: list[tuple[str, tuple]] = []
+
+    class _Cur:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class _Raw:
+        def execute(self, sql, params=()):
+            sqls.append((sql, tuple(params)))
+            if "values_json" in sql:
+                return _Cur([])
+            return _Cur(
+                [
+                    {
+                        "market_id": f"m{i}",
+                        "run_id": f"r{i}",
+                        "started_at": "2026-07-10T10:00:00+00:00",
+                        "mkt_variable": "TMAX",
+                        "settlement_date": "2026-07-11",
+                    }
+                    for i in range(3)
+                ]
+            )
+
+    assert compute_inter_family_gap_summary(Conn(_Raw(), "postgres"), since="2026-07-01") == []
+    sql, params = sqls[-1]
+    assert "values_json" in sql
+    assert sql.count("%s") == len(params) == 6

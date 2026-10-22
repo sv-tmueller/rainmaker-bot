@@ -749,6 +749,9 @@ def _tail_check(db_path: str, by_hour: bool = False, since: str | None = None) -
             f"{_fmt_tail_cell(row, 'lower_05', obs_width, exp_width)}"
         )
 
+    if since is None:
+        print("\n--- Det-vs-ens sigma gap: since-only, run with --since YYYY-MM-DD (#467) ---")
+        return
     print("\n--- Det-vs-ens sigma gap (inter_family_gap, #400 blind spot) ---")
     print(
         f"{'Variable':<9} {'Lead':>4} {'n':>4} "

@@ -964,7 +964,37 @@ def _percentile(sorted_values: list[float], q: float) -> float:
     return sorted_values[lo_i] * (1 - frac) + sorted_values[hi_i] * frac
 
 
-def compute_inter_family_gap_summary(conn: Conn, since: str | None = None) -> list[dict[str, Any]]:
+_GAP_FETCH_CHUNK_PAIRS = _RAW_FETCH_CHUNK_SIZE // 2  # two bound variables per pair
+
+
+def _fetch_gap_member_rows(conn: Conn, pairs: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    """Forecast rows (with member lists) for exactly the given (run_id, market_id) pairs.
+
+    Chunked so each statement binds at most _RAW_FETCH_CHUNK_SIZE variables.
+    Sorted by forecasts.id: the pool reconstruction sums floats in row order, and
+    the old single query returned rows in id order, so the output stays
+    byte-identical. An empty pair list issues no query.
+    """
+    rows: list[dict[str, Any]] = []
+    for start in range(0, len(pairs), _GAP_FETCH_CHUNK_PAIRS):
+        chunk = pairs[start : start + _GAP_FETCH_CHUNK_PAIRS]
+        predicate = " OR ".join("(f.run_id = ? AND f.market_id = ?)" for _ in chunk)
+        params = [x for pair in chunk for x in pair]
+        rows.extend(
+            dict(row)
+            for row in conn.execute(
+                "SELECT f.id AS id, f.run_id AS run_id, f.market_id AS market_id, "
+                "f.source AS source, f.model AS model, "
+                "f.values_json AS values_json, f.lead_time AS lead_time "
+                f"FROM forecasts f WHERE {predicate}",
+                params,
+            ).fetchall()
+        )
+    rows.sort(key=lambda r: r["id"])
+    return rows
+
+
+def compute_inter_family_gap_summary(conn: Conn, since: str) -> list[dict[str, Any]]:
     """Reconstructed-pool inter_family_gap stats per (variable, lead) (#428).
 
     Surfaces the #400 sigma blind spot alongside the tail ratios: the forecasts
@@ -977,30 +1007,40 @@ def compute_inter_family_gap_summary(conn: Conn, since: str | None = None) -> li
     Population: settled temperature markets only (variable != 'PRCP', matching
     the rest of tail-check), deduped to the latest run per (market, UTC day)
     with the same intraday-rerun collapse, restricted by since on
-    runs.started_at like the other sections. Pools whose diagnostic yields no
+    runs.started_at like the other sections. since is required (#467): the
+    section is since-only, so the unfiltered full-history forecast read never
+    happens. Pools whose diagnostic yields no
     ratio (either family missing, or zero current sigma) are excluded from the
     aggregates rather than counted as 0. Read-only: SELECTs only.
     """
-    fc_rows = [
+    # Two steps (#467), mirroring store/prune.py: a light key query, the Python
+    # latest-run dedup over it, then the member lists (values_json) for only the
+    # kept (run, market) pairs. The day key stays in Python (day_key), never a
+    # SQL substring of started_at (#429).
+    key_rows = [
         dict(row)
         for row in conn.execute(
-            "SELECT f.run_id AS run_id, f.market_id AS market_id, "
-            "f.source AS source, f.model AS model, "
-            "f.values_json AS values_json, f.lead_time AS lead_time, "
-            "m.variable AS mkt_variable, m.settlement_date AS settlement_date, "
-            "r.started_at AS started_at "
+            "SELECT DISTINCT f.market_id AS market_id, f.run_id AS run_id, "
+            "r.started_at AS started_at, m.variable AS mkt_variable, "
+            "m.settlement_date AS settlement_date "
             "FROM forecasts f "
             "JOIN markets m ON m.id = f.market_id "
             "JOIN runs r ON r.id = f.run_id "
             "JOIN outcomes o ON o.market_id = f.market_id "
-            "WHERE o.actual_value IS NOT NULL AND m.variable != 'PRCP'"
-            + (" AND r.started_at >= ?" if since is not None else ""),
-            (since,) if since is not None else (),
+            "WHERE o.actual_value IS NOT NULL AND m.variable != 'PRCP' "
+            "AND r.started_at >= ?",
+            (since,),
         ).fetchall()
+    ]
+    kept = _latest_run_per_market_day(key_rows)
+    by_pair = {(r["run_id"], r["market_id"]): r for r in kept}
+    fc_rows = [
+        {**by_pair[(m["run_id"], m["market_id"])], **m}
+        for m in _fetch_gap_member_rows(conn, list(by_pair))
     ]
     pools: dict[tuple[str, str, int], list[ForecastSample]] = defaultdict(list)
     meta: dict[tuple[str, str, int], dict[str, Any]] = {}
-    for r in _latest_run_per_market_day(fc_rows):
+    for r in fc_rows:
         try:
             lead = (
                 date.fromisoformat(r["settlement_date"]) - date.fromisoformat(r["started_at"][:10])
@@ -1102,7 +1142,9 @@ def compute_tail_calibration(
     forecast pools reconstructed out of the forecasts table, one row per
     (variable, lead): |gap| and |gap|/sigma summarized as mean/median(/p90 for
     the ratio) plus the fraction of pools above 0.5 and 1.0 sigma. Monitors the
-    sigma blind spot daily until the deferred fit-extension refit lands.
+    sigma blind spot daily until the deferred fit-extension refit lands. Computed
+    only when since is set (#467); without it "gap" is [] and the forecasts table
+    is never read.
     """
     dedup = _latest_run_per_market_day_hour if by_hour else _latest_run_per_market_day
 
@@ -1227,7 +1269,9 @@ def compute_tail_calibration(
 
     # The gap section is hour-independent (--by-hour splits the tail populations
     # by run hour, but the family gap is a property of the pool, not the hour).
-    gap = compute_inter_family_gap_summary(conn, since=since)
+    # Since-only (#467): it reads member lists from the forecasts table, so the
+    # unfiltered full-history call skips it.
+    gap = compute_inter_family_gap_summary(conn, since=since) if since is not None else []
 
     return {"primary": primary, "pit": pit, "gap": gap}
 
