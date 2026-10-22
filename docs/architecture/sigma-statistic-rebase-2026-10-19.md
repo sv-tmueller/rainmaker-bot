@@ -206,7 +206,8 @@ MIN_CAL_SAMPLES and disclosed for the few full-calibration fallback cells
 ### Routing
 
 Hybrid, per (station, variable, lead), implemented in backfill.py's
-run_backfill (optional conn) over backfill_recon's reconstructed pairs:
+run_backfill over backfill_recon's reconstructed pairs (built once per
+backfill invocation by the caller and passed to run_backfill):
 
 1. Eligibility: a reconstructed pair is usable only if its run consumed the
    current sampling regime. TMAX sampling never changed, so all TMAX pools

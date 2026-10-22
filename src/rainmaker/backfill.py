@@ -24,8 +24,9 @@ runs narrow); that residual is a disclosed data limitation, not a statistic
 mismatch.
 
 Cells whose runs consumed the current sampling regime and accumulated enough
-history route to the reconstruction path instead (backfill_recon.build_recon_pairs,
-via the optional conn): those pairs ARE live-shape pools, so the residual does
+history route to the reconstruction path instead (pairs from
+backfill_recon.build_recon_pairs, built once per invocation by the caller and
+passed to run_backfill): those pairs ARE live-shape pools, so the residual does
 not apply to them.
 
 Lead-0 caveat: it is requested as `temperature_2m_previous_day0`, but Open-Meteo
@@ -42,11 +43,11 @@ separate source from the Previous Runs path above.
 import calendar
 import statistics
 from datetime import date, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import httpx
 
-from rainmaker.backfill_recon import build_recon_pairs
+from rainmaker.backfill_recon import CellPairs
 from rainmaker.config import (
     BACKFILL_DAYS,
     CALIBRATION_FAMILY,
@@ -68,9 +69,6 @@ from rainmaker.probability.calibration import (
     fit_student_t_free_df,
 )
 from rainmaker.probability.distribution import Gaussian, mixture_sigma
-
-if TYPE_CHECKING:
-    from rainmaker.store.db import Conn
 
 NCEI_URL = "https://www.ncei.noaa.gov/access/services/data/v1"
 HISTORICAL_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
@@ -368,7 +366,7 @@ def run_backfill(
     start: date,
     end: date,
     client: httpx.Client,
-    conn: "Conn | None" = None,
+    recon_pairs: CellPairs | None = None,
 ) -> dict[int, tuple[Calibration, Accuracy]]:
     """Fetch history, build pairs, fit one calibration cell per lead, measure accuracy.
 
@@ -376,25 +374,22 @@ def run_backfill(
     overlapping actual are omitted rather than erroring (not every lead has
     enough season-window history to fit).
 
-    Routing (#462): when conn is given, cells whose reconstructed pairs
-    (backfill_recon.build_recon_pairs; live-shape pools from the forecasts
+    Routing (#462): cells whose reconstructed pairs (recon_pairs, from
+    backfill_recon.build_recon_pairs; live-shape pools from the forecasts
     table, regime-eligible only) reach MIN_CAL_SAMPLES fit on those pairs
     alone; every other cell falls back to the archive pairs re-expressed
-    under the unified statistic. conn=None keeps the pure archive behavior
-    (the pre-#462 path, still used by tests and offline runs without a
-    store).
+    under the unified statistic. recon_pairs=None keeps the pure archive
+    behavior (the pre-#462 path, still used by tests and offline runs
+    without a store). The caller builds recon_pairs once per invocation
+    (#466), season-window clipped to the same `start` it passes here, so
+    summer history cannot contaminate fall cells (see
+    test_seasonal_fit_avoids_cross_season_bias for the archive side).
 
     The fit family is dispatched per variable via CALIBRATION_FAMILY (#291):
     TMIN cells fit through fit_student_t_free_df (df set); every other
     variable stays on the untouched Gaussian fit_calibration (df=None).
     """
-    recon_pairs: dict[tuple[str, str, int], list[CalibrationPair]] = {}
-    if conn is not None:
-        # Season-window clip, same invariant as the archive path: recon pairs
-        # from runs on/after the window start only, so summer history cannot
-        # contaminate fall cells (test_seasonal_fit_avoids_cross_season_bias
-        # pins the archive side of this principle).
-        recon_pairs, _counts = build_recon_pairs(conn, since=start.isoformat())
+    recon = recon_pairs or {}
     fitter = (
         fit_student_t_free_df
         if CALIBRATION_FAMILY.get(variable) == "student_t"
@@ -404,7 +399,7 @@ def run_backfill(
     actuals: dict[date, float] | None = None
     out: dict[int, tuple[Calibration, Accuracy]] = {}
     for lead in leads:
-        cell_recon = recon_pairs.get((station.icao, variable, lead), [])
+        cell_recon = recon.get((station.icao, variable, lead), [])
         if len(cell_recon) >= MIN_CAL_SAMPLES:
             pairs = cell_recon
         else:

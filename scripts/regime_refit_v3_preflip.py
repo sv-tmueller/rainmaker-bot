@@ -1,6 +1,6 @@
 """Pre-flip replay for #462: compute the post-refit cells read-only, no save.
 
-Routes every (station, variable, lead) cell exactly as run_backfill(conn=...)
+Routes every (station, variable, lead) cell exactly as the backfill CLI
 would (recon pairs where dense and regime-eligible, archive fallback
 otherwise), fits each cell with the production fitters, and compares the
 resulting var_b against the #459 apply-arm table (the var_b the live path's
@@ -89,9 +89,7 @@ def main() -> int:
                         cal = fitter(station_icao, variable, lead, cell_recon)
                         src = f"recon n={len(cell_recon)}"
                     else:
-                        results = run_backfill(
-                            station, variable, (lead,), start, end, client, conn=None
-                        )
+                        results = run_backfill(station, variable, (lead,), start, end, client)
                         if lead not in results:
                             print(f"{station_icao} {variable} {lead}: no fit (archive)")
                             continue

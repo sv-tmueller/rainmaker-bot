@@ -452,7 +452,7 @@ def test_backfill_cli_saves_a_row_per_lead_and_station(httpx_mock, tmp_path, mon
 
 # ---------------------------------------------------------------------------
 # #462 routing: recon pairs from the store beat the archive fallback when the
-# cell reached MIN_CAL_SAMPLES; conn=None keeps the pure archive path.
+# cell reached MIN_CAL_SAMPLES; no recon pairs keeps the pure archive path.
 # ---------------------------------------------------------------------------
 
 
@@ -506,49 +506,23 @@ def _seed_recon_store(db_path: str, n_pairs: int, lead: int = 1) -> None:
     conn.close()
 
 
-def test_run_backfill_recon_pairs_are_season_window_clipped(httpx_mock, tmp_path):
-    # Recon pairs from runs BEFORE the window start must not feed the fit
-    # (the archive path's cross-season invariant, applied to recon too).
-    db = str(tmp_path / "clip.db")
-    _seed_recon_store(db, n_pairs=MIN_CAL_SAMPLES)  # runs 2026-09-01.., lead 1
-    from rainmaker.store.db import connect
-
-    conn = connect(db)
-    try:
-        with httpx.Client() as client:
-            # Window starts AFTER every seeded run: no recon pair qualifies,
-            # so the cell falls back to the archive.
-            httpx_mock.add_response(
-                url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
-            )
-            asos_fixture = (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
-            httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
-            results = run_backfill(
-                KLGA, "TMAX", (1,), date(2026, 10, 1), date(2026, 10, 5), client, conn
-            )
-    finally:
-        conn.close()
-    assert 1 in results
-    cal, _acc = results[1]
-    # archive served the fit (fixture n=2), not the out-of-window recon pairs
-    assert cal.n_samples == 2
-
-
 def test_run_backfill_routes_dense_recon_cell_off_the_archive(httpx_mock, tmp_path):
     # A store holding >= MIN_CAL_SAMPLES recon pairs for (KLGA, TMAX, 1):
     # the cell must fit on those WITHOUT touching the archive HTTP APIs.
     db = str(tmp_path / "recon.db")
     _seed_recon_store(db, n_pairs=MIN_CAL_SAMPLES)
+    from rainmaker.backfill_recon import build_recon_pairs
     from rainmaker.store.db import connect
 
     conn = connect(db)
     try:
-        with httpx.Client() as client:
-            results = run_backfill(
-                KLGA, "TMAX", (1,), date(2026, 9, 1), date(2026, 9, 30), client, conn
-            )
+        recon_pairs, _counts = build_recon_pairs(conn, since="2026-09-01")
     finally:
         conn.close()
+    with httpx.Client() as client:
+        results = run_backfill(
+            KLGA, "TMAX", (1,), date(2026, 9, 1), date(2026, 9, 30), client, recon_pairs
+        )
     assert 1 in results
     cal, acc = results[1]
     assert cal.n_samples == MIN_CAL_SAMPLES
@@ -567,24 +541,26 @@ def test_run_backfill_thin_recon_cell_falls_back_to_archive(httpx_mock, tmp_path
     )
     asos_fixture = (FIXTURES / "mesonet_asos_klga_2026-03-01_05.csv").read_text()
     httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=asos_fixture)
+    from rainmaker.backfill_recon import build_recon_pairs
     from rainmaker.store.db import connect
 
     conn = connect(db)
     try:
-        with httpx.Client() as client:
-            results = run_backfill(
-                KLGA, "TMAX", (1,), date(2026, 3, 1), date(2026, 3, 2), client, conn
-            )
+        recon_pairs, _counts = build_recon_pairs(conn, since="2026-03-01")
     finally:
         conn.close()
+    with httpx.Client() as client:
+        results = run_backfill(
+            KLGA, "TMAX", (1,), date(2026, 3, 1), date(2026, 3, 2), client, recon_pairs
+        )
     assert 1 in results
     # the archive served the fit (fixture pairs), not the 3 recon pairs
     cal, _acc = results[1]
     assert cal.n_samples == 2
 
 
-def test_run_backfill_conn_none_keeps_pure_archive_path(httpx_mock):
-    # conn=None (default): identical to the pre-#462 behavior, no store read.
+def test_run_backfill_without_recon_pairs_keeps_pure_archive_path(httpx_mock):
+    # recon_pairs=None (default): identical to the pre-#462 behavior, no store read.
     httpx_mock.add_response(
         url=re.compile(re.escape(PREVIOUS_RUNS_URL)), json=_previous_runs_fixture()
     )
@@ -594,6 +570,436 @@ def test_run_backfill_conn_none_keeps_pure_archive_path(httpx_mock):
         results = run_backfill(KLGA, "TMAX", (1,), date(2026, 3, 1), date(2026, 3, 2), client)
     assert 1 in results
     assert results[1][0].n_samples == 2
+
+
+# ---------------------------------------------------------------------------
+# #466 characterization: the full `backfill` CLI over a seeded store, every
+# calibration row pinned. Written green against the per-cell recon build and
+# kept green through the build-once refactor (the build is hoisted to the
+# caller, the output must not move).
+# ---------------------------------------------------------------------------
+
+
+class _Closable:
+    def close(self) -> None:
+        pass
+
+
+def _seed_char_pair(
+    conn,
+    idx: int,
+    *,
+    city: str,
+    variable: str,
+    run_day: str,
+    settle_day: str,
+    lead: int | None,
+    groups: list[tuple[str, str, list[float]]],
+    actual: float | None,
+    venue: str = "polymarket",
+) -> None:
+    run_id = f"r{idx}"
+    market_id = f"m{idx}"
+    conn.execute(
+        "INSERT INTO runs (id, started_at, finished_at, status) VALUES (?, ?, ?, ?)",
+        (run_id, f"{run_day}T12:00:00Z", f"{run_day}T12:01:00Z", "ok"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, slug, title, city, variable, settlement_date, venue) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (market_id, market_id, market_id, city, variable, settle_day, venue),
+    )
+    conn.execute(
+        "INSERT INTO predictions (run_id, market_id, p_win, dist_params, created_at) "
+        "VALUES (?, ?, 0.5, '{}', ?)",
+        (run_id, market_id, f"{run_day}T12:00:00Z"),
+    )
+    if actual is not None:
+        conn.execute(
+            "INSERT INTO outcomes (market_id, actual_value, won, settled_at) VALUES (?, ?, 1, ?)",
+            (market_id, actual, f"{settle_day}T23:00:00Z"),
+        )
+    for source, model, values in groups:
+        conn.execute(
+            "INSERT INTO forecasts "
+            "(run_id, market_id, source, model, variable, values_json, lead_time, fetched_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                market_id,
+                source,
+                model,
+                variable,
+                json.dumps(values),
+                lead,
+                f"{run_day}T12:00:00Z",
+            ),
+        )
+
+
+def _char_groups(i: int, base: float) -> list[tuple[str, str, list[float]]]:
+    return [
+        ("nws", "nws", [base + 0.4 * (i % 5)]),
+        ("open-meteo", "gfs", [base + 1.0 - 0.3 * (i % 4)]),
+        (
+            "open-meteo",
+            "ecmwf-ens",
+            [base + 0.5 * k - 1.0 + 0.2 * (i % 3) for k in range(5)],
+        ),
+    ]
+
+
+def _seed_characterization_store(db_path: str) -> None:
+    """Window with today=2026-10-30, days=45: start 2026-09-15 (fall season)."""
+    from rainmaker.store.db import connect, init_schema
+
+    conn = connect(db_path)
+    init_schema(conn)
+    idx = 0
+
+    # (KLGA, TMAX, 1): 30 in-window pairs, two with a NULL lead_time (UTC-day
+    # fallback, lead 1), plus out-of-window pairs that the season clip drops.
+    for i in range(30):
+        run_day = date(2026, 9, 15 + (i % 15)).isoformat()
+        settle_day = date(2026, 9, 16 + (i % 15)).isoformat()
+        _seed_char_pair(
+            conn,
+            idx,
+            city="NYC",
+            variable="TMAX",
+            run_day=run_day,
+            settle_day=settle_day,
+            lead=None if i in (3, 17) else 1,
+            groups=_char_groups(i, 70.0 + 0.5 * (i % 6)),
+            actual=71.0 + (i % 7) - 2.0,
+        )
+        idx += 1
+    for i in range(6):  # before the window start: must not feed the fit
+        _seed_char_pair(
+            conn,
+            idx,
+            city="NYC",
+            variable="TMAX",
+            run_day=f"2026-09-{5 + i:02d}",
+            settle_day=f"2026-09-{6 + i:02d}",
+            lead=1,
+            groups=_char_groups(i, 90.0),
+            actual=40.0,
+        )
+        idx += 1
+
+    # (KLGA, TMIN, 0): 30 post-retarget pairs (>= 2026-10-19), plus 6
+    # pre-retarget pairs the regime rule drops.
+    for i in range(30):
+        day = date(2026, 10, 19 + (i % 10)).isoformat()
+        _seed_char_pair(
+            conn,
+            idx,
+            city="NYC",
+            variable="TMIN",
+            run_day=day,
+            settle_day=day,
+            lead=0,
+            groups=_char_groups(i, 55.0 + 0.25 * (i % 8)),
+            actual=54.0 + (i % 5),
+        )
+        idx += 1
+    for i in range(6):
+        day = date(2026, 10, 1 + i).isoformat()
+        _seed_char_pair(
+            conn,
+            idx,
+            city="NYC",
+            variable="TMIN",
+            run_day=day,
+            settle_day=day,
+            lead=0,
+            groups=_char_groups(i, 30.0),
+            actual=80.0,
+        )
+        idx += 1
+
+    # (KORD, TMAX, 2): a second station, 31 pairs, wider ensemble spread.
+    for i in range(31):
+        run_day = date(2026, 9, 20 + (i % 8)).isoformat()
+        settle_day = date(2026, 9, 22 + (i % 8)).isoformat()
+        _seed_char_pair(
+            conn,
+            idx,
+            city="Chicago",
+            variable="TMAX",
+            run_day=run_day,
+            settle_day=settle_day,
+            lead=2,
+            groups=_char_groups(i, 84.0 + 0.5 * (i % 4)),
+            actual=85.0 + (i % 6) - 2.5,
+        )
+        idx += 1
+
+    # (KLGA, TMAX, 3): thin recon (5 pairs), served by the archive stub.
+    for i in range(5):
+        _seed_char_pair(
+            conn,
+            idx,
+            city="NYC",
+            variable="TMAX",
+            run_day=date(2026, 10, 1 + i).isoformat(),
+            settle_day=date(2026, 10, 4 + i).isoformat(),
+            lead=3,
+            groups=_char_groups(i, 66.0),
+            actual=60.0,
+        )
+        idx += 1
+
+    # Noise that must stay out of every cell: unsettled, Kalshi venue, an
+    # earlier run of the same (market-day) collapsed under a later one.
+    _seed_char_pair(
+        conn,
+        idx,
+        city="NYC",
+        variable="TMAX",
+        run_day="2026-10-10",
+        settle_day="2026-10-11",
+        lead=1,
+        groups=_char_groups(0, 99.0),
+        actual=None,
+    )
+    idx += 1
+    _seed_char_pair(
+        conn,
+        idx,
+        city="NYC",
+        variable="TMAX",
+        run_day="2026-10-10",
+        settle_day="2026-10-11",
+        lead=1,
+        groups=_char_groups(0, 99.0),
+        actual=10.0,
+        venue="kalshi",
+    )
+    idx += 1
+    # An earlier same-day run of market m0 with absurd values: the collapse
+    # keeps the later run only.
+    conn.execute(
+        "INSERT INTO runs (id, started_at, finished_at, status) VALUES (?, ?, ?, ?)",
+        ("rdup", "2026-09-15T06:00:00Z", "2026-09-15T06:01:00Z", "ok"),
+    )
+    conn.execute(
+        "INSERT INTO predictions (run_id, market_id, p_win, dist_params, created_at) "
+        "VALUES ('rdup', 'm0', 0.5, '{}', '2026-09-15T06:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO forecasts "
+        "(run_id, market_id, source, model, variable, values_json, lead_time, fetched_at) "
+        "VALUES ('rdup', 'm0', 'nws', 'nws', 'TMAX', '[150.0]', 1, '2026-09-15T06:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+
+def _read_characterization_rows(db_path: str) -> dict[tuple[str, str, int], dict[str, Any]]:
+    from rainmaker.store.db import connect
+
+    conn = connect(db_path)
+    try:
+        cal = conn.execute(
+            "SELECT station, variable, lead_time, bias, var_a, var_b, df, n_samples "
+            "FROM calibration ORDER BY station, variable, lead_time"
+        ).fetchall()
+        acc = conn.execute(
+            "SELECT station, variable, lead_time, n, mae_f FROM forecast_accuracy "
+            "WHERE kind = 'backtest' ORDER BY station, variable, lead_time"
+        ).fetchall()
+    finally:
+        conn.close()
+    out = {(r["station"], r["variable"], r["lead_time"]): dict(r) for r in cal}
+    for r in acc:
+        out[(r["station"], r["variable"], r["lead_time"])]["acc_n"] = r["n"]
+        out[(r["station"], r["variable"], r["lead_time"])]["mae_f"] = r["mae_f"]
+    return out
+
+
+class _CountingConn:
+    """Test-local connection wrapper: records every SQL string executed."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.sql: list[str] = []
+
+    def execute(self, sql, params=()):
+        self.sql.append(sql)
+        return self._inner.execute(sql, params)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def _run_characterization_backfill(
+    tmp_path, monkeypatch, connections: list[_CountingConn] | None = None
+) -> dict[tuple[str, str, int], Any]:
+    import rainmaker.backfill as backfill_mod
+    import rainmaker.cli as cli
+
+    db = str(tmp_path / "char.db")
+    _seed_characterization_store(db)
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 10, 30))
+    monkeypatch.setattr(cli, "build_backfill_client", lambda: _Closable())
+    if connections is not None:
+        real_connect = cli.connect
+
+        def counting_connect(dsn):
+            wrapped = _CountingConn(real_connect(dsn))
+            connections.append(wrapped)
+            return wrapped
+
+        monkeypatch.setattr(cli, "connect", counting_connect)
+
+    def fake_archive(station, leads, start, end, client, variable="TMAX"):
+        if (station.icao, variable) != ("KLGA", "TMAX"):
+            return {}
+        return {
+            3: {
+                date(2026, 10, 1 + d): Gaussian(mu=60.0 + 0.5 * d, sigma=2.0 + 0.1 * d)
+                for d in range(12)
+            }
+        }
+
+    def fake_actuals(station, start, end, client, variable="TMAX"):
+        if (station.icao, variable) != ("KLGA", "TMAX"):
+            return {}
+        return {date(2026, 10, 1 + d): 61.0 + 0.7 * d for d in range(12)}
+
+    monkeypatch.setattr(backfill_mod, "fetch_historical_lead_forecasts", fake_archive)
+    monkeypatch.setattr(backfill_mod, "venue_actuals", fake_actuals)
+    _backfill("all", "all", 45, (0, 1, 2, 3), db)
+    return _read_characterization_rows(db)
+
+
+def test_backfill_cli_reads_the_forecasts_table_once_per_run(tmp_path, monkeypatch):
+    # The recon pools are built once per invocation, not once per
+    # (station, variable) cell (#466). The per-cell build issued 26 forecasts
+    # SELECTs here.
+    connections: list[_CountingConn] = []
+    _run_characterization_backfill(tmp_path, monkeypatch, connections)
+    assert len(connections) == 1
+    forecast_reads = [q for q in connections[0].sql if "FROM forecasts" in q]
+    assert len(forecast_reads) == 1
+
+
+def test_backfill_cli_characterization_pins_every_calibration_row(tmp_path, monkeypatch):
+    rows = _run_characterization_backfill(tmp_path, monkeypatch)
+    # Only the four seeded cells produce a row; every other cell has no pairs.
+    assert set(rows) == {
+        ("KLGA", "TMAX", 1),
+        ("KLGA", "TMIN", 0),
+        ("KORD", "TMAX", 2),
+        ("KLGA", "TMAX", 3),
+    }
+    # Season-window clip: the six pre-window KLGA TMAX lead-1 pairs are out.
+    assert rows[("KLGA", "TMAX", 1)]["n_samples"] == 30
+    # TMIN regime rule: the six pre-retarget pairs are out.
+    assert rows[("KLGA", "TMIN", 0)]["n_samples"] == 30
+    # Thin recon cell served by the archive stub (12 dates), not the 5 recon pairs.
+    assert rows[("KLGA", "TMAX", 3)]["n_samples"] == 12
+    assert rows[("KORD", "TMAX", 2)]["n_samples"] == 31
+    # Student-t dispatch for TMIN (df set), Gaussian (df None) for TMAX.
+    assert rows[("KLGA", "TMIN", 0)]["df"] is not None
+    assert rows[("KLGA", "TMAX", 1)]["df"] is None
+    # L-BFGS-B output differs across platforms (macOS vs Linux) by up to ~1.4e-5
+    # relative, so the float fields use a looser tolerance. Counts and the
+    # df-is-None split stay exact. Every cell is checked before failing, so one
+    # platform drift does not hide the others.
+    mismatches = []
+    for key, expected in CHARACTERIZATION_EXPECTED.items():
+        got = rows[key]
+        for field in ("n_samples", "acc_n"):
+            if got[field] != expected[field]:
+                mismatches.append((key, field, got[field], expected[field]))
+        if (got["df"] is None) != (expected["df"] is None):
+            mismatches.append((key, "df", got["df"], expected["df"]))
+        for field in ("bias", "var_a", "var_b", "df", "mae_f"):
+            if expected[field] is None:
+                continue
+            if got[field] != pytest.approx(expected[field], rel=1e-4, abs=1e-9):
+                mismatches.append((key, field, got[field], expected[field]))
+    assert not mismatches
+
+
+def _char_row(
+    station: str,
+    variable: str,
+    lead: int,
+    bias: float,
+    var_a: float,
+    var_b: float,
+    df: float | None,
+    n: int,
+    mae_f: float,
+) -> tuple[tuple[str, str, int], dict[str, Any]]:
+    row = {
+        "station": station,
+        "variable": variable,
+        "lead_time": lead,
+        "bias": bias,
+        "var_a": var_a,
+        "var_b": var_b,
+        "df": df,
+        "n_samples": n,
+        "acc_n": n,
+        "mae_f": mae_f,
+    }
+    return (station, variable, lead), row
+
+
+# Captured from the per-cell recon build on main before the #466 refactor.
+CHARACTERIZATION_EXPECTED: dict[tuple[str, str, int], Any] = dict(
+    [
+        _char_row(
+            "KLGA",
+            "TMAX",
+            1,
+            0.03714753202481185,
+            3.584236188470851,
+            1.415461260582415,
+            None,
+            30,
+            2.033333333333333,
+        ),
+        _char_row(
+            "KLGA",
+            "TMAX",
+            3,
+            -2.08753816514122,
+            0.47617976944064094,
+            0.016734662979411057,
+            None,
+            12,
+            2.1,
+        ),
+        _char_row(
+            "KLGA",
+            "TMIN",
+            0,
+            0.34833333333333605,
+            0.0,
+            0.6198427567016463,
+            8.032152052546845,
+            30,
+            1.1238888888888892,
+        ),
+        _char_row(
+            "KORD",
+            "TMAX",
+            2,
+            0.3380460172258124,
+            0.8240617327538089,
+            1.2747326090159279,
+            None,
+            31,
+            1.5236559139784946,
+        ),
+    ]
+)
 
 
 def test_archive_sigma_is_unified_statistic(httpx_mock):

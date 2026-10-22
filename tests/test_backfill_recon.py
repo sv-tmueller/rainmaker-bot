@@ -287,3 +287,63 @@ def test_fetch_settled_rows_requires_dist_params_and_actual():
     add_outcome(conn, "mx", 70.0)
     rows, _stats = fetch_settled_rows(conn)
     assert {r["market_id"] for r in rows} == {"m1"}
+
+
+class _RecordingConn:
+    """Test-local wrapper: records the rows each `FROM forecasts` SELECT returns."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.forecast_rows: list[tuple[str, str]] = []
+
+    def execute(self, sql, params=()):
+        cursor = self._inner.execute(sql, params)
+        if "FROM forecasts" not in sql:
+            return cursor
+        outer = self
+
+        class _Cursor:
+            def fetchall(self):
+                rows = cursor.fetchall()
+                outer.forecast_rows.extend((r["run_id"], r["market_id"]) for r in rows)
+                return rows
+
+        return _Cursor()
+
+
+def test_fetch_pools_reads_only_the_requested_run_market_pairs():
+    # One run carries forecasts for a settled Polymarket market (m1), an
+    # unsettled market (m2) and a settled Kalshi-venue market (m3). Only m1 is
+    # asked for, so only m1's rows may leave the database (#466).
+    conn = _populated_conn()
+    add_temp_market(conn, "m2", "NYC", "TMAX", "2026-10-03")
+    add_prediction(conn, "r1", "m2")
+    add_temp_market(conn, "m3", "NYC", "TMAX", "2026-10-02", venue="kalshi")
+    add_prediction(conn, "r1", "m3")
+    add_outcome(conn, "m3", 70.0)
+    for mid in ("m2", "m3"):
+        add_forecast(conn, "r1", mid, "nws", "nws", [71.0], 1)
+        add_forecast(conn, "r1", mid, "open-meteo", "gfs", [73.0], 1)
+    recording = _RecordingConn(conn)
+    rows, _stats = fetch_settled_rows(conn)
+    assert {r["market_id"] for r in rows} == {"m1"}
+    pools, _leads = fetch_pools(recording, [(r["run_id"], r["market_id"]) for r in rows])
+    assert set(pools) == {("r1", "m1")}
+    assert set(recording.forecast_rows) == {("r1", "m1")}
+
+
+def test_fetch_pools_spans_more_than_one_query_chunk():
+    # 260 pairs in one run cross the 250-pair chunk boundary; every pool and
+    # its lead must survive the split.
+    conn = seed_conn()
+    add_run(conn, "r1", "2026-10-01T12:00:00Z")
+    pairs = []
+    for i in range(260):
+        mid = f"m{i}"
+        add_temp_market(conn, mid, "NYC", "TMAX", "2026-10-02")
+        add_forecast(conn, "r1", mid, "nws", "nws", [70.0 + i], 1)
+        pairs.append(("r1", mid))
+    pools, leads = fetch_pools(conn, pairs)
+    assert set(pools) == set(pairs)
+    assert pools[("r1", "m259")] == {("nws", "nws"): [329.0]}
+    assert set(leads.values()) == {1}
