@@ -170,28 +170,27 @@ def fetch_pools(
 
     Returns ({(run_id, market_id): {(source, model): [values]}},
     {(run_id, market_id): lead_or_None}), lifted verbatim from
-    scripts/sigma_statistic_gap.py.fetch_pools (chunked IN queries on run_id,
-    values_json decoded defensively: bad or empty JSON rows are skipped, not
-    fatal) plus the lead_time column the script lacked.
+    scripts/sigma_statistic_gap.py.fetch_pools (chunked row-value IN queries on
+    (run_id, market_id); values_json decoded defensively: bad or empty JSON
+    rows are skipped, not fatal) plus the lead_time column the script lacked.
     """
     pools: dict[tuple[str, str], Pool] = defaultdict(dict)
     leads: dict[tuple[str, str], int | None] = {}
     unique = list(dict.fromkeys(run_market_ids))
-    CHUNK = 500
+    # Row-value IN on (run_id, market_id): only the asked-for pools leave the
+    # database, not every market of every run. 2 params per pair, so 250 pairs
+    # stay at 500 params per query.
+    CHUNK = 250
     for start in range(0, len(unique), CHUNK):
         chunk = unique[start : start + CHUNK]
-        run_ids = list(dict.fromkeys(rid for rid, _ in chunk))
-        marks_r = ",".join("?" * len(run_ids))
+        marks = ",".join(["(?, ?)"] * len(chunk))
         rows = conn.execute(
             f"SELECT run_id, market_id, source, model, values_json, lead_time FROM forecasts "
-            f"WHERE run_id IN ({marks_r})",
-            run_ids,
+            f"WHERE (run_id, market_id) IN ({marks})",
+            [v for pair in chunk for v in pair],
         ).fetchall()
-        wanted = set(chunk)
         for r in rows:
             key = (r["run_id"], r["market_id"])
-            if key not in wanted:
-                continue
             try:
                 values = json.loads(r["values_json"])
             except (json.JSONDecodeError, TypeError):
