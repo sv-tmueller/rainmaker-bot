@@ -7,6 +7,7 @@ approximate. No RNG.
 
 import json
 import math
+import re
 
 import pytest
 from scipy.stats import norm
@@ -1213,6 +1214,9 @@ def test_tail_check_pit_columns_stay_aligned_at_four_digit_counts(tmp_path, caps
 # ---------------------------------------------------------------------------
 
 
+_GAP_SINCE = "2026-01-01"  # before every seeded run: the gap section is since-only (#467)
+
+
 def test_gap_section_aggregates_ratio_stats_per_variable_lead():
     """Three (run, market) pools with known gaps aggregate into one row per
     (variable, lead): mean/median/p90 of the per-pool |gap|/sigma ratios.
@@ -1243,7 +1247,7 @@ def test_gap_section_aggregates_ratio_stats_per_variable_lead():
             ens_values=[70.0 + (0.5 if i % 2 == 0 else -0.5) for i in range(10)],
         )
     conn.commit()
-    result = compute_tail_calibration(conn)
+    result = compute_tail_calibration(conn, since=_GAP_SINCE)
     conn.close()
 
     row = _gap_row(result, "TMAX", 1)
@@ -1284,7 +1288,7 @@ def test_gap_section_keeps_variables_and_leads_apart():
         ens_values=[48.0, 48.5],
     )
     conn.commit()
-    result = compute_tail_calibration(conn)
+    result = compute_tail_calibration(conn, since=_GAP_SINCE)
     conn.close()
 
     assert _gap_row(result, "TMAX", 1) is not None
@@ -1323,7 +1327,7 @@ def test_gap_section_separates_same_run_market_by_lead_time():
         lead_time=3,
     )
     conn.commit()
-    result = compute_tail_calibration(conn)
+    result = compute_tail_calibration(conn, since=_GAP_SINCE)
     conn.close()
 
     row = _gap_row(result, "TMAX", 1)
@@ -1366,16 +1370,16 @@ def test_gap_section_respects_since_filter_and_dedup():
     )
     _insert_forecast_pool(conn, "grb-early", "gb2", det_values=[70.0], ens_values=[70.0, 70.5])
     conn.commit()
-    unfiltered = compute_tail_calibration(conn)
-    filtered = compute_tail_calibration(conn, since="2026-07-01")
+    wide = compute_tail_calibration(conn, since="2026-05-01")
+    narrow = compute_tail_calibration(conn, since="2026-07-01")
     conn.close()
 
-    row_u = _gap_row(unfiltered, "TMAX", 1)
-    assert row_u is not None
-    assert row_u["n"] == 2  # gb1's pool + gb2's latest run only
-    row_f = _gap_row(filtered, "TMAX", 1)
-    assert row_f is not None
-    assert row_f["n"] == 1  # pre-cutoff pool gone
+    row_w = _gap_row(wide, "TMAX", 1)
+    assert row_w is not None
+    assert row_w["n"] == 2  # gb1's pool + gb2's latest run only
+    row_n = _gap_row(narrow, "TMAX", 1)
+    assert row_n is not None
+    assert row_n["n"] == 1  # pre-cutoff pool gone
 
 
 def test_gap_section_skips_pools_without_both_families():
@@ -1409,7 +1413,7 @@ def test_gap_section_skips_pools_without_both_families():
     )
     _insert_forecast_pool(conn, "grc2", "gc2", det_values=[], ens_values=[70.0, 71.0, 72.0])
     conn.commit()
-    result = compute_tail_calibration(conn)
+    result = compute_tail_calibration(conn, since=_GAP_SINCE)
     conn.close()
 
     row = _gap_row(result, "TMAX", 1)
@@ -1434,7 +1438,7 @@ def test_cli_tail_check_prints_gap_section(tmp_path, capsys):
     conn.commit()
     conn.close()
 
-    _tail_check(db)
+    _tail_check(db, since=_GAP_SINCE)
 
     out = capsys.readouterr().out
     assert "Det-vs-ens sigma gap" in out
@@ -1624,3 +1628,48 @@ def test_gap_section_characterization_since_filtered(tmp_path, capsys):
 
     _tail_check(db, since=_CHAR_SINCE)
     assert _gap_block(capsys.readouterr().out) == _CHAR_BLOCK
+
+
+class _SpyConn:
+    """Records every statement while delegating to a real Conn (test-local)."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self.statements: list[str] = []
+
+    def execute(self, sql, params=()):
+        self.statements.append(sql)
+        return self._conn.execute(sql, params)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_tail_check_without_since_never_reads_forecasts():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _seed_gap_characterization(conn)
+    spy = _SpyConn(conn)
+
+    result = compute_tail_calibration(spy)
+    conn.close()
+
+    assert result["gap"] == []
+    assert spy.statements  # the other sections did query
+    assert not [s for s in spy.statements if re.search(r"\bforecasts\b", s)]
+
+
+def test_cli_tail_check_unfiltered_prints_since_only_note(tmp_path, capsys):
+    db = str(tmp_path / "note.db")
+    conn = connect(db)
+    init_schema(conn)
+    _seed_gap_characterization(conn)
+    conn.close()
+
+    _tail_check(db)
+    out = capsys.readouterr().out
+    assert "--- Det-vs-ens sigma gap: since-only, run with --since YYYY-MM-DD (#467) ---" in out
+    assert "GapMean" not in out  # no table header either
+
+    _tail_check(db, since=_CHAR_SINCE)
+    assert "since-only" not in capsys.readouterr().out

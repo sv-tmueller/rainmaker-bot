@@ -964,7 +964,7 @@ def _percentile(sorted_values: list[float], q: float) -> float:
     return sorted_values[lo_i] * (1 - frac) + sorted_values[hi_i] * frac
 
 
-def compute_inter_family_gap_summary(conn: Conn, since: str | None = None) -> list[dict[str, Any]]:
+def compute_inter_family_gap_summary(conn: Conn, since: str) -> list[dict[str, Any]]:
     """Reconstructed-pool inter_family_gap stats per (variable, lead) (#428).
 
     Surfaces the #400 sigma blind spot alongside the tail ratios: the forecasts
@@ -977,7 +977,9 @@ def compute_inter_family_gap_summary(conn: Conn, since: str | None = None) -> li
     Population: settled temperature markets only (variable != 'PRCP', matching
     the rest of tail-check), deduped to the latest run per (market, UTC day)
     with the same intraday-rerun collapse, restricted by since on
-    runs.started_at like the other sections. Pools whose diagnostic yields no
+    runs.started_at like the other sections. since is required (#467): the
+    section is since-only, so the unfiltered full-history forecast read never
+    happens. Pools whose diagnostic yields no
     ratio (either family missing, or zero current sigma) are excluded from the
     aggregates rather than counted as 0. Read-only: SELECTs only.
     """
@@ -993,9 +995,9 @@ def compute_inter_family_gap_summary(conn: Conn, since: str | None = None) -> li
             "JOIN markets m ON m.id = f.market_id "
             "JOIN runs r ON r.id = f.run_id "
             "JOIN outcomes o ON o.market_id = f.market_id "
-            "WHERE o.actual_value IS NOT NULL AND m.variable != 'PRCP'"
-            + (" AND r.started_at >= ?" if since is not None else ""),
-            (since,) if since is not None else (),
+            "WHERE o.actual_value IS NOT NULL AND m.variable != 'PRCP' "
+            "AND r.started_at >= ?",
+            (since,),
         ).fetchall()
     ]
     pools: dict[tuple[str, str, int], list[ForecastSample]] = defaultdict(list)
@@ -1102,7 +1104,9 @@ def compute_tail_calibration(
     forecast pools reconstructed out of the forecasts table, one row per
     (variable, lead): |gap| and |gap|/sigma summarized as mean/median(/p90 for
     the ratio) plus the fraction of pools above 0.5 and 1.0 sigma. Monitors the
-    sigma blind spot daily until the deferred fit-extension refit lands.
+    sigma blind spot daily until the deferred fit-extension refit lands. Computed
+    only when since is set (#467); without it "gap" is [] and the forecasts table
+    is never read.
     """
     dedup = _latest_run_per_market_day_hour if by_hour else _latest_run_per_market_day
 
@@ -1227,7 +1231,9 @@ def compute_tail_calibration(
 
     # The gap section is hour-independent (--by-hour splits the tail populations
     # by run hour, but the family gap is a property of the pool, not the hour).
-    gap = compute_inter_family_gap_summary(conn, since=since)
+    # Since-only (#467): it reads the whole forecasts table, so the unfiltered
+    # full-history call skips it.
+    gap = compute_inter_family_gap_summary(conn, since=since) if since is not None else []
 
     return {"primary": primary, "pit": pit, "gap": gap}
 
