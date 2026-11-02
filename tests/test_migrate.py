@@ -539,3 +539,44 @@ def test_migration_0014_runs_after_0013_on_a_fresh_postgres():
         "ALTER TABLE paper_orders ENABLE ROW LEVEL SECURITY",
     ]
     assert _rls_alters(raw)[-1] == "ALTER TABLE paper_orders ENABLE ROW LEVEL SECURITY"
+
+
+def test_migration_ids_are_unique():
+    ids = [mid for mid, _ in _MIGRATIONS]
+    assert len(ids) == len(set(ids))
+
+
+def test_migration_0015_adds_paper_orders_grading_columns():
+    conn = connect(":memory:")
+    init_schema(conn)
+    conn.execute("INSERT INTO runs (id, started_at, status) VALUES ('r1', 't', 'ok')")
+    conn.execute("INSERT INTO markets (id, city, variable) VALUES ('m1', 'NYC', 'TMAX')")
+    conn.execute(
+        "INSERT INTO paper_orders (run_id, market_id, outcome, side, token_id, status, "
+        "book_snapshot, created_at, won, pnl_usdc) "
+        "VALUES ('r1', 'm1', 'o', 'YES', 't', 'filled', '{}', 'c', 1, 4.875)"
+    )
+    row = conn.execute("SELECT won, pnl_usdc FROM paper_orders").fetchone()
+    conn.close()
+    assert (row["won"], row["pnl_usdc"]) == (1, 4.875)
+
+
+def test_migration_0015_statements_only_add_columns_to_paper_orders():
+    statements = dict(_MIGRATIONS)["0015_paper_orders_grading"]
+    assert statements == [
+        "ALTER TABLE paper_orders ADD COLUMN won INTEGER",
+        "ALTER TABLE paper_orders ADD COLUMN pnl_usdc REAL",
+    ]
+
+
+def test_migration_0015_on_existing_prod_runs_two_alters_and_no_rls():
+    """Prod already ran everything else: two ALTERs, no RLS statement."""
+    raw = _FakePgMigrationRaw(_all_migration_ids() - {"0015_paper_orders_grading"})
+    apply_migrations(Conn(raw, "postgres"))
+
+    alters = [sql for sql, _ in raw.calls if sql.startswith("ALTER TABLE")]
+    assert alters == [
+        "ALTER TABLE paper_orders ADD COLUMN won INTEGER",
+        "ALTER TABLE paper_orders ADD COLUMN pnl_usdc DOUBLE PRECISION",
+    ]
+    assert _rls_alters(raw) == []

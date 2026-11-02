@@ -87,9 +87,9 @@ def test_postgres_paper_orders_has_rls_float8_and_identity():
         ).fetchall()
         by_name = {r["column_name"]: r for r in cols}
         float_cols = (
-            "stake_usdc fill_price shares fee_usdc p_win edge quoted_ask limit_price"
+            "stake_usdc fill_price shares fee_usdc p_win edge quoted_ask limit_price pnl_usdc"
         ).split()
-        assert len(float_cols) == 8
+        assert len(float_cols) == 9
         assert all(by_name[c]["data_type"] == "double precision" for c in float_cols)
         assert by_name["id"]["is_identity"] == "YES"
     finally:

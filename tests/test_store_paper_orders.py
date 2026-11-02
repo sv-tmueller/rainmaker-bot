@@ -85,6 +85,8 @@ def test_record_paper_order_round_trips_every_column(conn):
         "limit_price": 0.45,
         "book_snapshot": '{"asks": []}',
         "created_at": "2026-07-01T12:00:00+00:00",
+        "won": None,
+        "pnl_usdc": None,
     }
 
 
