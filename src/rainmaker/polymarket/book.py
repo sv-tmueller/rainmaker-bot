@@ -15,6 +15,7 @@ Gamma `bestAsk`. Findings from the live endpoint that shape this module:
 Tested against saved fixtures only, never a live endpoint. No auth, no orders.
 """
 
+import math
 from typing import Any, Literal
 
 import httpx
@@ -43,6 +44,8 @@ class OrderBook(BaseModel):
     asset_id: str
     market: str
     timestamp_ms: int
+    min_order_size: float = Field(ge=0, allow_inf_nan=False)  # shares
+    tick_size: float = Field(gt=0, lt=1)  # price increment, USDC
     bids: list[BookLevel]
     asks: list[BookLevel]
 
@@ -93,6 +96,8 @@ def fetch_book(token_id: str, client: httpx.Client) -> OrderBook:
         asset_id=data["asset_id"],
         market=data["market"],
         timestamp_ms=int(data["timestamp"]),
+        min_order_size=float(data["min_order_size"]),
+        tick_size=float(data["tick_size"]),
         bids=[_level(lv) for lv in data["bids"]],
         asks=[_level(lv) for lv in data["asks"]],
     )
@@ -107,12 +112,14 @@ def walk_asks(book: OrderBook, stake_usdc: float) -> Fill:
 
     On insufficient depth this returns the partial fill (all ask depth,
     `spent_usdc < stake_usdc`, `sufficient=False`) and does not raise; the
-    caller decides what to do. Live market orders are fill-or-kill, so skipping
-    is the likely choice. An empty ask side fills nothing (`avg_price=None`).
-    No rounding to ticks or share sizes happens here.
+    caller decides what to do. The paper trader records such a fill as
+    `partial`. This walk is gross: it ignores the taker fee and any limit
+    price. The paper trader prices orders with `trading.pricing`, not this
+    function. An empty ask side fills nothing (`avg_price=None`). No rounding
+    to ticks or share sizes happens here.
     """
-    if stake_usdc <= 0:
-        raise ValueError(f"stake_usdc must be positive, got {stake_usdc}")
+    if not math.isfinite(stake_usdc) or stake_usdc <= 0:
+        raise ValueError(f"stake_usdc must be a positive finite number, got {stake_usdc}")
     remaining = stake_usdc
     shares = 0.0
     for level in book.asks:
