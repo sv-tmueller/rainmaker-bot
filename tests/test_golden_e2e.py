@@ -12,6 +12,7 @@ from rainmaker.config import (
     MIN_SIGMA_C,
     MIN_SIGMA_F,
     MIN_SOURCES,
+    POLYMARKET_TAKER_FEE_RATE,
     PRECIP_VAR_FLOOR,
     UNCALIBRATED_WIDEN,
     Station,
@@ -23,10 +24,23 @@ from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.forecasts.precip import PrecipForecastSet
 from rainmaker.polymarket.markets import parse_market
 from rainmaker.polymarket.precip_markets import parse_precip_event
-from rainmaker.ranking.edge import evaluate_market, evaluate_precip_market
+from rainmaker.ranking.edge import MarketReport, evaluate_market, evaluate_precip_market
 from rainmaker.report.render import Report, render_markdown
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _assert_ranked_by_net_edge(report: MarketReport) -> None:
+    """Fee-aware gate (#491): outcomes sort by net edge, and on Polymarket
+    net_edge == edge - rate * ask * (1 - ask) with the per-share fee."""
+    nets = [o.net_edge for o in report.outcomes]
+    assert nets == sorted(nets, reverse=True)
+    assert report.venue == "polymarket"
+    assert report.fee_gap is None
+    for o in report.outcomes:
+        fee = POLYMARKET_TAKER_FEE_RATE * o.best_ask * (1 - o.best_ask)
+        assert o.net_edge == pytest.approx(o.edge - fee)
+        assert o.net_edge <= o.edge
 
 
 def _nyc_market():
@@ -115,14 +129,18 @@ def test_golden_pipeline_on_fixture_market():
     assert mode.bucket_label == "70-71°F"
     assert mode.p_win == pytest.approx(0.4041026340046703)
     assert all(not o.recommended for o in report.outcomes)
-    # Ranking is sorted by edge descending.
-    edges = [o.edge for o in report.outcomes]
-    assert edges == sorted(edges, reverse=True)
+    # Ranking is sorted by net edge descending (#491), and net edge is gross
+    # minus the per-share taker fee.
+    _assert_ranked_by_net_edge(report)
 
     # The report renders without error and names the station + settlement date.
     md = render_markdown(Report(run_date=date(2026, 5, 30), markets=[report]))
     assert "KLGA" in md
     assert "2026-05-30" in md
+    # The report states that edge is net of the Polymarket taker fee.
+    assert "net of the Polymarket taker fee" in md
+    assert "Kalshi edges are gross" in md
+    assert "edge (net)" in md
 
 
 def _miami_tmin_market():
@@ -198,9 +216,9 @@ def test_golden_pipeline_on_tmin_market():
     yes_outcomes = [o for o in report.outcomes if o.side == "YES"]
     assert len(yes_outcomes) == 4
     assert abs(sum(o.p_win for o in yes_outcomes) - 1.0) < 1e-6
-    # Ranking is sorted by edge descending.
-    edges = [o.edge for o in report.outcomes]
-    assert edges == sorted(edges, reverse=True)
+    # Ranking is sorted by net edge descending (#491), and net edge is gross
+    # minus the per-share taker fee.
+    _assert_ranked_by_net_edge(report)
 
     md = render_markdown(Report(run_date=date(2026, 5, 30), markets=[report]))
     assert "KMIA" in md
@@ -249,9 +267,9 @@ def test_golden_precip_pipeline_on_fixture_market():
     # The mode bracket 2-3" carries the most probability.
     mode = max(yes_outcomes, key=lambda o: o.p_win)
     assert mode.bucket_label == '2-3"'
-    # Ranking is sorted by edge descending.
-    edges = [o.edge for o in report.outcomes]
-    assert edges == sorted(edges, reverse=True)
+    # Ranking is sorted by net edge descending (#491), and net edge is gross
+    # minus the per-share taker fee.
+    _assert_ranked_by_net_edge(report)
 
     md = render_markdown(Report(run_date=date(2026, 6, 6), markets=[report]))
     assert "Central Park NY" in md  # the resolution station, not the temperature ICAO
@@ -371,9 +389,9 @@ def test_golden_pipeline_on_celsius_market():
     # The interior bucket at the pool centre is still competitive, not drowned.
     centre = next(o for o in yes_outcomes if o.bucket_label == "38C")
     assert centre.p_win == pytest.approx(0.19971804167063878)
-    # Ranking is sorted by edge descending.
-    edges = [o.edge for o in report.outcomes]
-    assert edges == sorted(edges, reverse=True)
+    # Ranking is sorted by net edge descending (#491), and net edge is gross
+    # minus the per-share taker fee.
+    _assert_ranked_by_net_edge(report)
 
     # report.mu and report.sigma are in C (not F).
     assert report.mu is not None and report.sigma is not None
@@ -458,9 +476,9 @@ def test_golden_pipeline_on_real_london_fixture():
     # Mode bucket is 21°C (pool centered there).
     mode = max(yes_outcomes, key=lambda o: o.p_win)
     assert mode.bucket_label == "21°C"
-    # Ranking is sorted by edge descending.
-    edges = [o.edge for o in report.outcomes]
-    assert edges == sorted(edges, reverse=True)
+    # Ranking is sorted by net edge descending (#491), and net edge is gross
+    # minus the per-share taker fee.
+    _assert_ranked_by_net_edge(report)
     # mu is in C, near 21.
     assert report.mu is not None
     assert 19 < report.mu < 23, f"mu should be near 21C, got {report.mu}"

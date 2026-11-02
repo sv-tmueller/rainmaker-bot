@@ -5,8 +5,12 @@ The advisory recommends a bet only when all four gates hold
 
 - `p_win >= CONFIDENCE_FLOOR` (0.80, relaxed from 0.90; see the resolution below)
 - `n_sources >= MIN_SOURCES` (2)
-- `edge >= MIN_EDGE` (0.07, raised from 0.05; see the 2026-08-13 update below)
-- `edge <= MAX_EDGE` (0.25; see the 2026-08-14 update below)
+- `net_edge >= MIN_EDGE` (0.12, raised from 0.05 to 0.07 in #350 and to 0.12 in
+  #440; see the 2026-08-13 and 2026-10-19 updates below). Since 2026-11-02 the
+  floor compares edge net of the Polymarket taker fee (see the 2026-11-02
+  update at the end)
+- `edge <= MAX_EDGE` (0.25; see the 2026-08-14 update below). The cap stays on
+  gross edge
 
 The same four gates apply to each side. A YES bet is priced off the YES ask; a
 NO bet off the NO ask (`1 - yes_bid`) with `p_win = 1 - p_yes`.
@@ -1078,3 +1082,99 @@ the OFAT lead axis agrees: excluding lead 0 lifts ROI from -0.2% to +0.9%
 - The sweep grades stored asks; it cannot see fills that never existed.
 - Seasonality: the window is dominated by warm-season TMAX markets; a winter
   re-run may shift the lead mix.
+
+## Update 2026-11-02: fee-aware edge, a new policy era (#491, batch #489)
+
+From the first run after this change merges, the `MIN_EDGE` floor compares edge
+net of the Polymarket taker fee. This is a policy-era change in the same family
+as #350, #356 and #440: `predictions.recommended` changes meaning from the merge
+date, and no migration is needed because no stored column changes meaning.
+
+### Why
+
+Buying at the ask also pays the taker fee. Polymarket charges
+`fee = shares x rate x p x (1 - p)` on taker fills. A live Gamma check on
+2026-11-02 found `feesEnabled: true, feeType: weather_fees, feeSchedule {rate
+0.05, exponent 1, takerOnly true}` on every sampled market: NYC TMAX and TMIN,
+Dallas TMAX, and NYC and Seattle monthly precipitation. The rate is
+`POLYMARKET_TAKER_FEE_RATE = 0.05` in `config.py`
+(docs.polymarket.com/trading/fees, fetched 2026-11-02). The fee is the same
+order as the measured edge: about 1.1 points at a 0.67 ask.
+
+### Decisions
+
+- **Units.** `edge = p_win - ask` is per share, so the fee that comes off it is
+  per share: `rate x ask x (1 - ask)` (`taker_fee_per_share`). The figure
+  `rate x (1 - ask)` (1.65 points at 0.67) is per USDC staked, an ROI unit.
+  Subtracting it from an edge would overcharge by `1/ask` (1.5x at 0.67, 10x at
+  0.10). A test pins the docs Weather table: 100 shares at $0.70 pays $1.05.
+- **`edge` stays gross, `net_edge` is new.** `RankedOutcome.edge` is still
+  `p_win - price paid` and is still what `predictions.edge` stores, on both
+  venues and in every era. `RankedOutcome.net_edge = edge - fee per share at the
+  quoted ask` is a new required field. Net edge can be re-derived from stored
+  columns (`edge`, the stored ask), the same way `gate-sweep` re-applies
+  today's gate terms.
+- **Floor on net, cap on gross.** `net_edge >= MIN_EDGE + STATION_EDGE_DELTA`
+  on YES and NO (KSFO TMAX needs net >= 0.17). `edge <= MAX_EDGE` stays on gross
+  edge, as in #303 and #356: the cap was swept on gross. The confidence floors
+  are untouched. The new gate is a strict tightening: every new recommendation
+  was already a recommendation under the old gate.
+- **`MIN_EDGE` stays 0.12.** Comparing the same number to net edge is the policy
+  change. It is not a retune.
+- **Scope.** `evaluate_market` and `evaluate_precip_market` both apply the fee
+  to Polymarket markets. The rate comes from `market.venue` (`taker_fee_rate`),
+  with no keyword argument a call site could leave at zero. An unknown venue
+  raises.
+- **Ranking.** Outcomes sort by `net_edge`, and the report summary sorts by it.
+- **Report.** Both renderers print net edge, carry a legend saying edges are net
+  of the Polymarket taker fee and Kalshi edges are gross, and label each summary
+  line `net` or `gross`.
+
+### Kalshi: a known gap, not a fee
+
+Kalshi edges stay gross. Kalshi does charge a quadratic taker fee: the series
+API reports `fee_type: "quadratic", fee_multiplier: 1`. The coefficient is only
+in https://kalshi.com/docs/kalshi-fee-schedule.pdf (linked from
+https://help.kalshi.com/en/articles/13823805-fees). That PDF and
+https://kalshi.com/fee-schedule returned HTTP 429 to an unattended fetch on
+2026-11-02, so the number is unconfirmed. Per-order rounding to the cent also
+applies (https://docs.kalshi.com/getting_started/fee_rounding.md).
+
+The effect: Kalshi edges are overstated relative to Polymarket edges, so any
+venue comparison (`venue-decomp`, the dashboard venue split) is skewed in
+Kalshi's favour until the coefficient is read and applied. `MarketReport.fee_gap`
+carries the note, and both renderers print it on every Kalshi market. Follow-up:
+apply the Kalshi fee once its coefficient is confirmed.
+
+### Replay and tracking paths
+
+- `gate-sweep`: `_recompute_recommended` applies the fee to the floor only (cap
+  on gross), using the stored ask and the row's venue (a null venue is
+  Polymarket). So the "live (replayed)" anchor replays the gate that runs now.
+  Rows recorded before this era were recommended on gross edge, so the replayed
+  anchor can sit below "live (as recorded)": era drift, not a bug.
+  `--since <merge date>` restricts any view to this era.
+- `backtest-pnl` and `recover-gap` inherit the fee through `evaluate_market`.
+  The weekly-metrics replay therefore drops bets that cleared only gross, and
+  its bet counts from the first run after the merge are not comparable with
+  earlier weeks.
+- P&L stays gross at the ask in `track`, `gate-sweep` and `backtest-pnl`, so it
+  stays comparable with recorded sweeps. Net-of-fee P&L belongs to the paper
+  trading report (#492).
+- The dashboard still shows `predictions.edge`, which is gross. Showing net or
+  labelling the column gross is a separate follow-up.
+- Tie-break divergence: the best bet per (market, run) is still picked on gross
+  edge in tracking, gate-sweep, venue-decomp, pnl_backtest and the dashboard,
+  while the report ranks on net. When two recommended outcomes in one market are
+  within about 1 point of gross edge, the report's top bet can differ from the
+  one tracking grades. This is small and accepted.
+
+### Expected effect
+
+Fewer Polymarket recommendations. A bet whose gross edge sits within the fee
+of the floor is now dropped (the fee peaks at 1.25 points at a 0.50 ask and shrinks
+toward the tails):
+at a 0.40 ask the fee is 1.2 points, so a gross 0.125 edge (net 0.113) no longer
+clears 0.12. Kalshi recommendations do not change in this PR. The golden
+end-to-end fixtures contain no recommendation before or after, so their outputs
+change only in the new `net_edge` field, the legend and the column labels.

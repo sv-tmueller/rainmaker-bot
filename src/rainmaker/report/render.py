@@ -17,7 +17,7 @@ _CAL_LABEL = {
 # Legend text for the fee-aware edge (#491). The rate is read from config so the
 # report cannot disagree with the gate.
 _EDGE_LEGEND = (
-    "edge is net of the Polymarket taker fee "
+    "net of the Polymarket taker fee "
     f"(edge = P(win) - ask - {POLYMARKET_TAKER_FEE_RATE:g} x ask x (1 - ask)); "
     "Kalshi edges are gross (its fee is not applied, see the note on each Kalshi market)"
 )
@@ -56,7 +56,7 @@ def _recommended_by_city(report: Report) -> list[tuple[str, list[RecommendedPair
 
 
 def _edge_basis(m: MarketReport) -> str:
-    """"net" where the venue's taker fee is applied to edge, "gross" where it is
+    """ "net" where the venue's taker fee is applied to edge, "gross" where it is
     not (Kalshi, a known gap)."""
     return "net" if taker_fee_rate(m.venue) > 0 else "gross"
 
@@ -74,7 +74,7 @@ def render_terminal(report: Report) -> str:
         "",
         "P(win)=our probability  ask=price paid  "
         "side YES=buy bucket, NO=sell bucket  (all 0-1)  REC=passes gates",
-        f"Edge: {_EDGE_LEGEND}.",
+        f"Edge is {_EDGE_LEGEND}.",
         "",
     ]
     lines.append("Recommended bets (grouped by city, best edge first):")
@@ -138,7 +138,7 @@ def render_markdown(report: Report) -> str:
         "  side YES = buy bucket, NO = sell bucket"
         "  (all 0-1)  rec = passes gates_",
         "",
-        f"_Edge: {_EDGE_LEGEND}._",
+        f"_Edge is {_EDGE_LEGEND}._",
         "",
     ]
     lines.append("## Recommended bets (grouped by city, best edge first)")
