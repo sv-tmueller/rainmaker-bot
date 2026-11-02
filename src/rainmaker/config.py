@@ -469,6 +469,16 @@ BACKFILL_DAYS = 45  # default history window for calibration; literature optimum
 # how an already-stored row is applied.
 CALIBRATION_FAMILY: dict[str, str] = {"TMIN": "student_t"}
 
+# MVP 3.0 flat-stake sizing and hard risk caps (#475, #478, batch #482). Floats
+# so the cap arithmetic stays float. Each cap is charged at the planned stake,
+# which caps fill plus fee, so it is an upper bound on outlay. Caps live here
+# (PR-controlled), never in the database. Values above 1 for
+# TRADE_MAX_POSITIONS_PER_OUTCOME need a spec decision and a count query.
+TRADE_STAKE_USDC = 5.0
+TRADE_MAX_NEW_EXPOSURE_PER_DAY_USDC = 50.0
+TRADE_MAX_OPEN_EXPOSURE_USDC = 150.0
+TRADE_MAX_POSITIONS_PER_OUTCOME = 1
+
 # Meteorological season start months: DJF=Dec, MAM=Mar, JJA=Jun, SON=Sep.
 _SEASON_START_MONTHS = {
     12: 12,
