@@ -24,6 +24,11 @@ market id, outcome, side):
 - A blocked candidate uses no room, so a lower-edge new outcome can still fit.
 
 Each candidate lands exactly once in `orders` or `blocked`.
+
+Inputs are validated fail-closed, before the halted check, so bad input raises
+even when halted: the stake must be finite and positive, the exposures and caps
+finite and >= 0, `max_positions_per_outcome` an int >= 1, every edge finite.
+A NaN or a negative exposure would otherwise leave cap room open.
 """
 
 import math
@@ -69,6 +74,37 @@ class SizingResult:
     blocked: tuple[Blocked, ...]
 
 
+def _validate_inputs(
+    *,
+    stake_usdc: float,
+    open_exposure_usdc: float,
+    new_exposure_today_usdc: float,
+    max_new_exposure_per_day_usdc: float,
+    max_open_exposure_usdc: float,
+    max_positions_per_outcome: int,
+) -> None:
+    # A NaN makes every cap comparison False, which would let orders through.
+    if not math.isfinite(stake_usdc) or stake_usdc <= 0:
+        raise ValueError(f"stake_usdc must be finite and positive, got {stake_usdc}")
+    non_negative = {
+        "open_exposure_usdc": open_exposure_usdc,
+        "new_exposure_today_usdc": new_exposure_today_usdc,
+        "max_new_exposure_per_day_usdc": max_new_exposure_per_day_usdc,
+        "max_open_exposure_usdc": max_open_exposure_usdc,
+    }
+    for name, value in non_negative.items():
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"{name} must be finite and >= 0, got {value}")
+    if (
+        isinstance(max_positions_per_outcome, bool)
+        or not isinstance(max_positions_per_outcome, int)
+        or max_positions_per_outcome < 1
+    ):
+        raise ValueError(
+            f"max_positions_per_outcome must be an int >= 1, got {max_positions_per_outcome!r}"
+        )
+
+
 def size_orders(
     candidates: Iterable[Candidate],
     *,
@@ -82,8 +118,14 @@ def size_orders(
     max_positions_per_outcome: int = TRADE_MAX_POSITIONS_PER_OUTCOME,
 ) -> SizingResult:
     """Turn recommended candidates into flat-stake orders under the risk caps."""
-    if stake_usdc <= 0:
-        raise ValueError(f"stake_usdc must be positive, got {stake_usdc}")
+    _validate_inputs(
+        stake_usdc=stake_usdc,
+        open_exposure_usdc=open_exposure_usdc,
+        new_exposure_today_usdc=new_exposure_today_usdc,
+        max_new_exposure_per_day_usdc=max_new_exposure_per_day_usdc,
+        max_open_exposure_usdc=max_open_exposure_usdc,
+        max_positions_per_outcome=max_positions_per_outcome,
+    )
     ordered = sorted(candidates, key=lambda c: (-c.edge, c.market_id, c.outcome, c.side))
     for c in ordered:
         if not math.isfinite(c.edge):

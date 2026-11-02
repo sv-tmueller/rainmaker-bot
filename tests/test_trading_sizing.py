@@ -57,13 +57,13 @@ def test_edge_tie_breaks_on_market_then_outcome_then_side():
         [
             cand("m2", "a", 0.1, "YES"),
             cand("m1", "b", 0.1, "YES"),
-            cand("m1", "a", 0.1, "NO"),
             cand("m1", "a", 0.1, "YES"),
+            cand("m1", "a", 0.1, "NO"),
         ],
         open_positions=frozenset(),
         max_positions_per_outcome=1,
     )
-    # (m1, a) arrives on both sides: side sorts alphabetically, so NO wins and YES is the duplicate.
+    # (m1, a) arrives YES first, then NO: side sorts alphabetically, so NO wins.
     assert order_keys(result) == [("m1", "a", "NO"), ("m1", "b", "YES"), ("m2", "a", "YES")]
     assert [(b.candidate.side, b.reason) for b in result.blocked] == [("YES", "duplicate_in_batch")]
 
@@ -74,6 +74,8 @@ def test_every_permutation_gives_identical_result():
         cand("m1", "b", 0.2),
         cand("m2", "a", 0.2, "NO"),
         cand("m2", "a", 0.1, "YES"),
+        cand("m3", "c", 0.3, "YES"),
+        cand("m3", "c", 0.3, "NO"),
     ]
     results = {
         run(list(p), max_new_exposure_per_day_usdc=10.0) for p in itertools.permutations(cands)
@@ -97,6 +99,25 @@ def test_same_outcome_twice_in_batch_keeps_higher_edge():
     result = run([cand("m1", "o1", 0.1), cand("m1", "o1", 0.4)])
     assert [o.candidate.edge for o in result.orders] == [0.4]
     assert [(b.candidate.edge, b.reason) for b in result.blocked] == [(0.1, "duplicate_in_batch")]
+
+
+def test_open_position_takes_precedence_over_open_cap():
+    result = run(
+        [cand("m1", "o1", 0.3)],
+        open_positions=frozenset({("m1", "o1")}),
+        open_exposure_usdc=150.0,
+    )
+    assert result.orders == ()
+    assert blocked_reasons(result) == ["open_position"]
+
+
+def test_cap_blocked_candidate_is_not_counted_as_planned():
+    result = run(
+        [cand("m1", "o1", 0.5, "YES"), cand("m1", "o1", 0.4, "NO")],
+        open_exposure_usdc=150.0,
+    )
+    assert result.orders == ()
+    assert blocked_reasons(result) == ["open_cap", "open_cap"]
 
 
 def test_blocked_duplicate_uses_no_cap_room():
@@ -205,3 +226,66 @@ def test_non_positive_stake_raises(stake):
 def test_non_finite_edge_raises(edge):
     with pytest.raises(ValueError):
         run([cand("m1", "a", edge)])
+
+
+_FLOAT_INPUTS = [
+    "stake_usdc",
+    "open_exposure_usdc",
+    "new_exposure_today_usdc",
+    "max_new_exposure_per_day_usdc",
+    "max_open_exposure_usdc",
+]
+
+
+@pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
+@pytest.mark.parametrize("name", _FLOAT_INPUTS)
+def test_non_finite_float_input_raises(name, bad):
+    with pytest.raises(ValueError, match=name):
+        run([cand("m1", "a", 0.1)], **{name: bad})
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "open_exposure_usdc",
+        "new_exposure_today_usdc",
+        "max_new_exposure_per_day_usdc",
+        "max_open_exposure_usdc",
+    ],
+)
+def test_negative_exposure_or_cap_raises(name):
+    with pytest.raises(ValueError, match=name):
+        run([cand("m1", "a", 0.1)], **{name: -1000.0})
+
+
+@pytest.mark.parametrize("positions", [0, -1])
+def test_max_positions_below_one_raises(positions):
+    with pytest.raises(ValueError, match="max_positions_per_outcome"):
+        run([cand("m1", "a", 0.1)], max_positions_per_outcome=positions)
+
+
+@pytest.mark.parametrize("positions", [1.0, True, None])
+def test_max_positions_must_be_int(positions):
+    with pytest.raises(ValueError, match="max_positions_per_outcome"):
+        run([cand("m1", "a", 0.1)], max_positions_per_outcome=positions)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"stake_usdc": math.nan},
+        {"open_exposure_usdc": math.nan},
+        {"new_exposure_today_usdc": -1.0},
+        {"max_open_exposure_usdc": math.inf},
+        {"max_positions_per_outcome": 0},
+    ],
+)
+def test_invalid_input_raises_even_when_halted(overrides):
+    with pytest.raises(ValueError):
+        run([cand("m1", "a", 0.1)], halted=True, **overrides)
+
+
+def test_zero_exposure_and_zero_caps_are_valid():
+    result = run([cand("m1", "a", 0.1)], max_open_exposure_usdc=0.0)
+    assert result.orders == ()
+    assert blocked_reasons(result) == ["open_cap"]
