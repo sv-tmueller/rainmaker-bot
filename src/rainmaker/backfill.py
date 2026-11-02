@@ -60,6 +60,7 @@ from rainmaker.config import (
 from rainmaker.forecasts.asos import ICAO_TO_ASOS_STATION, fetch_asos_daily_extreme
 from rainmaker.forecasts.base import ForecastSample
 from rainmaker.forecasts.openmeteo import _daily_field
+from rainmaker.httpclient import raise_for_status_with_body
 from rainmaker.probability.calibration import (
     Accuracy,
     Calibration,
@@ -172,7 +173,7 @@ def _fetch_archive_daily(
             "models": ",".join(OPENMETEO_MODELS),
         },
     )
-    resp.raise_for_status()
+    raise_for_status_with_body(resp)
     body = resp.json()
     if "daily" not in body:
         raise ValueError(
@@ -250,7 +251,7 @@ def fetch_historical_lead_forecasts(
             "models": ",".join(OPENMETEO_MODELS),
         },
     )
-    resp.raise_for_status()
+    raise_for_status_with_body(resp)
     body = resp.json()
     if "hourly" not in body:
         raise ValueError(

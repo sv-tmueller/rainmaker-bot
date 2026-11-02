@@ -1710,3 +1710,35 @@ def test_backtest_pnl_prefetch_follows_calibrated_candidate(
     # '>= 70': the YES bet loses.
     assert result.overall.n_bets == 1
     assert result.overall.losses == 1
+
+
+def test_backtest_pnl_survives_an_open_meteo_429_then_200(httpx_mock):
+    """One rate-limited archive fetch no longer aborts the replay (#481)."""
+    from rainmaker.httpclient import OPEN_METEO_DOMAINS, RetryTransport
+
+    archive = re.compile(re.escape(HISTORICAL_FORECAST_URL))
+    httpx_mock.add_response(
+        url=archive,
+        status_code=429,
+        text=(FIXTURES / "openmeteo_429_daily.json").read_text(),
+    )
+    httpx_mock.add_response(url=archive, json=_hist_fixture())
+    httpx_mock.add_response(url=re.compile(re.escape(MESONET_ASOS_URL)), text=_asos_fixture())
+    httpx_mock.add_callback(
+        _clob_callback, url=re.compile(re.escape(CLOB_PRICES_URL)), is_reusable=True
+    )
+    sleeps: list[float] = []
+    transport = RetryTransport(rate_limit_domains=OPEN_METEO_DOMAINS, sleep=sleeps.append)
+    with httpx.Client(transport=transport) as client:
+        result = backtest_pnl(
+            _closed_events(),
+            client,
+            on_or_after=date(2026, 3, 1),
+            leads=(0, 1, 2, 3),
+            calibration_lookup=lambda icao, lead: _full_cal(),
+            min_edge=0.05,
+            max_edge=None,
+        )
+    assert result is not None
+    assert result.n_markets == 2
+    assert len(sleeps) == 1

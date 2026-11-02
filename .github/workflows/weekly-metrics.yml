@@ -5,6 +5,9 @@ on:
     # run, Monday avoids the Sunday 02:00 db-backup run.
     - cron: "30 4 * * 1"
   workflow_dispatch: {}
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
 permissions:
   contents: read
   issues: write
@@ -27,7 +30,7 @@ jobs:
             echo "DATABASE_URL set on an ephemeral step; refusing (would override --db and write prod)"
             exit 1
           fi
-          uv run rainmaker backfill --city all --variable all --leads 0,1,2,3 --db ./metrics.db
+          uv run rainmaker backfill --city all --variable all --leads 0,1,2,3 --db ./metrics.db --fail-on-source-errors
       - name: Replay P/L over history (ephemeral, local SQLite only)
         run: |
           if [ -n "${DATABASE_URL:-}" ]; then
@@ -76,6 +79,7 @@ jobs:
           retention-days: 90
   notify:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [metrics]
     if: failure()
     env:
