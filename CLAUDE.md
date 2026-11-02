@@ -183,6 +183,7 @@ src/rainmaker/
     precip_markets.py monthly-precip event JSON -> PrecipMonthlyMarket (inch brackets)
     prices.py         CLOB price-history client (read-only) + snap to a timestamp
     trades.py         data-api BUY-fill history (read-only, for backtest asks)
+    book.py           CLOB order book client (read-only) + stake fill-price walk
   kalshi/
     client.py         Kalshi discovery (read-only): daily high/low temp + monthly rain, secondary venue
     markets.py        Kalshi temp ladder -> Market (reuses Bucket/Target; per-variable guard)
