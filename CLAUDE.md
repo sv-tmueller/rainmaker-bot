@@ -18,7 +18,9 @@ Postgres and settles past markets against NOAA actuals; a separate daily run
 writes the P&L/calibration snapshot (moved off the 3h cadence to bound
 Supabase egress); the read-only dashboard lives in `dashboard/` (the Vercel +
 Cloudflare Access deploy is an operator step). MVP 3.0 (automated trading) has
-not started.
+started with a paper phase: a dry-run trader will price each recommended bet
+against the live CLOB order book and record it without placing orders (design:
+`docs/superpowers/specs/2026-11-01-mvp3-trading-design.md`).
 
 ## Working principles
 
@@ -62,8 +64,9 @@ These are easy to get wrong and they break the whole premise:
 - Free sources only in MVP 1.0: NWS/NOAA and Open-Meteo. Paid sources are a
   revenue-gated roadmap item, not part of 1.0. Do not add a paid API without it
   being an explicit decision.
-- Polymarket access is read-only in 1.0. No order placement, no trading
-  credentials, no funded wallet. Automated trading is MVP 3.0.
+- Polymarket access stays read-only through the MVP 3.0 paper phase. No order
+  placement, no trading credentials, no funded wallet until the live phase has
+  its own sign-off.
 
 ## Roadmap (do not pull later phases forward)
 
@@ -72,7 +75,9 @@ These are easy to get wrong and they break the whole premise:
   (its Phase 0 rules are captured; the daily form is just unbuilt).
 - MVP 2.0: tracking. Done: Supabase Postgres store, daily scheduled runs,
   NOAA-proxy settlement, P&L/calibration tracking, and the web dashboard.
-- MVP 3.0: automated trading via Polymarket's CLOB API. Not started.
+- MVP 3.0: automated trading via Polymarket's CLOB API. Started: the paper
+  phase (dry-run trader against the live order book). Live orders wait for the
+  go-live criterion in the MVP 3.0 spec and a separate sign-off.
 
 The store is dual-backend: SQLite locally and in tests, Supabase Postgres when
 `DATABASE_URL` is set (the cloud run). Keep the shared SQL portable; do not add
