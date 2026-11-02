@@ -50,7 +50,9 @@ some weeks of waiting and no money at risk.
 
 ## Decisions
 
-Each decision was taken with the owner on 2026-11-01 unless marked otherwise.
+Each decision was taken with the owner on 2026-11-01, except two that the
+architect proposed in the #475 sub-plan: "Polymarket only" and "Paper mirrors
+live". Both are marked below and are open for owner review at this PR.
 
 ### Paper first
 
@@ -65,6 +67,12 @@ the gate floor (edge 0.12) and a typical ask of 0.67, the Kelly fraction is
 0.12 / 0.33, about 36% of bankroll on one bet. Calibration is still being
 refit, so a sizing rule that trusts the claimed edge is the wrong tool. Flat
 stake with caps bounds the loss from a bad model.
+
+The 0.67 is derived, not measured per bet. In the 0.12 rows of the sweep,
+staked divided by n (`gate_sweep.py` adds each bet's ask to `staked`, and
+staked is PnL over ROI) is about 0.66 in the regime window and 0.73 in the
+pure-policy window. 0.67 is a round figure near the regime value. The same
+0.67 drives the fee, gap and sample numbers below.
 
 ### Hosting on a VPS in Denmark
 
@@ -94,18 +102,23 @@ balance becomes a second hard limit next to the caps. Phase A has no wallet.
 
 ### Polymarket only
 
+Architect proposal (#475 sub-plan), for owner review at this PR.
+
 Kalshi is not traded. Monthly precipitation markets are included under the
-same gate and reported per variable. Reason: MVP 3.0 is scoped to the venue
-whose CLOB API the roadmap names, and the gate evidence already separates the
-two venues.
+same gate and reported per variable. Reasons: the roadmap names Polymarket's
+CLOB API for MVP 3.0, and the dedicated account is a Polymarket account.
 
 ### Paper mirrors live
 
-Paper and live differ in exactly one place: the order is recorded, not
-posted. The same gate, the same sizing, the same book walk, the same limits,
-the same geoblock check. Reason: paper evidence only transfers to live if the
-code path is the same. A separate paper-only shortcut would invalidate the
-go-live test.
+Architect proposal (#475 sub-plan), for owner review at this PR.
+
+Paper and live share the gate, the sizing, the limit price, the caps and the
+geoblock check. They differ in the order step: paper walks the book it
+fetched and records the result, while live posts an order and reconciles the
+real CLOB fills (tick and share rounding apply only to live). Reason: paper
+evidence only transfers to live if everything before the order step is the
+same code path. A separate paper-only shortcut would invalidate the go-live
+test.
 
 ## The 3h cycle
 
@@ -140,22 +153,26 @@ Four constants in `config.py` (#478), all tunable:
 
 | Constant | Default | Meaning |
 | --- | ---: | --- |
-| `TRADE_STAKE_USDC` | 5 | cap on total USDC outlay per order (fill plus taker fee) |
-| `TRADE_MAX_NEW_EXPOSURE_PER_DAY_USDC` | 50 | new USDC spent per UTC day |
-| `TRADE_MAX_OPEN_EXPOSURE_USDC` | 150 | USDC spent on unsettled positions |
+| `TRADE_STAKE_USDC` | 5 | cap on USDC outlay per order (fill plus fee) |
+| `TRADE_MAX_NEW_EXPOSURE_PER_DAY_USDC` | 50 | new USDC outlay per UTC day |
+| `TRADE_MAX_OPEN_EXPOSURE_USDC` | 150 | USDC outlay on unsettled positions |
 | `TRADE_MAX_POSITIONS_PER_OUTCOME` | 1 | open positions per (market, outcome) |
 
 Rules:
 
+- **Position:** a position is a filled or partial order. A `no_fill` row is
+  not a position, so the trader may try the same outcome again on the next
+  cycle (see the open item on `no_fill` rows).
 - **Position key:** (market_id, outcome). The side is ignored. A YES and a NO
   on the same outcome count as one position, so the bot cannot hedge against
   itself. It may hold several outcomes of one market.
 - **Stake:** `TRADE_STAKE_USDC` caps the total outlay per order, fill plus
   taker fee. The trader walks the book with a budget sized so that
   `spent_usdc + fee_usdc <= TRADE_STAKE_USDC`.
-- **Exposure:** USDC actually spent, fees included (`spent_usdc + fee_usdc`). A
-  position stays open until its market has an `outcomes` row. A partial fill
-  counts what was spent. A no-fill counts zero.
+- **Exposure:** USDC outlay actually made, fees included
+  (`spent_usdc + fee_usdc`). Spend is `shares x fill_price`. It is not a
+  column in `paper_orders`. A position stays open until its market has an
+  `outcomes` row. A partial fill counts what was spent. A no-fill counts zero.
 - **Order of orders:** highest edge first, with a stable tie-break (market id,
   then outcome). Caps bind in that order, so the best bets win scarce room.
 - **Within one run,** caps are charged at the planned stake. The planned stake
@@ -200,11 +217,11 @@ Rules:
   highest price at which the edge still clears the gate's own floor. The asks
   above it are dropped before the walk.
 - **Order type:** fill what the book offers, up to the stake budget (spend plus
-  fee), at or under the limit, then cancel the rest. This mirrors the planned live order type, a
-  marketable limit order that may fill partially.
-- **Outcome:** `filled` (the stake budget was fully used), `partial` (some depth,
-  less than the budget) or `no_fill` (nothing at or under the limit, an empty book,
-  or the order is below the minimum order size).
+  fee), at or under the limit, then cancel the rest. This mirrors the planned
+  live order type, a marketable limit order that may fill partially.
+- **Outcome:** `filled` (the stake budget was fully used), `partial` (some
+  depth, less than the budget) or `no_fill` (nothing at or under the limit, an
+  empty book, or the order is below the minimum order size).
 - **Minimum order size:** the book reports `min_order_size` (5 shares in the
   sample). A 5 USDC stake buys more than 5 shares at any price under 1, so it
   cannot bind a full fill, but a small partial fill can fall under it. Such a
@@ -263,8 +280,8 @@ lives in the runbook (#480), not in code.
 
 #479 adds a read-only check against Polymarket's geoblock endpoint (believed
 to be `https://polymarket.com/api/geoblock`; #479 confirms it before coding).
-The trade command runs it first. A blocked host, a network error and an
-unparseable response all abort the trade step.
+The trade command runs it right after the mode check. A blocked host, a
+network error and an unparseable response all abort the trade step.
 
 It is enforced in paper mode too. Paper runs are only valid from the host that
 live will use, otherwise the evidence tests a path live cannot take. So paper
@@ -317,8 +334,9 @@ All three conditions must hold, checked once, when the sample is reached.
 
 Why these numbers:
 
-- **400.** 0.12 was chosen on 347 and 488 replayed bets. The paper evidence
-  should be at least as large as the evidence that set the policy it tests.
+- **400.** 0.12 was chosen on 347 and 488 replayed bets. The paper sample sits
+  between the two windows, so it is the same order of size as the evidence
+  that set the policy it tests.
   The sweep windows ran at about 5 bets a day across both venues, and the
   trader sees fewer on Polymarket alone, so expect 70 to 130 days. At the 5
   USDC stake, 400 orders spend up to 2,000 USDC, so +1.0% is about 20 USDC.
@@ -333,8 +351,8 @@ Why these numbers:
   ROI of about -1.0% to 0.0%. At the current gate the criterion is therefore
   expected to fail unless paper fills beat the sweep's edge. That is the purpose
   of paper first: to find this out before money is at risk.
-- **0.5 cents.** The typical ask is about 0.67, so one cent per share costs about
-  1.5 ROI points. That wipes out the measured edge.
+- **0.5 cents.** The typical ask is about 0.67, so one cent per share costs
+  about 1.5 ROI points. That wipes out the measured edge.
 
 ### What the test can and cannot show
 
@@ -359,8 +377,8 @@ The spec states the limits plainly.
   re-planning the model, not a third try.
 - One era only. Any change to which orders get placed, or to the `p_win` behind
   them, starts a new era and resets the count. That covers gate constants,
-  station policies, calibration refits and caps. Grading fixes do not. Group such
-  changes during the paper phase. The 2026-11-15 KSFO revisit
+  station policies, calibration refits and caps. Grading fixes do not. Group
+  such changes during the paper phase. The 2026-11-15 KSFO revisit
   (`STATION_EDGE_DELTA`) falls inside the likely window.
 - The grader uses one best bet per market and run (`_best_per_market_run` in
   `src/rainmaker/tracking.py`), but the trader may hold several outcomes of one
@@ -442,17 +460,26 @@ Out of scope until its own sign-off. Outline only.
 
 - (a) Kill switch, mode and the halt workflow (size S).
 - (b) `rainmaker trade` in paper mode (size M). Blocked by (a) and #476 to #479.
+  It needs a fee-aware book budget or walk. #476's `walk_asks` takes a gross
+  stake and returns spend without the fee, so `TRADE_STAKE_USDC` is never
+  passed straight into it: a 5 USDC walk at a 0.67 ask costs about 5.08
+  outlay. The budget is sized so that `spent_usdc + fee_usdc` stays within the
+  stake.
 - (c) Paper settlement and the go-live report (size M). It shows per-era counts,
   the fill rate and a best-per-market view.
 - (d) #480, the VPS deploy kit (size M). It does nothing to trade while the mode
   is off.
-- (e) If needed, a migration for `paper_orders` columns and RLS (size S).
+- (e) Migrations in `store/migrate.py` (size S): the `won` column on the
+  by-then-existing `paper_orders` and an RLS migration for `trading_control`.
+  #477 already ships the RLS migration and all six context columns for
+  `paper_orders`. Fold (e) into (a) and (c) if it is small enough.
 
 **Batch 3, live.** A separate sign-off. See the live outline above.
 
 #476 to #479 implement decisions already written in their issue bodies, plus
 the RLS requirement and the context columns above. If review of this spec
-changes a cap or the kill switch shape, a later batch updates the code.
+changes a cap or the kill switch shape, a later batch updates the code. The
+fee-aware book budget in item (b) is new code in batch 2.
 
 ## Open items
 
@@ -469,6 +496,15 @@ changes a cap or the kill switch shape, a later batch updates the code.
 - **Denmark.** The #479 result decides the hosting country.
 - **Polymarket volume share.** The bets per day on Polymarket alone sets the
   evaluation date. The first weeks of paper data give the real rate.
+- **`no_fill` rows.** A `no_fill` is not a position, so the trader may retry
+  an outcome every 3h, and each try writes a row that is never pruned. Decide
+  whether such rows keep the full `book_snapshot` or a trimmed one, or
+  whether repeated `no_fill` rows for one outcome are collapsed, given the
+  egress limit (#469).
+- **`walk_asks` docstring.** #476's `walk_asks` docstring says live market
+  orders are fill-or-kill, so skipping a partial is the likely choice. This
+  spec records partials as `partial` and plans a live order type that fills
+  partially. Batch 2 aligns the docstring when it wires the trader.
 - **Fill-and-kill orders.** Confirm that `py-clob-client` supports a
   fill-or-partial marketable limit order, or find the equivalent, before the
   live batch.
