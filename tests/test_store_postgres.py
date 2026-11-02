@@ -72,6 +72,31 @@ def test_postgres_float_columns_are_double_precision():
 
 
 @pytest.mark.skipif(not DSN, reason="DATABASE_URL not set; Postgres integration skipped")
+def test_postgres_paper_orders_has_rls_float8_and_identity():
+    """Run against a local or scratch Postgres only: init_schema creates the table."""
+    conn = connect(DSN)
+    try:
+        init_schema(conn)
+        rls = conn.execute(
+            "SELECT relrowsecurity FROM pg_class WHERE oid = 'public.paper_orders'::regclass"
+        ).fetchone()
+        assert rls["relrowsecurity"] is True
+        cols = conn.execute(
+            "SELECT column_name, data_type, is_identity FROM information_schema.columns"
+            " WHERE table_schema = 'public' AND table_name = 'paper_orders'"
+        ).fetchall()
+        by_name = {r["column_name"]: r for r in cols}
+        float_cols = (
+            "stake_usdc fill_price shares fee_usdc p_win edge quoted_ask limit_price"
+        ).split()
+        assert len(float_cols) == 8
+        assert all(by_name[c]["data_type"] == "double precision" for c in float_cols)
+        assert by_name["id"]["is_identity"] == "YES"
+    finally:
+        conn.close()
+
+
+@pytest.mark.skipif(not DSN, reason="DATABASE_URL not set; Postgres integration skipped")
 def test_postgres_mixed_regime_tracking_routes_by_family():
     """A no-df-key row, an explicit "df": null row, and a Student-t row in the
     same (variable, lead) group each score with their own family on Postgres,

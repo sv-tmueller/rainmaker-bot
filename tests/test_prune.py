@@ -140,3 +140,22 @@ def test_prune_is_idempotent():
     conn.commit()
     assert prune_settled(conn) == 0  # nothing left to prune
     conn.close()
+
+
+def test_prune_never_touches_paper_orders():
+    conn = connect(":memory:")
+    init_schema(conn)
+    _add_market(conn, "m1", settled=True)
+    _add_run_rows(conn, "m1", "r1", "2026-06-06T09:00:00Z")
+    _add_run_rows(conn, "m1", "r2", "2026-06-06T12:00:00Z")
+    conn.execute(
+        "INSERT INTO paper_orders (run_id, market_id, outcome, side, token_id, status, "
+        "book_snapshot, created_at) VALUES ('r1', 'm1', '70-71°F', 'YES', 'tok', 'no_fill', "
+        "'{}', '2026-06-06T09:00:00+00:00')"
+    )
+    conn.commit()
+    prune_settled(conn)
+    conn.commit()
+    assert _rows_for(conn, "prices", "r1", "m1") == 0  # the older run really was pruned
+    assert _rows_for(conn, "paper_orders", "r1", "m1") == 1  # its paper order is kept
+    conn.close()

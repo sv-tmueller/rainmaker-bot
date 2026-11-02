@@ -7,7 +7,7 @@ with name-keyed rows). Portability rules (see CLAUDE.md / spec data model):
 - Timestamps are ISO-8601 UTC TEXT; booleans are INTEGER 0/1.
 - Floating-point columns are REAL in SQLite (8-byte) and DOUBLE PRECISION in
   Postgres (its REAL is 4-byte float4 and underflows on tiny tail probabilities).
-- The three surrogate INTEGER PRIMARY KEY columns are SQLite rowids; in Postgres
+- The four surrogate INTEGER PRIMARY KEY columns are SQLite rowids; in Postgres
   they are identity columns. The shared SQL uses no SQLite-only features.
 - Connecting to Postgres retries `psycopg.OperationalError` (the base class
   covers a connect-time timeout, connection refused, and a DNS blip alike;
@@ -133,10 +133,34 @@ CREATE TABLE IF NOT EXISTS tracking_snapshot (
     created_at    TEXT,
     PRIMARY KEY (snapshot_date, venue)
 );
+
+-- Paper-trade orders (MVP 3.0), never pruned. Float columns stay nullable
+-- single lines so the Postgres replace below widens them, and required floats
+-- are checked in record_paper_order. No UNIQUE key: a no_fill is not a
+-- position, so a later run may record another order for the same outcome.
+CREATE TABLE IF NOT EXISTS paper_orders (
+    id           INTEGER PRIMARY KEY,
+    run_id       TEXT NOT NULL REFERENCES runs(id),
+    market_id    TEXT NOT NULL REFERENCES markets(id),
+    outcome      TEXT NOT NULL,
+    side         TEXT NOT NULL,
+    token_id     TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    stake_usdc   REAL,
+    fill_price   REAL,
+    shares       REAL,
+    fee_usdc     REAL,
+    p_win        REAL,
+    edge         REAL,
+    quoted_ask   REAL,
+    limit_price  REAL,
+    book_snapshot TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
 """
 
 # The SQLite schema with two backend differences:
-# - the three surrogate keys become identity columns (a plain Postgres INTEGER
+# - the four surrogate keys become identity columns (a plain Postgres INTEGER
 #   PRIMARY KEY does not auto-generate);
 # - REAL becomes DOUBLE PRECISION. SQLite REAL is 8-byte (double); Postgres REAL
 #   is 4-byte float4 and underflows on the tiny tail-bucket probabilities the

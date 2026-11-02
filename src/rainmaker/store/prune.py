@@ -5,7 +5,8 @@ upsert, so a settled market keeps many same-day runs even though tracking now
 scores only the latest run per (market, UTC day). For SETTLED markets (an
 outcomes row exists), delete the all-but-latest runs per (market_id, UTC day)
 from prices, predictions, and forecasts. The durable history in
-runs/markets/outcomes/tracking_snapshot/forecast_accuracy is never touched.
+runs/markets/outcomes/tracking_snapshot/forecast_accuracy/paper_orders is never
+touched.
 
 Day grouping is done in Python (day_key(started_at), a proper UTC-day parse
 rather than a raw string slice) so the SQL stays portable across
