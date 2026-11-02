@@ -2056,15 +2056,22 @@ def test_backtest_clients_opt_into_open_meteo_rate_limit_retry(monkeypatch, tmp_
     assert all(k.get("rate_limit_domains") == OPEN_METEO_DOMAINS for k in seen)
 
 
-def _fit_run(monkeypatch, tmp_path, outcome_for, extra_args=()):
-    """Run `backfill --city all --variable TMAX`; outcome_for(i) picks station i's
-    behavior: 'ok', 'thin' (run_backfill returns {}), 'http', 'value'."""
+def _fit_run(monkeypatch, tmp_path, outcome_for, extra_args=(), variable="TMAX"):
+    """Run `backfill --city all --variable <variable>`; outcome_for(i) picks cell i's
+    behavior: 'ok', 'thin' (run_backfill returns {}), 'http', 'value'. With the
+    default TMAX a cell is a station; with 'all' it is the i-th (station, variable)
+    call, so the total is even (two variables per station)."""
     order = {
         s.icao: i for i, s in enumerate(sorted(cli._distinct_stations(), key=lambda s: s.icao))
     }
 
+    calls = 0
+
     def _run(station, variable, leads, start, end, client, conn=None):
-        kind = outcome_for(order[station.icao])
+        nonlocal calls
+        cell = order[station.icao] if variable_arg != "all" else calls
+        calls += 1
+        kind = outcome_for(cell)
         if kind == "http":
             raise httpx.ConnectTimeout("source down")
         if kind == "value":
@@ -2073,10 +2080,11 @@ def _fit_run(monkeypatch, tmp_path, outcome_for, extra_args=()):
             return {}
         return _fake_run_backfill(station, variable, leads, start, end, client)
 
+    variable_arg = variable
     monkeypatch.setattr(cli, "run_backfill", _run)
     monkeypatch.setattr(cli, "build_backfill_client", lambda *a, **k: _DummyClient())
     cli.main(
-        ["backfill", "--city", "all", "--variable", "TMAX", "--db", str(tmp_path / "t.db")]
+        ["backfill", "--city", "all", "--variable", variable, "--db", str(tmp_path / "t.db")]
         + list(extra_args)
     )
 
@@ -2115,6 +2123,31 @@ def test_fail_on_source_errors_passes_at_just_under_a_majority(monkeypatch, tmp_
         lambda i: "http" if i < n // 2 else "ok",
         ["--fail-on-source-errors"],
     )
+
+
+def test_fail_on_source_errors_exactly_half_passes_and_one_more_fails(monkeypatch, tmp_path):
+    """The incident shape: `--variable all` gives an even total, so exactly half is
+    reachable. Half passes; one more cell tips it into a majority."""
+    total = _n_stations() * 2
+    half = total // 2
+
+    _fit_run(
+        monkeypatch,
+        tmp_path,
+        lambda i: "http" if i < half else "ok",
+        ["--fail-on-source-errors"],
+        variable="all",
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        _fit_run(
+            monkeypatch,
+            tmp_path,
+            lambda i: "http" if i < half + 1 else "ok",
+            ["--fail-on-source-errors"],
+            variable="all",
+        )
+    assert exc.value.code == 1
 
 
 def test_fail_on_source_errors_thin_history_skips_do_not_trip_it(monkeypatch, tmp_path, capsys):
