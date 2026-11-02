@@ -2,7 +2,8 @@ from datetime import date
 
 from pydantic import BaseModel
 
-from rainmaker.ranking.edge import MarketReport, RankedOutcome
+from rainmaker.config import POLYMARKET_TAKER_FEE_RATE
+from rainmaker.ranking.edge import MarketReport, RankedOutcome, taker_fee_rate
 
 RecommendedPair = tuple[MarketReport, RankedOutcome]
 
@@ -11,6 +12,15 @@ _CAL_LABEL = {
     "uncalibrated": "uncalibrated",
     "bias_only": "bias-corrected",
 }
+
+
+# Legend text for the fee-aware edge (#491). The rate is read from config so the
+# report cannot disagree with the gate.
+_EDGE_LEGEND = (
+    "edge is net of the Polymarket taker fee "
+    f"(edge = P(win) - ask - {POLYMARKET_TAKER_FEE_RATE:g} x ask x (1 - ask)); "
+    "Kalshi edges are gross (its fee is not applied, see the note on each Kalshi market)"
+)
 
 
 class Report(BaseModel):
@@ -30,19 +40,25 @@ def _coverage_str(report: MarketReport) -> str:
 
 
 def _recommended_pairs(report: Report) -> list[RecommendedPair]:
-    """Every gate-passing outcome across all markets, best edge first."""
+    """Every gate-passing outcome across all markets, best net edge first."""
     pairs = [(m, o) for m in report.markets for o in m.outcomes if o.recommended]
-    pairs.sort(key=lambda mo: mo[1].edge, reverse=True)
+    pairs.sort(key=lambda mo: mo[1].net_edge, reverse=True)
     return pairs
 
 
 def _recommended_by_city(report: Report) -> list[tuple[str, list[RecommendedPair]]]:
-    """Recommended outcomes grouped by city. Cities are ordered by their best edge
-    and bets within a city by edge (both descending), so the strongest call leads."""
+    """Recommended outcomes grouped by city. Cities are ordered by their best net edge
+    and bets within a city by net edge (both descending), so the strongest call leads."""
     groups: dict[str, list[RecommendedPair]] = {}
-    for m, o in _recommended_pairs(report):  # already edge-sorted desc
+    for m, o in _recommended_pairs(report):  # already net-edge-sorted desc
         groups.setdefault(m.city, []).append((m, o))
-    return sorted(groups.items(), key=lambda kv: kv[1][0][1].edge, reverse=True)
+    return sorted(groups.items(), key=lambda kv: kv[1][0][1].net_edge, reverse=True)
+
+
+def _edge_basis(m: MarketReport) -> str:
+    """"net" where the venue's taker fee is applied to edge, "gross" where it is
+    not (Kalshi, a known gap)."""
+    return "net" if taker_fee_rate(m.venue) > 0 else "gross"
 
 
 def _bet_label(m: MarketReport) -> str:
@@ -56,8 +72,9 @@ def render_terminal(report: Report) -> str:
     lines: list[str] = [
         f"Rainmaker report {report.run_date.isoformat()}",
         "",
-        "P(win)=our probability  ask=price paid  edge=P(win)-ask  "
+        "P(win)=our probability  ask=price paid  "
         "side YES=buy bucket, NO=sell bucket  (all 0-1)  REC=passes gates",
+        f"Edge: {_EDGE_LEGEND}.",
         "",
     ]
     lines.append("Recommended bets (grouped by city, best edge first):")
@@ -68,7 +85,8 @@ def render_terminal(report: Report) -> str:
             for m, o in city_pairs:
                 lines.append(
                     f"    {_bet_label(m)}  {o.bucket_label} {o.side}  "
-                    f"P(win)={o.p_win:.2f} ask={o.best_ask:.2f} edge={o.edge:+.2f}"
+                    f"P(win)={o.p_win:.2f} ask={o.best_ask:.2f} "
+                    f"edge={o.net_edge:+.2f} {_edge_basis(m)}"
                 )
     else:
         lines.append("  No bets pass the gates today.")
@@ -92,15 +110,18 @@ def render_terminal(report: Report) -> str:
             lines.append(f"  EXCLUDED from recommendations: {m.policy_exclusion}")
         if m.edge_floor_delta_reason:
             lines.append(f"  {m.edge_floor_delta_reason}")
+        if m.fee_gap:
+            lines.append(f"  NOTE: {m.fee_gap}")
         if not m.outcomes:
             lines.append("  no tradeable outcomes (insufficient forecast data)")
         else:
-            lines.append(f"  {'bucket':16} {'side':4} {'P(win)':>7} {'ask':>6} {'edge':>7}  rec")
+            edge_col = f"edge({_edge_basis(m)})"
+            lines.append(f"  {'bucket':16} {'side':4} {'P(win)':>7} {'ask':>6} {edge_col:>11}  rec")
             for o in m.outcomes:
                 marker = "REC" if o.recommended else ""
                 line = (
                     f"  {o.bucket_label:16} {o.side:4} {o.p_win:>7.2f}"
-                    f" {o.best_ask:>6.2f} {o.edge:>+7.2f}  {marker}"
+                    f" {o.best_ask:>6.2f} {o.net_edge:>+11.2f}  {marker}"
                 )
                 lines.append(line)
         if m.excluded_no_ask:
@@ -114,8 +135,10 @@ def render_markdown(report: Report) -> str:
         f"# Rainmaker report {report.run_date.isoformat()}",
         "",
         "_P(win) = our probability  ask = price paid"
-        "  edge = P(win)-ask  side YES = buy bucket, NO = sell bucket"
+        "  side YES = buy bucket, NO = sell bucket"
         "  (all 0-1)  rec = passes gates_",
+        "",
+        f"_Edge: {_EDGE_LEGEND}._",
         "",
     ]
     lines.append("## Recommended bets (grouped by city, best edge first)")
@@ -130,7 +153,7 @@ def render_markdown(report: Report) -> str:
             for m, o in city_pairs:
                 lines.append(
                     f"| {_bet_label(m)} | {o.bucket_label} | {o.side} | {o.p_win:.2f}"
-                    f" | {o.best_ask:.2f} | {o.edge:+.2f} |"
+                    f" | {o.best_ask:.2f} | {o.net_edge:+.2f} {_edge_basis(m)} |"
                 )
             lines.append("")
     else:
@@ -158,15 +181,17 @@ def render_markdown(report: Report) -> str:
             lines.append(f"- EXCLUDED from recommendations: {m.policy_exclusion}")
         if m.edge_floor_delta_reason:
             lines.append(f"- {m.edge_floor_delta_reason}")
+        if m.fee_gap:
+            lines.append(f"- NOTE: {m.fee_gap}")
         lines.append("")
         if m.outcomes:
-            lines.append("| bucket | side | P(win) | ask | edge | rec |")
+            lines.append(f"| bucket | side | P(win) | ask | edge ({_edge_basis(m)}) | rec |")
             lines.append("|--------|------|--------|-----|------|-----|")
             for o in m.outcomes:
                 rec = "yes" if o.recommended else ""
                 lines.append(
                     f"| {o.bucket_label} | {o.side} | {o.p_win:.2f}"
-                    f" | {o.best_ask:.2f} | {o.edge:+.2f} | {rec} |"
+                    f" | {o.best_ask:.2f} | {o.net_edge:+.2f} | {rec} |"
                 )
         else:
             lines.append("_no tradeable outcomes (insufficient forecast data)_")
