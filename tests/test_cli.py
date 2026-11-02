@@ -887,6 +887,13 @@ def test_prune_command_reports_rows_pruned(monkeypatch, tmp_path, capsys):
     assert "pruned 5" in out
 
 
+def test_paper_report_command_prints_pending_on_an_empty_store(tmp_path, capsys):
+    cli.main(["paper-report", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+    assert "verdict: PENDING" in out
+    assert "fee-aware gate (#491)" in out
+
+
 def test_settle_command_reports_summary(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "run_settlement", lambda conn, client, today, settled_at: (2, 1))
     monkeypatch.setattr(cli, "build_client", lambda *a, **k: _DummyClient())
@@ -1946,6 +1953,7 @@ METERED_COMMANDS = [
     ("attribution", "_attribution"),
     ("clv", "_clv"),
     ("backfill", "_backfill"),
+    ("paper-report", "_paper_report"),
 ]
 
 
