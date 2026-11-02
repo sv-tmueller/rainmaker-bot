@@ -188,6 +188,8 @@ src/rainmaker/
     record.py         persist a run (runs/markets/prices/forecasts/predictions)
     query.py          read-back helpers
     prune.py          drop all-but-latest intraday rows per (settled market, UTC day)
+  trading/
+    sizing.py         flat-stake sizing + risk caps (pure, no I/O)
 dashboard/            read-only Next.js dashboard (Vercel, behind Cloudflare Access)
 .github/workflows/
   daily-run.yml       scheduled cron (every 3h): run -> settle -> prune against Supabase
