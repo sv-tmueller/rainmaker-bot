@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from rainmaker.config import StationPolicy
+from rainmaker.config import POLYMARKET_TAKER_FEE_RATE, StationPolicy
 from rainmaker.domain import Market, PrecipMonthlyMarket
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.forecasts.precip import PrecipForecastSet
@@ -20,6 +20,44 @@ def _f_to_c(sample: ForecastSample) -> ForecastSample:
     return sample.model_copy(update={"value_f": (sample.value_f - 32) * 5 / 9})
 
 
+# Shown in the report on every Kalshi market (#491). Kalshi charges a quadratic
+# taker fee (series API: fee_type "quadratic", fee_multiplier 1) but the
+# coefficient lives only in https://kalshi.com/docs/kalshi-fee-schedule.pdf
+# (linked from https://help.kalshi.com/en/articles/13823805-fees), which blocked
+# an unattended fetch on 2026-11-02, and per-order rounding to the cent applies
+# (https://docs.kalshi.com/getting_started/fee_rounding.md). Until the
+# coefficient is read, Kalshi edges stay gross, which overstates Kalshi against
+# Polymarket.
+KALSHI_FEE_GAP = (
+    "Kalshi taker fee not applied (coefficient unconfirmed): edges on this "
+    "market are gross and overstate it against Polymarket, whose edges are net of fees."
+)
+
+
+def taker_fee_per_share(price: float, rate: float) -> float:
+    """Taker fee per share bought at `price`: rate * price * (1 - price).
+
+    Same units as `edge = p_win - price` (per share). The ROI-unit fee per USDC
+    staked is rate * (1 - price), which is this value divided by price; do not
+    subtract that from an edge.
+    """
+    return rate * price * (1 - price)
+
+
+def taker_fee_rate(venue: str) -> float:
+    """Taker fee rate for a venue. An unknown venue raises: a silent zero fee
+    would let a new venue skip the fee unnoticed."""
+    if venue == "polymarket":
+        return POLYMARKET_TAKER_FEE_RATE
+    if venue == "kalshi":
+        return 0.0  # known gap, see KALSHI_FEE_GAP
+    raise ValueError(f"unknown venue {venue!r}: no taker fee rate defined")
+
+
+def _fee_gap(venue: str) -> str | None:
+    return KALSHI_FEE_GAP if venue == "kalshi" else None
+
+
 class RankedOutcome(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -27,7 +65,10 @@ class RankedOutcome(BaseModel):
     side: Literal["YES", "NO"] = "YES"
     p_win: float
     best_ask: float  # price paid: the YES ask for a YES bet, the NO ask for a NO bet
-    edge: float
+    edge: float  # gross: p_win - best_ask (stored as predictions.edge; the MAX_EDGE cap uses it)
+    # edge minus the taker fee per share (#491); equals edge where no fee applies
+    # (Kalshi). The min-edge floor and the ranking use this.
+    net_edge: float
     recommended: bool
 
 
@@ -62,6 +103,8 @@ class MarketReport(BaseModel):
     # every report before this has edge_floor_delta=0.0, edge_floor_delta_reason=None.
     edge_floor_delta: float = 0.0
     edge_floor_delta_reason: str | None = None
+    # Set on markets whose venue fee is not applied (Kalshi, #491); None otherwise.
+    fee_gap: str | None = None
 
 
 def evaluate_market(
@@ -111,8 +154,15 @@ def evaluate_market(
     floor_no and min_edge_delta. An over-cap outcome stays in the report with
     its real p_win/edge; only recommended flips. See the 2026-08-14 update in
     docs/architecture/recommendation-gate.md.
+
+    Fee-aware floor (#491): the min_edge floor (with min_edge_delta) compares
+    against net_edge, edge minus the venue's taker fee per share at the quoted
+    ask (rate from market.venue, so a call site cannot drop the fee). The
+    max_edge cap stays on gross edge, and outcomes sort by net_edge. See the
+    2026-11-02 era in docs/architecture/recommendation-gate.md.
     """
     no_floor = floor_no if floor_no is not None else floor
+    fee_rate = taker_fee_rate(market.venue)
     effective_min_edge = min_edge + min_edge_delta
     unit = market.target.station.unit
     n_sources = sum(1 for c in forecast_set.coverage if c.ok and c.n_samples > 0)
@@ -146,6 +196,7 @@ def evaluate_market(
         policy_exclusion=policy_exclusion,
         edge_floor_delta=min_edge_delta,
         edge_floor_delta_reason=edge_floor_delta_reason,
+        fee_gap=_fee_gap(market.venue),
     )
     if not forecast_set.samples:
         return MarketReport(
@@ -187,13 +238,14 @@ def evaluate_market(
         # bets (pay 0.99 to win 0.01) out of the recommendations.
         if bucket.best_ask is not None and bucket.best_ask > 0:
             edge = p_win - bucket.best_ask
+            net_edge = edge - taker_fee_per_share(bucket.best_ask, fee_rate)
             recommended = (
                 not uncalibratable
                 and not policy_excluded
                 and (not require_calibration or calibrated == "full")
                 and p_win >= floor
                 and n_sources >= min_sources
-                and edge >= effective_min_edge
+                and net_edge >= effective_min_edge
                 and (max_edge is None or edge <= max_edge)
             )
             outcomes.append(
@@ -203,6 +255,7 @@ def evaluate_market(
                     p_win=p_win,
                     best_ask=bucket.best_ask,
                     edge=edge,
+                    net_edge=net_edge,
                     recommended=recommended,
                 )
             )
@@ -213,13 +266,14 @@ def evaluate_market(
         if bucket.no_ask is not None and 0 < bucket.no_ask < 1:
             p_no = 1 - p_win
             edge_no = p_no - bucket.no_ask
+            net_edge_no = edge_no - taker_fee_per_share(bucket.no_ask, fee_rate)
             recommended_no = (
                 not uncalibratable
                 and not policy_excluded
                 and (not require_calibration or calibrated == "full")
                 and p_no >= no_floor
                 and n_sources >= min_sources
-                and edge_no >= effective_min_edge
+                and net_edge_no >= effective_min_edge
                 and (max_edge is None or edge_no <= max_edge)
             )
             outcomes.append(
@@ -229,10 +283,11 @@ def evaluate_market(
                     p_win=p_no,
                     best_ask=bucket.no_ask,
                     edge=edge_no,
+                    net_edge=net_edge_no,
                     recommended=recommended_no,
                 )
             )
-    outcomes.sort(key=lambda o: o.edge, reverse=True)
+    outcomes.sort(key=lambda o: o.net_edge, reverse=True)
     return MarketReport(
         **common,
         calibrated=calibrated,
@@ -266,8 +321,12 @@ def evaluate_precip_market(
 
     max_edge (#356, default None) mirrors evaluate_market's inclusive upper
     edge bound: None keeps every existing call site byte-for-byte.
+
+    Fee-aware like evaluate_market (#491): the min_edge floor compares against
+    net_edge, the cap stays on gross edge, and outcomes sort by net_edge.
     """
     no_floor = floor_no if floor_no is not None else floor
+    fee_rate = taker_fee_rate(market.venue)
     n_sources = sum(1 for c in forecast_set.coverage if c.ok and c.n_samples > 0)
     gamma = fit_gamma(forecast_set.mean, forecast_set.var, floor=var_floor)
     outcomes: list[RankedOutcome] = []
@@ -276,10 +335,11 @@ def evaluate_precip_market(
         p_win = bracket_probability(gamma, bracket)
         if bracket.best_ask is not None and bracket.best_ask > 0:
             edge = p_win - bracket.best_ask
+            net_edge = edge - taker_fee_per_share(bracket.best_ask, fee_rate)
             recommended = (
                 p_win >= floor
                 and n_sources >= min_sources
-                and edge >= min_edge
+                and net_edge >= min_edge
                 and (max_edge is None or edge <= max_edge)
             )
             outcomes.append(
@@ -289,6 +349,7 @@ def evaluate_precip_market(
                     p_win=p_win,
                     best_ask=bracket.best_ask,
                     edge=edge,
+                    net_edge=net_edge,
                     recommended=recommended,
                 )
             )
@@ -297,10 +358,11 @@ def evaluate_precip_market(
         if bracket.no_ask is not None and 0 < bracket.no_ask < 1:
             p_no = 1 - p_win
             edge_no = p_no - bracket.no_ask
+            net_edge_no = edge_no - taker_fee_per_share(bracket.no_ask, fee_rate)
             recommended_no = (
                 p_no >= no_floor
                 and n_sources >= min_sources
-                and edge_no >= min_edge
+                and net_edge_no >= min_edge
                 and (max_edge is None or edge_no <= max_edge)
             )
             outcomes.append(
@@ -310,10 +372,11 @@ def evaluate_precip_market(
                     p_win=p_no,
                     best_ask=bracket.no_ask,
                     edge=edge_no,
+                    net_edge=net_edge_no,
                     recommended=recommended_no,
                 )
             )
-    outcomes.sort(key=lambda o: o.edge, reverse=True)
+    outcomes.sort(key=lambda o: o.net_edge, reverse=True)
     return MarketReport(
         market_id=market.id,
         title=market.title,
@@ -329,4 +392,5 @@ def evaluate_precip_market(
         outcomes=outcomes,
         excluded_no_ask=excluded,
         venue=market.venue,
+        fee_gap=_fee_gap(market.venue),
     )

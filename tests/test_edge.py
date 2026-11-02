@@ -12,6 +12,7 @@ from rainmaker.config import (
     MIN_SIGMA_C,
     MIN_SIGMA_F,
     MIN_SOURCES,
+    POLYMARKET_TAKER_FEE_RATE,
     PRECIP_STATIONS,
     PRECIP_VAR_FLOOR,
     STATION_EDGE_DELTA,
@@ -29,7 +30,15 @@ from rainmaker.polymarket.precip_markets import parse_precip_event
 from rainmaker.probability.calibration import Calibration
 from rainmaker.probability.precip_distribution import fit_gamma
 from rainmaker.probability.precip_outcomes import bracket_probability
-from rainmaker.ranking.edge import MarketReport, evaluate_market, evaluate_precip_market
+from rainmaker.ranking.edge import (
+    KALSHI_FEE_GAP,
+    MarketReport,
+    RankedOutcome,
+    evaluate_market,
+    evaluate_precip_market,
+    taker_fee_per_share,
+    taker_fee_rate,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -1876,3 +1885,239 @@ def test_precip_per_side_floor_no_recommended_yes_blocked():
     assert no_flat.recommended is False, (
         "NO must flip to not-recommended when floor_no = floor_yes = 0.90 (flat-floor mutation)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fee-aware gate (#491): the floor compares edge net of the Polymarket taker
+# fee; the MAX_EDGE cap and the stored `edge` stay gross.
+# ---------------------------------------------------------------------------
+
+
+def test_taker_fee_rate_pin():
+    assert POLYMARKET_TAKER_FEE_RATE == 0.05
+
+
+def test_taker_fee_per_share_values():
+    # Per share, rate * p * (1 - p): 1.1 points at a 0.67 ask, not the 1.65
+    # per-USDC ROI figure (rate * (1 - p)).
+    assert taker_fee_per_share(0.67, 0.05) == pytest.approx(0.011055)
+    assert taker_fee_per_share(0.50, 0.05) == pytest.approx(0.0125)
+    assert taker_fee_per_share(0.30, 0.05) == pytest.approx(taker_fee_per_share(0.70, 0.05))
+    assert taker_fee_per_share(0.0, 0.05) == 0.0
+    assert taker_fee_per_share(0.5, 0.0) == 0.0
+
+
+def test_taker_fee_per_share_matches_docs_weather_example():
+    # docs.polymarket.com/trading/fees, Weather table: 100 shares at $0.70
+    # pays $1.05 in fees.
+    assert 100 * taker_fee_per_share(0.70, POLYMARKET_TAKER_FEE_RATE) == pytest.approx(1.05)
+
+
+def test_taker_fee_rate_by_venue():
+    assert taker_fee_rate("polymarket") == POLYMARKET_TAKER_FEE_RATE
+    # Known gap: Kalshi's coefficient is unconfirmed, so no fee is applied.
+    assert taker_fee_rate("kalshi") == 0.0
+
+
+def test_taker_fee_rate_unknown_venue_raises():
+    with pytest.raises(ValueError, match="venue"):
+        taker_fee_rate("manifold")
+
+
+def test_ranked_outcome_requires_net_edge():
+    with pytest.raises(ValueError):
+        RankedOutcome(  # type: ignore[call-arg]
+            bucket_label="x", side="YES", p_win=0.9, best_ask=0.5, edge=0.4, recommended=True
+        )
+
+
+def _fee_gate_eval(market: Market, **kw) -> MarketReport:
+    params = dict(
+        floor=0.0,
+        min_sources=2,
+        min_sigma=1.5,
+        min_edge=0.12,
+        calibration=_full_cal(),
+        max_edge=0.25,
+    )
+    params.update(kw)
+    return evaluate_market(market, _forecast_set([69, 70, 71, 72]), **params)  # type: ignore[arg-type]
+
+
+def _side(report: MarketReport, side: str) -> RankedOutcome:
+    return next(o for o in report.outcomes if o.side == side)
+
+
+def _side_for(report: MarketReport, label: str, side: str) -> RankedOutcome:
+    return next(o for o in report.outcomes if o.bucket_label == label and o.side == side)
+
+
+def test_net_edge_is_gross_minus_per_share_fee_on_polymarket():
+    p_win = _max_edge_probe_p_win("YES")
+    p_no = _max_edge_probe_p_win("NO")
+    report = _fee_gate_eval(_max_edge_market(best_ask=p_win - 0.20, no_ask=p_no - 0.20))
+    for o in report.outcomes:
+        assert o.net_edge == pytest.approx(
+            o.edge - POLYMARKET_TAKER_FEE_RATE * o.best_ask * (1 - o.best_ask)
+        )
+        assert o.net_edge < o.edge  # the stored/gross edge stays gross
+
+
+def test_yes_bet_clearing_min_edge_gross_but_not_net_is_rejected():
+    p_win = _max_edge_probe_p_win("YES")
+    report = _fee_gate_eval(_max_edge_market(best_ask=p_win - 0.125))
+    o = _side(report, "YES")
+    assert o.edge >= 0.12  # clears gross
+    assert o.net_edge < 0.12  # but not net of the fee
+    assert o.recommended is False
+
+
+def test_no_bet_clearing_min_edge_gross_but_not_net_is_rejected():
+    p_no = _max_edge_probe_p_win("NO")
+    report = _fee_gate_eval(_max_edge_market(no_ask=p_no - 0.125))
+    o = _side(report, "NO")
+    assert o.edge >= 0.12
+    assert o.net_edge < 0.12
+    assert o.recommended is False
+
+
+def test_bet_clearing_min_edge_net_is_recommended():
+    p_win = _max_edge_probe_p_win("YES")
+    report = _fee_gate_eval(_max_edge_market(best_ask=p_win - 0.14))
+    o = _side(report, "YES")
+    assert o.net_edge >= 0.12
+    assert o.recommended is True
+
+
+def test_kalshi_market_stays_gross_with_fee_gap_noted():
+    p_win = _max_edge_probe_p_win("YES")
+    market = _max_edge_market(best_ask=p_win - 0.125).model_copy(update={"venue": "kalshi"})
+    report = _fee_gate_eval(market)
+    o = _side(report, "YES")
+    assert o.net_edge == o.edge
+    assert o.recommended is True  # the same numbers the Polymarket copy rejects
+    assert report.fee_gap == KALSHI_FEE_GAP
+    assert "gross" in KALSHI_FEE_GAP.lower()
+
+
+def test_polymarket_market_has_no_fee_gap():
+    p_win = _max_edge_probe_p_win("YES")
+    assert _fee_gate_eval(_max_edge_market(best_ask=p_win - 0.2)).fee_gap is None
+
+
+def test_unknown_venue_market_raises():
+    market = _max_edge_market().model_copy(update={"venue": "manifold"})
+    with pytest.raises(ValueError, match="venue"):
+        _fee_gate_eval(market)
+
+
+def test_max_edge_cap_compares_gross_not_net():
+    p_win = _max_edge_probe_p_win("YES")
+    # gross 0.255 is over the 0.25 cap; net (about 0.244) would sneak under it.
+    report = _fee_gate_eval(_max_edge_market(best_ask=p_win - 0.255))
+    o = _side(report, "YES")
+    assert o.edge > 0.25 > o.net_edge
+    assert o.recommended is False
+
+
+def test_gross_at_cap_is_kept_when_net_clears_floor():
+    p_win = _max_edge_probe_p_win("YES")
+    o = _side(_fee_gate_eval(_max_edge_market(best_ask=p_win - 0.25)), "YES")
+    assert o.edge == 0.25
+    assert o.recommended is True
+
+
+def test_min_edge_delta_stacks_on_net_edge():
+    p_win = _max_edge_probe_p_win("YES")
+    # effective floor 0.12 + 0.05 = 0.17; gross 0.175 has net about 0.164.
+    below = _side(
+        _fee_gate_eval(_max_edge_market(best_ask=p_win - 0.175), min_edge_delta=0.05), "YES"
+    )
+    assert below.edge >= 0.17 > below.net_edge
+    assert below.recommended is False
+    above = _side(
+        _fee_gate_eval(_max_edge_market(best_ask=p_win - 0.19), min_edge_delta=0.05), "YES"
+    )
+    assert above.net_edge >= 0.17
+    assert above.recommended is True
+
+
+def test_outcomes_are_sorted_by_net_edge_not_gross():
+    # YES on the mid bucket (ask near 0.35, fee about 1.1 pts) vs NO on a far
+    # tail (no_ask near 0.85, fee about 0.6 pts). Gross prefers the YES by 0.25
+    # points, but the fee gap flips the order on net.
+    probe = _fee_gate_eval(
+        _market(
+            [
+                _bucket("70-71°F", "range", lo=70, hi=71, best_ask=0.5, no_ask=0.5),
+                _bucket("90-91°F", "range", lo=90, hi=91, best_ask=0.5, no_ask=0.5),
+            ]
+        )
+    )
+    p_mid = _side_for(probe, "70-71°F", "YES").p_win
+    p_tail_no = _side_for(probe, "90-91°F", "NO").p_win
+    market = _market(
+        [
+            _bucket("70-71°F", "range", lo=70, hi=71, best_ask=p_mid - 0.1500),
+            _bucket("90-91°F", "range", lo=90, hi=91, no_ask=p_tail_no - 0.1475),
+        ]
+    )
+    report = _fee_gate_eval(market, min_edge=0.0, max_edge=None)
+    mid, tail = _side_for(report, "70-71°F", "YES"), _side_for(report, "90-91°F", "NO")
+    assert mid.edge > tail.edge  # gross order
+    assert mid.net_edge < tail.net_edge  # net order is the reverse
+    assert [o.bucket_label for o in report.outcomes] == ["90-91°F", "70-71°F"]
+    nets = [o.net_edge for o in report.outcomes]
+    assert nets == sorted(nets, reverse=True)
+
+
+def _precip_fee_eval(market: PrecipMonthlyMarket) -> MarketReport:
+    return evaluate_precip_market(
+        market,
+        _precip_forecast_set(_precip_max_edge_target(), mean=2.5, var=0.6),
+        floor=0.0,
+        min_sources=0,
+        min_edge=0.12,
+        var_floor=PRECIP_VAR_FLOOR,
+        max_edge=0.25,
+    )
+
+
+def _precip_probe() -> tuple[float, float]:
+    probe = _precip_fee_eval(_precip_max_edge_market(best_ask=0.50, no_ask=0.50))
+    return _side(probe, "YES").p_win, _side(probe, "NO").p_win
+
+
+def test_precip_gross_clears_net_does_not_is_rejected_on_both_sides():
+    p_win, p_no = _precip_probe()
+    report = _precip_fee_eval(_precip_max_edge_market(best_ask=p_win - 0.125, no_ask=p_no - 0.125))
+    for side in ("YES", "NO"):
+        o = _side(report, side)
+        assert o.edge >= 0.12 > o.net_edge
+        assert o.net_edge == pytest.approx(
+            o.edge - POLYMARKET_TAKER_FEE_RATE * o.best_ask * (1 - o.best_ask)
+        )
+        assert o.recommended is False
+
+
+def test_precip_kalshi_copy_stays_gross_and_recommended():
+    p_win, p_no = _precip_probe()
+    market = _precip_max_edge_market(best_ask=p_win - 0.125, no_ask=p_no - 0.125).model_copy(
+        update={"venue": "kalshi"}
+    )
+    report = _precip_fee_eval(market)
+    assert report.fee_gap == KALSHI_FEE_GAP
+    for side in ("YES", "NO"):
+        o = _side(report, side)
+        assert o.net_edge == o.edge
+        assert o.recommended is True
+
+
+def test_precip_cap_compares_gross_and_sorts_by_net():
+    p_win, p_no = _precip_probe()
+    report = _precip_fee_eval(_precip_max_edge_market(best_ask=p_win - 0.255, no_ask=p_no - 0.20))
+    yes = _side(report, "YES")
+    assert yes.edge > 0.25 > yes.net_edge
+    assert yes.recommended is False
+    nets = [o.net_edge for o in report.outcomes]
+    assert nets == sorted(nets, reverse=True)
