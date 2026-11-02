@@ -125,8 +125,9 @@ trade step reads the run that just finished, so its prices are minutes old.
 7. Size (#478): drop outcomes that already hold a position, order by edge,
    apply the caps, return orders with a stake.
 8. For each order, fetch the book of the right token (#476), cut the asks at
-   the limit price, walk the stake, apply the minimum order size and the taker
-   fee, and record the result in `paper_orders` (#477).
+   the limit price, and walk the book with a budget sized so that
+   `spent_usdc + fee_usdc <= TRADE_STAKE_USDC`. Apply the minimum order size and
+   record the result, spend and fee included, in `paper_orders` (#477).
 9. Print a summary: orders by status, USDC staked, and how many orders each
    cap blocked.
 
@@ -139,7 +140,7 @@ Four constants in `config.py` (#478), all tunable:
 
 | Constant | Default | Meaning |
 | --- | ---: | --- |
-| `TRADE_STAKE_USDC` | 5 | USDC staked per order |
+| `TRADE_STAKE_USDC` | 5 | cap on total USDC outlay per order (fill plus taker fee) |
 | `TRADE_MAX_NEW_EXPOSURE_PER_DAY_USDC` | 50 | new USDC spent per UTC day |
 | `TRADE_MAX_OPEN_EXPOSURE_USDC` | 150 | USDC spent on unsettled positions |
 | `TRADE_MAX_POSITIONS_PER_OUTCOME` | 1 | open positions per (market, outcome) |
@@ -149,14 +150,19 @@ Rules:
 - **Position key:** (market_id, outcome). The side is ignored. A YES and a NO
   on the same outcome count as one position, so the bot cannot hedge against
   itself. It may hold several outcomes of one market.
-- **Exposure:** USDC actually spent, fees included. A position stays open
-  until its market has an `outcomes` row. A partial fill counts what was
-  spent. A no-fill counts zero.
+- **Stake:** `TRADE_STAKE_USDC` caps the total outlay per order, fill plus
+  taker fee. The trader walks the book with a budget sized so that
+  `spent_usdc + fee_usdc <= TRADE_STAKE_USDC`.
+- **Exposure:** USDC actually spent, fees included (`spent_usdc + fee_usdc`). A
+  position stays open until its market has an `outcomes` row. A partial fill
+  counts what was spent. A no-fill counts zero.
 - **Order of orders:** highest edge first, with a stable tie-break (market id,
   then outcome). Caps bind in that order, so the best bets win scarce room.
-- **Within one run,** caps are charged at the planned stake, which is at
-  least the actual spend. After the run, the store holds the actual spend and
-  the next run sees it.
+- **Within one run,** caps are charged at the planned stake. The planned stake
+  is an upper bound on actual outlay, because the stake caps spend plus fee, so
+  charging the caps at the planned stake within a run can never let exposure
+  exceed them. After the run, the store holds the actual spend and the next run
+  sees it.
 - **Kill switch input:** #478 takes a boolean. A true value yields zero
   orders. Where the boolean comes from is defined in the kill switch section.
 
@@ -193,22 +199,26 @@ Rules:
   station delta for the order's (station, variable), zero if none. It is the
   highest price at which the edge still clears the gate's own floor. The asks
   above it are dropped before the walk.
-- **Order type:** fill what the book offers up to the stake at or under the
-  limit, then cancel the rest. This mirrors the planned live order type, a
+- **Order type:** fill what the book offers, up to the stake budget (spend plus
+  fee), at or under the limit, then cancel the rest. This mirrors the planned live order type, a
   marketable limit order that may fill partially.
-- **Outcome:** `filled` (the stake was fully used), `partial` (some depth, less
-  than the stake) or `no_fill` (nothing at or under the limit, an empty book,
+- **Outcome:** `filled` (the stake budget was fully used), `partial` (some depth,
+  less than the budget) or `no_fill` (nothing at or under the limit, an empty book,
   or the order is below the minimum order size).
 - **Minimum order size:** the book reports `min_order_size` (5 shares in the
   sample). A 5 USDC stake buys more than 5 shares at any price under 1, so it
   cannot bind a full fill, but a small partial fill can fall under it. Such a
   partial is recorded as `no_fill`.
-- **Taker fee:** Polymarket charges takers on weather markets
-  (`fee = shares x feeRate x p x (1 - p)`, rate 0.05 per
-  `https://docs.polymarket.com/trading/fees`, checked 2026-11-02). At a 0.67
-  price that is about 1.65% of the spend, larger than the edge being tested.
-  The fee is computed per filled level and stored in `fee_usdc`. Batch 2
-  re-checks the rate against the market's page before relying on it.
+- **Taker fee:** `docs.polymarket.com/trading/fees` (fetched 2026-11-02) sets
+  the Weather taker rate at 0.05. The formula is
+  `fee = shares x feeRate x p x (1 - p)`, charged in USDC. The docs list no
+  maker fee and a maker rebate. At a 0.67 price the fee is about 1.65% of the
+  spend. That is larger than the +0.6% row of the 0.12 sweep and about equal to
+  the +1.6% row, so the fee is the same size as the whole measured edge. The fee
+  is computed per filled level and stored in `fee_usdc`. It sits inside the
+  stake: the walk spends only what leaves room for the fee, so
+  `spent_usdc + fee_usdc <= TRADE_STAKE_USDC`. Batch 2 re-checks the rate
+  against the market's page before relying on it.
 - No rounding to the tick inside the walk. Tick size and share rounding belong
   to the live order batch.
 
@@ -300,8 +310,8 @@ All three conditions must hold, checked once, when the sample is reached.
 1. **Sample.** At least 400 settled paper orders with a fill (partial fills
    count, no-fills do not), spread over at least 60 distinct settlement dates,
    all in one policy era.
-2. **ROI.** At least +1.0% at book-walked fills with fees included, computed as
-   sum of P&L over sum of USDC spent.
+2. **ROI.** At least +1.0% net of fees at book-walked fills, computed as the sum
+   of P&L after taker fees over the sum of USDC outlay (fill plus fee).
 3. **Execution gap.** The mean of (average fill price minus the run's stored
    ask) is at most 0.5 cents per share.
 
@@ -315,10 +325,14 @@ Why these numbers:
 - **60 dates.** Outcomes of one market move together and one day's weather is
   shared across cities. Sixty dates keep a single cold snap from deciding the
   result.
-- **+1.0%.** The midpoint of the 0.12 range (+0.6% to +1.6%). Paper has to
-  reproduce, at real fill prices, the edge the policy was picked on. That range
-  is already optimistic, so a lower bar would be weaker than the evidence that
-  set the gate.
+- **+1.0% net.** The go-live ROI bar is net of fees: realized P&L after taker
+  fees, divided by total USDC outlay (fill plus fee). The bar stays at +1.0%
+  net. It is a margin above break-even, not a reproduction of the sweep. The
+  2026-10-19 sweep measured +0.6% to +1.6% gross at stored asks. At a 0.67 ask
+  the taker fee costs about 1.65% of spend, so the measured edge implies a net
+  ROI of about -1.0% to 0.0%. At the current gate the criterion is therefore
+  expected to fail unless paper fills beat the sweep's edge. That is the purpose
+  of paper first: to find this out before money is at risk.
 - **0.5 cents.** The typical ask is about 0.67, so one cent per share costs about
   1.5 ROI points. That wipes out the measured edge.
 
@@ -442,6 +456,12 @@ changes a cap or the kill switch shape, a later batch updates the code.
 
 ## Open items
 
+- **Fee mitigations.** Fee mitigations are open items for the owner before
+  batch 2. (1) A fee-aware gate: the edge is computed net of the taker fee at
+  the quoted ask, so only bets that clear MIN_EDGE after fees are placed. (2)
+  Resting limit (maker) orders, which pay no maker fee and earn a rebate per
+  Polymarket's fee docs, at the cost of fill uncertainty. Either one changes
+  which orders are placed and starts a new policy era.
 - **Fee rate source.** The 0.05 weather taker rate comes from Polymarket's docs
   page. The page names no API endpoint. Batch 2 confirms the rate for each
   market and stores it as a constant (proposed name `TRADE_TAKER_FEE_RATE`,
