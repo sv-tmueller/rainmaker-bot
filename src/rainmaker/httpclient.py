@@ -6,9 +6,10 @@ not read-side failures like a server that disconnects without answering
 transient server error. A free weather or market endpoint dropping one request
 or bouncing a 503 should not abort a scheduled run, so wrap the transport and
 retry both the broader TransportError class and a fixed set of retryable
-statuses, sharing one backoff budget. 429 is deliberately excluded: ASOS
-already owns rate-limit backoff via its own Retry-After loop, and retrying it
-here too would double every wait.
+statuses, sharing one backoff budget. 429 is not retried by default: ASOS, wrh
+and data-api run their own 429 loops, and retrying it here too would double
+every wait. A host opts in through `rate_limit_domains` (OPEN_METEO_DOMAINS),
+and then 429 is retried under the RATE_LIMIT_* caps.
 """
 
 import time
@@ -98,7 +99,7 @@ class RetryTransport(httpx.BaseTransport):
             try:
                 response = self._transport.handle_request(request)
             except httpx.TransportError:
-                if attempt + 1 == self._attempts:
+                if attempt + 1 >= self._attempts:
                     raise
                 self._sleep(self._backoff * 2**attempt)
                 attempt += 1
@@ -115,7 +116,7 @@ class RetryTransport(httpx.BaseTransport):
                 continue
             if response.status_code not in RETRYABLE_STATUS_CODES:
                 return response
-            if attempt + 1 == self._attempts:
+            if attempt + 1 >= self._attempts:
                 # Exhausted: return the 5xx as-is, unclosed. Every call site
                 # already calls raise_for_status(), so it raises for free.
                 return response
@@ -137,7 +138,7 @@ def raise_for_status_with_body(response: httpx.Response, limit: int = 300) -> No
     which the stock message drops. Still an httpx.HTTPStatusError, so callers
     that catch httpx.HTTPError keep working.
     """
-    if not response.is_error:
+    if response.is_success:
         return
     body = " ".join(response.text.split())[:limit]
     raise httpx.HTTPStatusError(

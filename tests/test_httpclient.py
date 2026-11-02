@@ -11,6 +11,7 @@ from rainmaker.httpclient import (
     RetryTransport,
     build_backfill_client,
     build_client,
+    raise_for_status_with_body,
 )
 
 
@@ -379,3 +380,38 @@ def test_build_backfill_client_retries_open_meteo_rate_limits():
         assert client._transport._attempts == 2
     finally:
         client.close()
+
+
+def test_zero_attempts_still_terminates_on_transport_error():
+    stub = _StubTransport([httpx.ReadError("only")])
+    transport = RetryTransport(transport=stub, attempts=0, backoff=0.0, sleep=lambda _s: None)
+
+    with pytest.raises(httpx.ReadError):
+        transport.handle_request(_request())
+
+    assert stub.calls == 1
+
+
+def test_zero_attempts_still_terminates_on_retryable_status():
+    resp = httpx.Response(503, request=_request())
+    stub = _StubTransport([resp])
+    transport = RetryTransport(transport=stub, attempts=0, backoff=0.0, sleep=lambda _s: None)
+
+    assert transport.handle_request(_request()) is resp
+    assert stub.calls == 1
+
+
+@pytest.mark.parametrize("status", [301, 302, 304, 404, 429, 503])
+def test_raise_for_status_with_body_raises_on_anything_not_2xx(status: int):
+    resp = httpx.Response(status, text="limit hit", request=_request())
+
+    with pytest.raises(httpx.HTTPStatusError, match=f"HTTP {status}"):
+        raise_for_status_with_body(resp)
+
+
+def test_raise_for_status_with_body_passes_2xx_and_includes_body_on_error():
+    raise_for_status_with_body(httpx.Response(200, request=_request()))
+
+    resp = httpx.Response(429, text="Hourly  limit\nexceeded", request=_request())
+    with pytest.raises(httpx.HTTPStatusError, match="Hourly limit exceeded"):
+        raise_for_status_with_body(resp)

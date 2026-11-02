@@ -306,8 +306,8 @@ cells), re-trigger the workflow once the source recovers; cells are upserts,
 so a re-run only fills what is missing.
 
 Open-Meteo rate limits (#481): the backfill, `backtest` and `backtest-pnl`
-clients retry an Open-Meteo `429` (any `*.open-meteo.com` host) up to 4 times
-per request. The wait is `Retry-After` when sent, else 10s doubling. A wait
+clients retry an Open-Meteo `429` (any `*.open-meteo.com` host) up to 4 attempts
+(3 retries) per request. The wait is `Retry-After` when sent, else 10s doubling. A wait
 over 60s (an hourly or daily limit) is not waited out, and the total 429
 waiting per run is capped at 120s, so a hard limit fails fast. A persistent
 429 surfaces with Open-Meteo's response body, which names the limit hit. ASOS
