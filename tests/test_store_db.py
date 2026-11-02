@@ -1,3 +1,4 @@
+import re
 import sqlite3
 
 import psycopg
@@ -27,6 +28,7 @@ EXPECTED_TABLES = {
     "calibration",
     "forecast_accuracy",
     "tracking_snapshot",
+    "paper_orders",
 }
 
 
@@ -111,11 +113,12 @@ def test_translate_guards_placeholder_count():
 def test_schema_for_uses_identity_only_on_postgres():
     pg = _schema_for("postgres")
     sl = _schema_for("sqlite")
-    # all three surrogate-key tables (prices, forecasts, predictions) must get an
-    # identity column on Postgres; a partial .replace would break inserts at runtime
-    assert pg.count("GENERATED ALWAYS AS IDENTITY") == 3
+    # all four surrogate-key tables (prices, forecasts, predictions, paper_orders)
+    # must get an identity column on Postgres; a partial .replace would break
+    # inserts at runtime
+    assert pg.count("GENERATED ALWAYS AS IDENTITY") == 4
     assert "GENERATED ALWAYS AS IDENTITY" not in sl
-    assert sl.count("INTEGER PRIMARY KEY") == 3
+    assert sl.count("INTEGER PRIMARY KEY") == 4
 
 
 def test_postgres_schema_uses_double_precision_not_real():
@@ -123,6 +126,7 @@ def test_postgres_schema_uses_double_precision_not_real():
     pg = _schema_for("postgres")
     sl = _schema_for("sqlite")
     assert " REAL," not in pg
+    assert not re.search(r"\bREAL\b", pg)  # catches a REAL NOT NULL line the literal misses
     assert "DOUBLE PRECISION" in pg
     assert " REAL," in sl  # SQLite REAL is already 8-byte, left as-is
 

@@ -3,10 +3,11 @@ import sqlite3
 
 import pytest
 
-from rainmaker.store.db import _SQLITE_SCHEMA, connect, init_schema
+from rainmaker.store.db import _SQLITE_SCHEMA, Conn, connect, init_schema
 from rainmaker.store.migrate import (
     _MIGRATIONS,
     _RLS_TABLES,
+    _RLS_TABLES_0014,
     _WIDEN_FLOAT4_COLUMNS,
     _backfill_venue,
     _enable_rls_statements,
@@ -76,9 +77,9 @@ def test_apply_migrations_is_idempotent():
     n = conn.execute("SELECT count(*) AS n FROM schema_migrations").fetchone()["n"]
     conn.close()
     # _MIGRATIONS holds DDL steps; 0007_backfill_venue, 0010_widen_float4_columns,
-    # and 0013_enable_rls are recorded as separate Python steps outside that list,
-    # so the total count is len(_MIGRATIONS) + 3.
-    assert n == len(_MIGRATIONS) + 3
+    # 0013_enable_rls, and 0014_paper_orders_rls are recorded as separate Python
+    # steps outside that list, so the total count is len(_MIGRATIONS) + 4.
+    assert n == len(_MIGRATIONS) + 4
 
 
 def test_migration_statements_render_real_as_double_precision_for_postgres():
@@ -240,11 +241,12 @@ def test_apply_migrations_crash_safe_when_alter_already_applied():
     rows = {r["id"] for r in conn.execute("SELECT id FROM schema_migrations").fetchall()}
     conn.close()
     # _MIGRATIONS holds DDL steps; 0007_backfill_venue, 0010_widen_float4_columns,
-    # and 0013_enable_rls are recorded outside that list.
+    # 0013_enable_rls, and 0014_paper_orders_rls are recorded outside that list.
     assert rows == {mid for mid, _ in _MIGRATIONS} | {
         "0007_backfill_venue",
         "0010_widen_float4_columns",
         "0013_enable_rls",
+        "0014_paper_orders_rls",
     }
 
 
@@ -416,13 +418,14 @@ def test_backfill_venue_is_idempotent():
 
 
 def test_rls_tables_match_base_schema_tables():
-    """_RLS_TABLES must name exactly the tables the base schema creates, so
+    """The RLS lists must name exactly the tables the base schema creates, so
     every table gets RLS enabled and no drift sneaks in when a table is added.
+    A new base table needs its own RLS migration list (0013's is frozen).
     """
     # Parse table names out of the shared base schema (works for both backends;
     # the table set is identical, only column types differ).
     table_names = re.findall(r"CREATE TABLE IF NOT EXISTS (\w+) \(", _SQLITE_SCHEMA)
-    assert sorted(table_names) == sorted(_RLS_TABLES)
+    assert sorted(table_names) == sorted(_RLS_TABLES + _RLS_TABLES_0014)
 
 
 def test_enable_rls_statements_shape():
@@ -459,3 +462,80 @@ def test_migration_0013_records_on_sqlite_without_error():
     ).fetchone()["n"]
     conn.close()
     assert n == 1
+
+
+def test_migration_0014_records_on_sqlite_without_error():
+    """Like 0013: a no-op on SQLite, recorded once, skipped on a second pass."""
+    conn = connect(":memory:")
+    init_schema(conn)
+    ids = {r["id"] for r in conn.execute("SELECT id FROM schema_migrations").fetchall()}
+    assert "0014_paper_orders_rls" in ids
+
+    apply_migrations(conn)  # second pass: must not re-record
+
+    n = conn.execute(
+        "SELECT count(*) AS n FROM schema_migrations WHERE id = ?", ("0014_paper_orders_rls",)
+    ).fetchone()["n"]
+    conn.close()
+    assert n == 1
+
+
+class _FakePgMigrationRaw:
+    """Records every statement; reports a preset set of applied migration ids."""
+
+    def __init__(self, applied_ids):
+        self._applied = applied_ids
+        self.calls: list[tuple[str, tuple]] = []
+
+    def execute(self, sql, params=()):
+        self.calls.append((sql, tuple(params)))
+        rows = [{"id": i} for i in self._applied] if sql.startswith("SELECT id FROM schema") else []
+        return _FakeRows(rows)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+class _FakeRows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+
+def _all_migration_ids():
+    return {m for m, _ in _MIGRATIONS} | {
+        "0007_backfill_venue",
+        "0010_widen_float4_columns",
+        "0013_enable_rls",
+        "0014_paper_orders_rls",
+    }
+
+
+def _rls_alters(raw):
+    return [sql for sql, _ in raw.calls if "ENABLE ROW LEVEL SECURITY" in sql]
+
+
+def test_migration_0014_enables_rls_only_on_paper_orders_for_existing_prod():
+    """Prod already ran 0013, so only 0014 runs: one ALTER, then its record."""
+    raw = _FakePgMigrationRaw(_all_migration_ids() - {"0014_paper_orders_rls"})
+    apply_migrations(Conn(raw, "postgres"))
+
+    assert _rls_alters(raw) == ["ALTER TABLE paper_orders ENABLE ROW LEVEL SECURITY"]
+    inserts = [p for sql, p in raw.calls if sql.startswith("INSERT INTO schema_migrations")]
+    assert [p[0] for p in inserts] == ["0014_paper_orders_rls"]
+
+
+def test_migration_0014_runs_after_0013_on_a_fresh_postgres():
+    raw = _FakePgMigrationRaw(set())
+    apply_migrations(Conn(raw, "postgres"))
+
+    assert _rls_alters(raw) == [
+        *_enable_rls_statements(),
+        "ALTER TABLE paper_orders ENABLE ROW LEVEL SECURITY",
+    ]
+    assert _rls_alters(raw)[-1] == "ALTER TABLE paper_orders ENABLE ROW LEVEL SECURITY"

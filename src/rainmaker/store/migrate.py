@@ -106,6 +106,12 @@ _RLS_TABLES: list[str] = [
 ]
 
 
+# 0013 enabled RLS once on the fixed list above, so a table added to the base
+# schema later starts with RLS off on prod. Each such table gets its own list and
+# migration; 0013's list stays frozen so it keeps describing what 0013 did.
+_RLS_TABLES_0014: list[str] = ["paper_orders"]
+
+
 def _enable_rls_statements() -> list[str]:
     """ENABLE ROW LEVEL SECURITY for every table, Postgres-flavored SQL."""
     return [f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY" for t in _RLS_TABLES]
@@ -247,5 +253,17 @@ def apply_migrations(conn: Conn) -> None:
         conn.execute(
             "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
             ("0013_enable_rls", datetime.now(UTC).isoformat()),
+        )
+        conn.commit()
+
+    # 0014: RLS for paper_orders, which joined the base schema after 0013 ran on
+    # prod. Same rules as 0013 (Postgres only, no policies, idempotent ALTER).
+    if "0014_paper_orders_rls" not in applied:
+        if conn.backend == "postgres":
+            for table in _RLS_TABLES_0014:
+                conn.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+        conn.execute(
+            "INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)",
+            ("0014_paper_orders_rls", datetime.now(UTC).isoformat()),
         )
         conn.commit()
