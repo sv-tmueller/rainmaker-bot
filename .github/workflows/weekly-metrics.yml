@@ -27,7 +27,7 @@ jobs:
             echo "DATABASE_URL set on an ephemeral step; refusing (would override --db and write prod)"
             exit 1
           fi
-          uv run rainmaker backfill --city all --variable all --leads 0,1,2,3 --db ./metrics.db
+          uv run rainmaker backfill --city all --variable all --leads 0,1,2,3 --db ./metrics.db --fail-on-source-errors
       - name: Replay P/L over history (ephemeral, local SQLite only)
         run: |
           if [ -n "${DATABASE_URL:-}" ]; then

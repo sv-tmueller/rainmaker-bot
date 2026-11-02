@@ -305,6 +305,21 @@ failures (for example NCEI down, which starves the Kalshi-only KNYC/KMDW
 cells), re-trigger the workflow once the source recovers; cells are upserts,
 so a re-run only fills what is missing.
 
+Open-Meteo rate limits (#481): the backfill, `backtest` and `backtest-pnl`
+clients retry an Open-Meteo `429` (any `*.open-meteo.com` host) up to 4 times
+per request. The wait is `Retry-After` when sent, else 10s doubling. A wait
+over 60s (an hourly or daily limit) is not waited out, and the total 429
+waiting per run is capped at 120s, so a hard limit fails fast. A persistent
+429 surfaces with Open-Meteo's response body, which names the limit hit. ASOS
+keeps its own 429 loop, and the live `rainmaker run` is unchanged.
+
+`rainmaker backfill --fail-on-source-errors` exits 1 when a strict majority of
+station-variables fail on HTTP or transport errors (cells skipped for thin
+history count in the total, not as errors). The `weekly-metrics` workflow
+passes it, so a fit lost to a throttled or down source goes red instead of
+silently grading the replay against an uncalibrated store. The `backfill`
+workflow does not pass it and keeps exiting 0 on a partial fit.
+
 ### Regime refit rollout (order matters)
 
 A calibration regime refit (any change that alters the forecast distribution
