@@ -15,7 +15,12 @@ Gamma `bestAsk`. Findings from the live endpoint that shape this module:
 Tested against saved fixtures only, never a live endpoint. No auth, no orders.
 """
 
+from typing import Any, Literal
+
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from rainmaker.domain import Bucket
 
 CLOB_BOOK_URL = "https://clob.polymarket.com/book"
 
@@ -61,6 +66,40 @@ class Fill(BaseModel):
     shares: float
     avg_price: float | None  # spent / shares; None when nothing filled
     sufficient: bool  # the whole stake was filled from the book
+
+
+def book_token_id(bucket: Bucket, side: Literal["YES", "NO"]) -> str:
+    """The CLOB token whose book prices a buy of `side` (NO uses the NO token)."""
+    token = bucket.yes_token_id if side == "YES" else bucket.no_token_id
+    if not token:
+        # Kalshi buckets carry no_token_id="" and have no CLOB book.
+        raise ValueError(f"bucket {bucket.label!r} has no {side} token id")
+    return token
+
+
+def fetch_book(token_id: str, client: httpx.Client) -> OrderBook:
+    """Fetch one token's order book. Raises on HTTP error (404: no such book).
+
+    An empty book (HTTP 200 with empty sides) parses to an empty OrderBook; that
+    is a different outcome from a missing book. Raises ValueError when the
+    response is for a different token than requested.
+    """
+    resp = client.get(CLOB_BOOK_URL, params={"token_id": token_id})
+    resp.raise_for_status()
+    data: dict[str, Any] = resp.json()
+    if data["asset_id"] != token_id:
+        raise ValueError(f"book is for token {data['asset_id']!r}, requested {token_id!r}")
+    return OrderBook(
+        asset_id=data["asset_id"],
+        market=data["market"],
+        timestamp_ms=int(data["timestamp"]),
+        bids=[_level(lv) for lv in data["bids"]],
+        asks=[_level(lv) for lv in data["asks"]],
+    )
+
+
+def _level(raw: dict[str, str]) -> BookLevel:
+    return BookLevel(price=float(raw["price"]), size=float(raw["size"]))
 
 
 def walk_asks(book: OrderBook, stake_usdc: float) -> Fill:
