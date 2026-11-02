@@ -6,6 +6,8 @@ rendered report, so every run is fully reconstructable.
 
 import json
 from collections import defaultdict
+from datetime import UTC, datetime
+from typing import Literal, get_args
 
 from rainmaker.domain import Market, PrecipMonthlyMarket
 from rainmaker.forecasts.base import ForecastSet
@@ -298,5 +300,71 @@ def record_outcome(conn: Conn, market_id: str, actual_value: float, settled_at: 
         "ON CONFLICT(market_id) DO UPDATE SET "
         "actual_value = excluded.actual_value, settled_at = excluded.settled_at",
         (market_id, actual_value, settled_at),
+    )
+    conn.commit()
+
+
+PaperOrderSide = Literal["YES", "NO"]
+PaperOrderStatus = Literal["filled", "partial", "no_fill"]
+
+
+def record_paper_order(
+    conn: Conn,
+    *,
+    run_id: str,
+    market_id: str,
+    outcome: str,
+    side: PaperOrderSide,
+    token_id: str,
+    status: PaperOrderStatus,
+    stake_usdc: float,
+    fill_price: float | None,
+    shares: float,
+    fee_usdc: float | None,
+    p_win: float | None,
+    edge: float | None,
+    quoted_ask: float | None,
+    limit_price: float | None,
+    book_snapshot: str,
+    created_at: datetime,
+) -> None:
+    """Persist one paper order and commit, so it is durable before the next fetch.
+
+    Raises ValueError for input that exposure queries would read as zero spend
+    and so let an order past the caps: an unknown status or side, a fill without
+    a price or shares, or a naive timestamp. created_at is stored as UTC so the
+    per-day exposure query is a true UTC day.
+    """
+    if status not in get_args(PaperOrderStatus):
+        raise ValueError(f"unknown paper order status: {status!r}")
+    if side not in get_args(PaperOrderSide):
+        raise ValueError(f"unknown paper order side: {side!r}")
+    if status != "no_fill" and (fill_price is None or shares <= 0):
+        raise ValueError(f"a {status} paper order needs a fill price and positive shares")
+    if created_at.tzinfo is None:
+        raise ValueError("created_at must be timezone-aware")
+    conn.execute(
+        "INSERT INTO paper_orders (run_id, market_id, outcome, side, token_id, status, "
+        "stake_usdc, fill_price, shares, fee_usdc, p_win, edge, quoted_ask, limit_price, "
+        "book_snapshot, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            run_id,
+            market_id,
+            outcome,
+            side,
+            token_id,
+            status,
+            stake_usdc,
+            fill_price,
+            shares,
+            fee_usdc,
+            p_win,
+            edge,
+            quoted_ask,
+            limit_price,
+            book_snapshot,
+            created_at.astimezone(UTC).isoformat(),
+        ),
     )
     conn.commit()

@@ -4,7 +4,7 @@ The write/read round-trip these support is the integrity check for the schema an
 recorder; Phase 4 backfill/calibration builds on the same read surface.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from rainmaker.probability.calibration import Calibration
@@ -91,3 +91,40 @@ def settled_polymarket_temp_markets(conn: Conn) -> list[dict[str, Any]]:
         "ORDER BY m.settlement_date",
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# Paper-order spend per row, counted only for orders that actually bought shares.
+# A no_fill row can still carry walked shares (below min_order_size), so status
+# decides, not the share count. These queries never select book_snapshot (#469).
+_PAPER_SPEND = "p.shares * p.fill_price + COALESCE(p.fee_usdc, 0)"
+_PAPER_FILLED = "p.status IN ('filled', 'partial')"
+
+
+def open_exposure_by_outcome(conn: Conn) -> dict[tuple[str, str], float]:
+    """USDC at risk per open (market_id, outcome); the side is ignored.
+
+    Open means the market has no outcomes row yet. The keys are the positions
+    a trader de-duplicates on.
+    """
+    rows = conn.execute(
+        f"SELECT p.market_id AS market_id, p.outcome AS outcome, "
+        f"SUM({_PAPER_SPEND}) AS spend "
+        "FROM paper_orders p LEFT JOIN outcomes o ON o.market_id = p.market_id "
+        f"WHERE o.market_id IS NULL AND {_PAPER_FILLED} "
+        "GROUP BY p.market_id, p.outcome"
+    ).fetchall()
+    return {(r["market_id"], r["outcome"]): float(r["spend"]) for r in rows}
+
+
+def total_open_exposure(conn: Conn) -> float:
+    return float(sum(open_exposure_by_outcome(conn).values()))
+
+
+def new_exposure_for_day(conn: Conn, day: date) -> float:
+    """USDC spent on orders created during one UTC day, settled markets included."""
+    row = conn.execute(
+        f"SELECT COALESCE(SUM({_PAPER_SPEND}), 0) AS spend FROM paper_orders p "
+        f"WHERE {_PAPER_FILLED} AND p.created_at >= ? AND p.created_at < ?",
+        (day.isoformat(), (day + timedelta(days=1)).isoformat()),
+    ).fetchone()
+    return float(row["spend"])
