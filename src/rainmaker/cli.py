@@ -40,7 +40,7 @@ from rainmaker.forecasts.nws import NwsSource
 from rainmaker.forecasts.openmeteo import OpenMeteoSource
 from rainmaker.forecasts.precip import PrecipForecastSet, build_precip_forecast_set
 from rainmaker.gate_sweep import run_sweep
-from rainmaker.httpclient import build_backfill_client, build_client
+from rainmaker.httpclient import OPEN_METEO_DOMAINS, build_backfill_client, build_client
 from rainmaker.kalshi.client import discover_kalshi_markets, discover_kalshi_precip_markets
 from rainmaker.pnl_backtest import backtest_pnl, render_pnl_report
 from rainmaker.polymarket.client import (
@@ -307,7 +307,15 @@ def _backfill_stations(city: str) -> list[Station]:
     return matched
 
 
-def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_path: str) -> None:
+def _backfill(
+    city: str,
+    variable: str,
+    days: int,
+    leads: tuple[int, ...],
+    db_path: str,
+    *,
+    fail_on_source_errors: bool = False,
+) -> None:
     stations = _backfill_stations(city)
     variables = sorted(SUPPORTED_VARIABLES) if variable == "all" else [variable]
     today = _today()
@@ -329,6 +337,8 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
     label = _db_label(db_path)
     fitted = 0
     failed = 0
+    source_failed = 0  # the subset of `failed` that is an HTTP or transport error
+    skipped = 0  # thin history: run_backfill returned no cells
     try:
         init_schema(conn)
         # One build per invocation (#466). Season-window clip, same invariant
@@ -345,8 +355,11 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
                         raise  # schema bug, not a data gap; fail loud
                     print(f"{station.city}: backfill failed: {exc}", file=sys.stderr)
                     failed += 1
+                    if isinstance(exc, httpx.HTTPError):
+                        source_failed += 1
                     continue
                 if not results:
+                    skipped += 1
                     continue
                 for _lead, (cal, acc) in sorted(results.items()):
                     save_calibration(conn, cal, updated_at=now)
@@ -371,11 +384,24 @@ def _backfill(city: str, variable: str, days: int, leads: tuple[int, ...], db_pa
     finally:
         client.close()
         conn.close()
+    total = fitted + failed + skipped
     print(
-        f"backfill summary: fitted {fitted} of {fitted + failed} station-variables"
+        f"backfill summary: fitted {fitted} of {total} station-variables"
         + ("" if failed == 0 else f", failed {failed}")
+        + ("" if source_failed == 0 else f" ({source_failed} source errors)")
+        + ("" if skipped == 0 else f", skipped {skipped} (thin history)")
     )
     if fitted == 0:
+        raise SystemExit(1)
+    # Opt-in (the weekly replay grades against this fit): a strict majority of
+    # cells lost to a source being down or throttling means the store is mostly
+    # uncalibrated, which must not look like a green run (#481).
+    if fail_on_source_errors and source_failed * 2 > total:
+        print(
+            f"backfill failed: {source_failed} of {total} station-variables hit source "
+            "errors (HTTP or transport), a majority; the fit is mostly missing",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
 
 
@@ -385,7 +411,7 @@ def _backtest(
     cities = sorted(STATIONS) if city == "all" else [city]
     end = _today() - timedelta(days=1)  # actuals lag real-time; stop at yesterday
     start = end - timedelta(days=days)
-    client = build_client(60.0)
+    client = build_client(60.0, rate_limit_domains=OPEN_METEO_DOMAINS)
     synthetic: dict[str, BacktestPair] = {}
     real = None
     try:
@@ -447,7 +473,7 @@ def _backtest_pnl(
         Path(db).parent.mkdir(parents=True, exist_ok=True)
     conn = connect(db)
     init_schema(conn)
-    client = build_client(60.0)
+    client = build_client(60.0, rate_limit_domains=OPEN_METEO_DOMAINS)
     try:
         try:
             events = fetch_closed_weather_events(client)
@@ -1096,6 +1122,14 @@ def _main(argv: list[str] | None = None) -> None:
         help="comma-separated leads in days; each gets its own fitted calibration cell",
     )
     backfill.add_argument("--db", default=DB_PATH, help="SQLite database path")
+    backfill.add_argument(
+        "--fail-on-source-errors",
+        action="store_true",
+        help=(
+            "exit 1 when a strict majority of station-variables fail on HTTP or "
+            "transport errors (thin-history skips count in the total, not as errors)"
+        ),
+    )
 
     bt = sub.add_parser("backtest", help="backtest forecast calibration and win-rate over history")
     bt.add_argument("--city", default="all", help="city key from the station registry, or 'all'")
@@ -1326,7 +1360,14 @@ def _main(argv: list[str] | None = None) -> None:
     if args.command == "run":
         _run(args.reports_dir, db)
     elif args.command == "backfill":
-        _backfill(args.city, args.variable, args.days, _parse_leads(args.leads), db)
+        _backfill(
+            args.city,
+            args.variable,
+            args.days,
+            _parse_leads(args.leads),
+            db,
+            fail_on_source_errors=args.fail_on_source_errors,
+        )
     elif args.command == "settle":
         _settle(db)
     elif args.command == "regrade":

@@ -1208,3 +1208,65 @@ def test_dead_ncei_surfaces_after_two_attempts_not_the_default_four():
         assert calls["n"] == 2
     finally:
         client.close()
+
+
+# ---------------------------------------------------------------------------
+# Open-Meteo 429 handling on the backfill paths (#481). The fixture body is
+# representative: the real body of the 2026-11-02 incident was never logged.
+
+
+def _rate_limit_body() -> str:
+    return (Path(__file__).parent / "fixtures" / "openmeteo_429_daily.json").read_text()
+
+
+def test_archive_fetch_429_error_carries_the_response_body(httpx_mock):
+    httpx_mock.add_response(
+        url=re.compile(re.escape(HISTORICAL_FORECAST_URL)),
+        status_code=429,
+        text=_rate_limit_body(),
+    )
+    with httpx.Client() as client:
+        with pytest.raises(httpx.HTTPStatusError, match="Daily API request limit exceeded"):
+            fetch_historical_forecasts(KLGA, date(2026, 3, 1), date(2026, 3, 5), client)
+
+
+def test_previous_runs_fetch_429_error_carries_the_response_body(httpx_mock):
+    httpx_mock.add_response(
+        url=re.compile(re.escape(PREVIOUS_RUNS_URL)),
+        status_code=429,
+        text=_rate_limit_body(),
+    )
+    with httpx.Client() as client:
+        with pytest.raises(httpx.HTTPStatusError, match="Daily API request limit exceeded"):
+            fetch_historical_lead_forecasts(KLGA, (1,), date(2026, 3, 1), date(2026, 3, 5), client)
+
+
+def test_asos_429_wait_is_not_doubled_by_the_open_meteo_retry(monkeypatch):
+    """The backfill transport scopes 429 retry to Open-Meteo hosts, so an ASOS
+    429 is waited out once, by ASOS's own loop."""
+    from rainmaker.forecasts import asos
+    from rainmaker.httpclient import OPEN_METEO_DOMAINS, RetryTransport
+
+    asos_sleeps: list[float] = []
+    monkeypatch.setattr(asos.time, "sleep", asos_sleeps.append)
+    transport_sleeps: list[float] = []
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(429)
+        return httpx.Response(200, text="station,valid,tmpc\nLGA,2026-03-01 06:00,5.0\n")
+
+    transport = RetryTransport(
+        transport=httpx.MockTransport(handler),
+        rate_limit_domains=OPEN_METEO_DOMAINS,
+        sleep=transport_sleeps.append,
+    )
+    with httpx.Client(transport=transport) as client:
+        out = asos.fetch_asos_daily_extreme("LGA", date(2026, 3, 1), date(2026, 3, 1), client)
+
+    assert out == {date(2026, 3, 1): pytest.approx(41.0)}
+    assert transport_sleeps == []
+    assert asos_sleeps == [asos.ASOS_429_DEFAULT_WAIT_S]
+    assert len(requests) == 2

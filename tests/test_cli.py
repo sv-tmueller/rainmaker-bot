@@ -2015,3 +2015,146 @@ def test_real_track_command_reports_its_store_reads_on_stderr(tmp_path, capsys):
     assert captured.err.count("store read:") == 1
     assert captured.err.endswith(" MB\n")
     assert "store read:" not in captured.out
+
+
+# ---------------------------------------------------------------------------
+# #481: Open-Meteo 429 opt-in on the backtest clients, and the opt-in
+# --fail-on-source-errors rule for the weekly fit.
+
+
+def test_backtest_clients_opt_into_open_meteo_rate_limit_retry(monkeypatch, tmp_path):
+    from rainmaker.httpclient import OPEN_METEO_DOMAINS
+
+    seen: list[dict[str, object]] = []
+
+    def _spy(*args, **kwargs):
+        seen.append(kwargs)
+        return _DummyClient()
+
+    monkeypatch.setattr(cli, "build_client", _spy)
+    monkeypatch.setattr(cli, "backtest_synthetic", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "backtest_pnl", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "fetch_closed_weather_events", lambda client: [])
+    monkeypatch.setattr(cli, "_today", lambda: date(2026, 6, 5))
+
+    with pytest.raises(SystemExit):
+        cli.main(["backtest", "--city", "NYC", "--no-real", "--reports-dir", str(tmp_path)])
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "backtest-pnl",
+                "--city",
+                "NYC",
+                "--reports-dir",
+                str(tmp_path),
+                "--db",
+                str(tmp_path / "t.db"),
+            ]
+        )
+
+    assert len(seen) == 2
+    assert all(k.get("rate_limit_domains") == OPEN_METEO_DOMAINS for k in seen)
+
+
+def _fit_run(monkeypatch, tmp_path, outcome_for, extra_args=()):
+    """Run `backfill --city all --variable TMAX`; outcome_for(i) picks station i's
+    behavior: 'ok', 'thin' (run_backfill returns {}), 'http', 'value'."""
+    order = {
+        s.icao: i for i, s in enumerate(sorted(cli._distinct_stations(), key=lambda s: s.icao))
+    }
+
+    def _run(station, variable, leads, start, end, client, conn=None):
+        kind = outcome_for(order[station.icao])
+        if kind == "http":
+            raise httpx.ConnectTimeout("source down")
+        if kind == "value":
+            raise ValueError("bad payload")
+        if kind == "thin":
+            return {}
+        return _fake_run_backfill(station, variable, leads, start, end, client)
+
+    monkeypatch.setattr(cli, "run_backfill", _run)
+    monkeypatch.setattr(cli, "build_backfill_client", lambda *a, **k: _DummyClient())
+    cli.main(
+        ["backfill", "--city", "all", "--variable", "TMAX", "--db", str(tmp_path / "t.db")]
+        + list(extra_args)
+    )
+
+
+def _n_stations() -> int:
+    return len(cli._distinct_stations())
+
+
+def test_fail_on_source_errors_exits_1_when_most_cells_hit_source_errors(
+    monkeypatch, tmp_path, capsys
+):
+    n = _n_stations()
+    limit = n // 2 + 1  # strict majority
+
+    with pytest.raises(SystemExit) as exc:
+        _fit_run(
+            monkeypatch,
+            tmp_path,
+            lambda i: "http" if i < limit else "ok",
+            ["--fail-on-source-errors"],
+        )
+
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "backfill summary" in captured.out  # still printed before exiting
+    assert f"failed {limit}" in captured.out
+    assert "source errors" in captured.err
+
+
+def test_fail_on_source_errors_passes_at_just_under_a_majority(monkeypatch, tmp_path):
+    n = _n_stations()
+
+    _fit_run(
+        monkeypatch,
+        tmp_path,
+        lambda i: "http" if i < n // 2 else "ok",
+        ["--fail-on-source-errors"],
+    )
+
+
+def test_fail_on_source_errors_thin_history_skips_do_not_trip_it(monkeypatch, tmp_path, capsys):
+    n = _n_stations()
+    # One source error, the rest thin-history skips except one fitted cell: the
+    # source-error share is tiny, so the run passes.
+    _fit_run(
+        monkeypatch,
+        tmp_path,
+        lambda i: "http" if i == 0 else ("ok" if i == 1 else "thin"),
+        ["--fail-on-source-errors"],
+    )
+
+    out = capsys.readouterr().out
+    assert f"skipped {n - 2}" in out
+
+
+def test_fail_on_source_errors_value_errors_do_not_count_as_source_errors(monkeypatch, tmp_path):
+    n = _n_stations()
+    limit = n // 2 + 1
+
+    _fit_run(
+        monkeypatch,
+        tmp_path,
+        lambda i: "value" if i < limit else "ok",
+        ["--fail-on-source-errors"],
+    )
+
+
+def test_source_error_majority_passes_without_the_flag(monkeypatch, tmp_path, capsys):
+    """The backfill workflow does not pass the flag, so its exit code is unchanged."""
+    n = _n_stations()
+    limit = n // 2 + 1
+
+    _fit_run(monkeypatch, tmp_path, lambda i: "http" if i < limit else "ok")
+
+    assert f"failed {limit}" in capsys.readouterr().out
+
+
+def test_fail_on_source_errors_keeps_the_zero_fitted_exit(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        _fit_run(monkeypatch, tmp_path, lambda i: "thin", ["--fail-on-source-errors"])
+    assert exc.value.code == 1
