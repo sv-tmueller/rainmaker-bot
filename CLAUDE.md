@@ -179,6 +179,7 @@ src/rainmaker/
     render.py         terminal + markdown/JSON report, recommended-bets summary
   polymarket/
     client.py         Gamma discovery (read-only): temperature + monthly precip markets
+    geoblock.py       geoblock check (read-only) + fail-closed trade guard
     markets.py        event JSON -> Market (target + buckets, ICAO guard)
     precip_markets.py monthly-precip event JSON -> PrecipMonthlyMarket (inch brackets)
     prices.py         CLOB price-history client (read-only) + snap to a timestamp
