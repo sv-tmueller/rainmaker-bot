@@ -4,9 +4,9 @@ import "./globals.css";
 
 // Self-hosted latin subsets (OFL-1.1, see app/fonts/*/OFL.txt) so the build
 // makes no network request for fonts. Keep the weight ranges narrow: the old
-// next/font/google setup declared only 500-700 and 400-500, so the browser
-// clamps to them. Declaring the full axes would render body text and the KPI
-// mono figures lighter or bolder than today.
+// Google Fonts setup declared only 500-700 and 400-500, so the browser clamps
+// to them. Declaring the full axes would render body text and the KPI mono
+// figures lighter or bolder than today.
 const spaceGrotesk = localFont({
   src: "./fonts/space-grotesk/SpaceGrotesk-latin.woff2",
   weight: "500 700",
