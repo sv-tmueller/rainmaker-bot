@@ -263,7 +263,9 @@ Each bet shows:
 
 - `P(win)`: our forecast probability the outcome settles YES (0 to 1).
 - `ask`: the YES price you would pay on Polymarket (0 to 1, ~= implied prob).
-- `edge`: `P(win) - ask`. Positive edge is expected value in your favour.
+- `edge`: `P(win) - ask`. On Polymarket, since #491, it is also net of the
+  taker fee (`POLYMARKET_TAKER_FEE_RATE x ask x (1 - ask)` per share). Kalshi
+  edges stay gross. Positive edge is expected value in your favour.
 
 A bet is recommended only if it clears the gates: `P(win)` at or above the
 confidence floor (`CONFIDENCE_FLOOR`, currently 0.80) and at least
