@@ -464,11 +464,12 @@ The spec states the limits plainly.
 - Eras are recorded, not passed on the command line. #492 keeps them in a
   `PAPER_ERAS` constant in `paper_tracking.py`, one entry per era. Per-era
   counts and a fixed era boundary need a recorded list, and a `--since` date
-  would not give that. The first entry is "fee-aware gate (#491)", dated
-  2026-11-02, so the fee-aware era starts at the first run after #491 merges.
-  Operator rule for the runbook: a prod calibration refit through
+  would not give that. An entry starts when the new policy takes effect: the
+  merge time of the change, or the UTC time of the refit run. The first entry
+  is "fee-aware gate (#491)", starting 2026-11-03T07:36:10Z, the merge time of
+  PR #497. Operator rule for the runbook: a prod calibration refit through
   `backfill.yml` has no PR, but it is an era change, so the operator also adds
-  a `PAPER_ERAS` entry.
+  a `PAPER_ERAS` entry that starts at the refit run's UTC time.
 - The grader uses one best bet per market and run (`_best_per_market_run` in
   `src/rainmaker/tracking.py`), but the trader may hold several outcomes of one
   market. That is why the noise handling clusters by settlement date. The
