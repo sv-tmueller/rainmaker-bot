@@ -1,17 +1,22 @@
 import type { Metadata } from "next";
-import { Space_Grotesk, JetBrains_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
-const spaceGrotesk = Space_Grotesk({
+// Self-hosted latin subsets (OFL-1.1, see app/fonts/*/OFL.txt) so the build
+// makes no network request for fonts. Keep the weight ranges narrow: the old
+// next/font/google setup declared only 500-700 and 400-500, so the browser
+// clamps to them. Declaring the full axes would render body text and the KPI
+// mono figures lighter or bolder than today.
+const spaceGrotesk = localFont({
+  src: "./fonts/space-grotesk/SpaceGrotesk-latin.woff2",
+  weight: "500 700",
   variable: "--font-display",
-  weight: ["500", "600", "700"],
-  subsets: ["latin"],
 });
 
-const jetbrainsMono = JetBrains_Mono({
+const jetbrainsMono = localFont({
+  src: "./fonts/jetbrains-mono/JetBrainsMono-latin.woff2",
+  weight: "400 500",
   variable: "--font-jb-mono",
-  weight: ["400", "500"],
-  subsets: ["latin"],
 });
 
 export const metadata: Metadata = {

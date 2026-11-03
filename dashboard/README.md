@@ -18,7 +18,7 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit it.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Space Grotesk](https://fonts.google.com/specimen/Space+Grotesk) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/) via Google Fonts.
+This project self-hosts [Space Grotesk](https://fonts.google.com/specimen/Space+Grotesk) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/) with [`next/font/local`](https://nextjs.org/docs/app/api-reference/components/font#local-fonts). The latin woff2 files and their OFL-1.1 licences live in `app/fonts/`, so the build makes no network request for fonts.
 
 ## Learn More
 
