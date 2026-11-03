@@ -14,6 +14,10 @@ refuses to run unless that secret is a Postgres DSN, so a misconfigured secret
 fails loud instead of silently writing to a throwaway SQLite file in the runner.
 The dated md/json report is attached to each run as an artifact.
 
+The same job can run on a host under systemd instead (`deploy/`, runbook in
+`docs/operations/host-deploy.md`). The Actions cron stays enabled until an
+operator cuts over; run the job in one place at a time.
+
 `.github/workflows/daily-diagnostics.yml` runs once a day, after the 21:00 run's
 settle: `rainmaker snapshot`, then `rainmaker track`, `rainmaker tail-check`,
 and `rainmaker attribution`. These are read-only diagnostics; running them
@@ -61,6 +65,10 @@ you mean to touch prod.
   empty value falls back to the embedded token). If wrh is unavailable for any
   reason, US Polymarket settlement degrades to the ASOS fallback
   automatically; no manual intervention is needed.
+- Host deploy: the same variables live in `/etc/rainmaker/rainmaker.env` (a
+  template is `deploy/env.example`), plus the optional
+  `RAINMAKER_HEALTHCHECK_URL` and `RAINMAKER_ALERT_GH_TOKEN`. See
+  `docs/operations/host-deploy.md`.
 
 ## Ad hoc analysis and prod reads
 
@@ -347,6 +355,9 @@ Trigger order:
    Compare the since-filtered tail ratios against the previous regime's
    numbers to confirm the intended distortion (e.g. the #404 TMIN wedge)
    disappeared.
+4. A prod refit is also a paper era change: add a `PAPER_ERAS` entry for it
+   (see #492 and `docs/operations/host-deploy.md`), so paper results are not
+   pooled across calibration regimes.
 
 Between steps 1 and 2 the live run is misaligned by construction: new
 forecast generation, old calibration cells. Expect degraded recommendations

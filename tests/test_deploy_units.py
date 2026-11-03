@@ -30,9 +30,7 @@ def _directives(path: Path) -> dict[str, list[str]]:
     return found
 
 
-@pytest.mark.skipif(
-    shutil.which("systemd-analyze") is None, reason="systemd-analyze not installed"
-)
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze not installed")
 def test_units_pass_systemd_analyze_verify_with_no_output():
     result = subprocess.run(
         ["systemd-analyze", "verify", "--man=no", *map(str, UNITS)],
