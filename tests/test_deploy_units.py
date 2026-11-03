@@ -19,6 +19,7 @@ UNITS = [
     DEPLOY / "rainmaker-run-failure.service",
     DEPLOY / "rainmaker-run.timer",
 ]
+SYSTEM_UNIT_DIRS = ("/usr/lib/systemd/", "/lib/systemd/", "/etc/systemd/", "/run/systemd/")
 
 
 def _directives(path: Path) -> dict[str, list[str]]:
@@ -39,7 +40,14 @@ def test_units_pass_systemd_analyze_verify_with_no_output():
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout + result.stderr == ""
+    # verify also loads the host's own units and prints their deprecation
+    # notices (seen on the CI runner). Only output about our units counts.
+    ours = [
+        line
+        for line in (result.stdout + result.stderr).splitlines()
+        if not line.startswith(SYSTEM_UNIT_DIRS)
+    ]
+    assert ours == []
 
 
 def test_all_unit_files_exist():
