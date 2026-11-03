@@ -8,6 +8,7 @@ reaches a network, a database or systemd.
 
 import fcntl
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -124,11 +125,11 @@ def test_non_postgres_dsn_is_refused_without_running_anything(tree, dsn):
 
 
 @pytest.mark.parametrize("scheme", ["postgres", "postgresql"])
-def test_postgres_dsn_runs_run_settle_prune_in_order(tree, scheme):
+def test_postgres_dsn_runs_run_trade_settle_prune_in_order(tree, scheme):
     dsn = FAKE_DSN.replace("postgresql", scheme)
     result = run_wrapper(tree, DATABASE_URL=dsn)
     assert result.returncode == 0, result.stderr
-    assert calls(tree) == ["run", "settle", "prune"]
+    assert calls(tree) == ["run", "trade", "settle", "prune"]
     assert f"db={dsn[:10]}" in tree["log"].read_text()
 
 
@@ -144,6 +145,23 @@ def test_failing_step_stops_the_chain_and_fails_the_job(tree):
     assert calls(tree) == ["run"]
 
 
+def test_failing_trade_stops_settle_and_prune_and_fails_the_job(tree):
+    result = run_wrapper(tree, DATABASE_URL=FAKE_DSN, STUB_FAIL_ON="trade")
+    assert result.returncode == 3
+    assert calls(tree) == ["run", "trade"]
+
+
+def test_trade_runs_with_no_arguments_so_the_mode_stays_in_the_env_file(tree):
+    run_wrapper(tree, DATABASE_URL=FAKE_DSN)
+    trade_line = tree["log"].read_text().splitlines()[1]
+    assert trade_line.endswith("args=trade")
+
+
+def test_the_trade_step_is_never_wired_into_the_scheduled_workflow():
+    workflow = (REPO / ".github" / "workflows" / "daily-run.yml").read_text()
+    assert re.search(r"rainmaker\s+trade", workflow) is None
+
+
 def test_held_lock_exits_75_without_running_anything(tree):
     with open(tree["state"] / "run.lock", "w") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -155,7 +173,7 @@ def test_held_lock_exits_75_without_running_anything(tree):
 def test_lock_is_released_after_a_run(tree):
     assert run_wrapper(tree, DATABASE_URL=FAKE_DSN).returncode == 0
     assert run_wrapper(tree, DATABASE_URL=FAKE_DSN).returncode == 0
-    assert calls(tree) == ["run", "settle", "prune"] * 2
+    assert calls(tree) == ["run", "trade", "settle", "prune"] * 2
 
 
 def test_old_reports_are_pruned_and_recent_ones_kept(tree):
@@ -200,7 +218,7 @@ def test_ping_failure_never_fails_the_job(tree):
         STUB_CURL_FAIL="1",
     )
     assert result.returncode == 0
-    assert calls(tree) == ["run", "settle", "prune"]
+    assert calls(tree) == ["run", "trade", "settle", "prune"]
 
 
 def test_failure_script_pings_fail_and_files_an_issue_with_a_pointer(tree):

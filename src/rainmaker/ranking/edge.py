@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict
 
 from rainmaker.config import POLYMARKET_TAKER_FEE_RATE, StationPolicy
 from rainmaker.domain import Market, PrecipMonthlyMarket
+from rainmaker.fees import taker_fee_per_share as taker_fee_per_share
 from rainmaker.forecasts.base import ForecastSample, ForecastSet, SourceCoverage
 from rainmaker.forecasts.precip import PrecipForecastSet
 from rainmaker.probability.calibration import Calibration, apply_calibration
@@ -33,16 +34,6 @@ KALSHI_FEE_GAP = (
     "market are gross and overstate this market's edge against Polymarket, "
     "whose edges are net of fees."
 )
-
-
-def taker_fee_per_share(price: float, rate: float) -> float:
-    """Taker fee per share bought at `price`: rate * price * (1 - price).
-
-    Same units as `edge = p_win - price` (per share). The ROI-unit fee per USDC
-    staked is rate * (1 - price), which is this value divided by price; do not
-    subtract that from an edge.
-    """
-    return rate * price * (1 - price)
 
 
 def taker_fee_rate(venue: str) -> float:

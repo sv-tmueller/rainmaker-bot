@@ -119,6 +119,10 @@ Python 3.11+ managed with uv. Commands:
   orders: status counts, fill rate, net ROI, execution gap, per-era counts, and
   the PENDING / GO / NO-GO verdict against the go-live criterion; read-only,
   `--db`; the policy era is the `PAPER_ERAS` constant, not a flag)
+- Trade: `uv run rainmaker trade` (the paper trader: prices the latest run's
+  recommended Polymarket bets against the live order book and records them in
+  `paper_orders`; places no order; `RAINMAKER_TRADE_MODE` unset, `off` or
+  unknown does nothing, `paper` runs it, `live` is refused; `--db`)
 - Snapshot: `uv run rainmaker snapshot` (upsert the daily metrics row the dashboard reads)
 - Backfill: `uv run rainmaker backfill --city <X>` (fit a calibration cell and
   backtest accuracy from history; `--city all` covers every city)
@@ -150,6 +154,7 @@ saved JSON fixtures in `tests/fixtures/`, never live endpoints.
                       here anymore (#181): they are installed user-scope from
                       the sv-tmueller/orchestrai template repo
 src/rainmaker/
+  fees.py             the one per-share taker fee helper (no imports; shared by ranking and trading)
   config.py           station registry (11 cities), Target, source config constants
   cli.py              run/settle/prune/track/snapshot/backfill/backtest/backtest-pnl entry points
   domain.py           shared types: Market, Bucket, Precip*, bucket-label parsers
@@ -202,6 +207,8 @@ src/rainmaker/
     prune.py          drop all-but-latest intraday rows per (settled market, UTC day)
   trading/
     sizing.py         flat-stake sizing + risk caps (pure, no I/O)
+    pricing.py        fee-aware paper fill walk + closed-form limit price (pure, no I/O)
+    trader.py         paper trader: fresh run -> candidates -> sizing -> book -> paper_orders
 dashboard/            read-only Next.js dashboard (Vercel, behind Cloudflare Access)
 deploy/               systemd units, wrapper and env template for the 3h job on a host (runbook: docs/operations/host-deploy.md)
 .github/workflows/
