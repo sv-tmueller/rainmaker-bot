@@ -264,7 +264,10 @@ order raises, fails the unit and fires the alert. A failed trade step stops
   picks it up, no restart needed. Hard stop: `systemctl disable --now
   rainmaker-run.timer`.
 - The HTTP client timeout is 10 s, so a hung book costs about 45 s per order
-  with retries, which fits the 20 minute unit timeout at the daily cap.
+  with retries. The trade step's worst case is about 8 min at 10 orders. It
+  shares the unit's 20 minute `TimeoutStartSec` with `run`, `settle` and
+  `prune`, so a slow trade step can starve the later steps. An overrun fails
+  loudly: the unit times out and the alert fires.
 - Never wire the trade step into `daily-run.yml`. Trading runs only on the host.
   A test guards this.
 
