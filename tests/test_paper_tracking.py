@@ -244,6 +244,20 @@ def test_regrade_flips_won_and_pnl(conn):
     assert _won_pnl(conn) == [(0, pytest.approx(-5.125))]
 
 
+def test_regrade_clears_a_now_ungradable_row_to_null(conn):
+    # The label "inches" has no parseable form, so only the stored spec grades it.
+    spec = [{"label": "inches", "kind": "range", "lo": 60, "hi": 64, "threshold": None}]
+    _market(conn, "m1", spec=spec)
+    _order(conn, outcome="inches")
+    record_outcome(conn, "m1", 62.0, "t")
+    grade_paper_orders(conn)
+    assert _won_pnl(conn) == [(1, pytest.approx(4.875))]
+    conn.execute("UPDATE markets SET outcome_spec = NULL WHERE id = 'm1'")
+    conn.commit()
+    regrade_paper_orders_for_market(conn, "m1", 62.0)
+    assert _won_pnl(conn) == [(None, None)]
+
+
 def test_regrade_leaves_no_fill_rows_and_other_markets_alone(conn):
     _market(conn, "m1")
     _market(conn, "m2")

@@ -541,9 +541,15 @@ def test_migration_0014_runs_after_0013_on_a_fresh_postgres():
     assert _rls_alters(raw)[-1] == "ALTER TABLE paper_orders ENABLE ROW LEVEL SECURITY"
 
 
-def test_migration_ids_are_unique():
-    ids = [mid for mid, _ in _MIGRATIONS]
+def test_migration_ids_have_unique_four_digit_prefixes():
+    """Every id apply_migrations records, including the gated Python ones."""
+    raw = _FakePgMigrationRaw(set())
+    apply_migrations(Conn(raw, "postgres"))
+    ids = [p[0] for sql, p in raw.calls if sql.startswith("INSERT INTO schema_migrations")]
     assert len(ids) == len(set(ids))
+    prefixes = [i[:4] for i in ids]
+    assert all(re.fullmatch(r"\d{4}_\w+", i) for i in ids)
+    assert len(prefixes) == len(set(prefixes))
 
 
 def test_migration_0015_adds_paper_orders_grading_columns():

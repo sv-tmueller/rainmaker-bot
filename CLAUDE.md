@@ -163,7 +163,7 @@ src/rainmaker/
   venue_decomp.py     decompose the Kalshi-vs-Polymarket edge gap (city x venue, price-proxy)
   recover_gap.py      rediscover + reprice runs missed during the pre-#361 ICAO-guard gap
   settlement_divergence.py  divergence spike: NCEI vs ASOS vs resolved winners
-  paper_tracking.py grade paper orders at settle + the paper-report go-live verdict
+  paper_tracking.py   grade paper orders at settle + the paper-report go-live verdict
   forecasts/
     base.py           ForecastSample, ForecastSet, ForecastSource protocol
     nws.py            NWS fetch + parse
