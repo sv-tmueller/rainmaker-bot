@@ -12,8 +12,9 @@ market id, outcome, side):
 - A position is keyed by (market_id, outcome); the side is ignored so the bot
   cannot hedge itself. A key in `open_positions` blocks with "open_position".
   A second candidate on a key already planned in this batch blocks with
-  "duplicate_in_batch". `open_positions` is presence-only: a
-  `max_positions_per_outcome` above 1 needs a spec decision and a count query.
+  "duplicate_in_batch". `open_positions` is presence-only, so
+  `max_positions_per_outcome` must be 1: a larger value needs a spec decision
+  and a count query, and would allow an opposite-side self-hedge.
 - Every accepted order has the same flat stake. A cap is charged at the planned
   stake (an upper bound on outlay, since the stake caps fill plus fee), on top
   of the exposure the store already reports. An order that reaches a cap
@@ -27,7 +28,7 @@ Each candidate lands exactly once in `orders` or `blocked`.
 
 Inputs are validated fail-closed, before the halted check, so bad input raises
 even when halted: the stake must be finite and positive, the exposures and caps
-finite and >= 0, `max_positions_per_outcome` an int >= 1, every edge finite.
+finite and >= 0, `max_positions_per_outcome` exactly the int 1, every edge finite.
 A NaN or a negative exposure would otherwise leave cap room open.
 """
 
@@ -98,10 +99,12 @@ def _validate_inputs(
     if (
         isinstance(max_positions_per_outcome, bool)
         or not isinstance(max_positions_per_outcome, int)
-        or max_positions_per_outcome < 1
+        or max_positions_per_outcome != 1
     ):
         raise ValueError(
-            f"max_positions_per_outcome must be an int >= 1, got {max_positions_per_outcome!r}"
+            f"max_positions_per_outcome must be 1, got {max_positions_per_outcome!r}: "
+            "open positions are presence-only, so a value above 1 needs a spec decision "
+            "and a count query"
         )
 
 
