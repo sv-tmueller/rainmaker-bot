@@ -97,6 +97,9 @@ class MarketReport(BaseModel):
     edge_floor_delta_reason: str | None = None
     # Set on markets whose venue fee is not applied (Kalshi, #491); None otherwise.
     fee_gap: str | None = None
+    # Set when the market's Polymarket fee schedule differs from the one the fee-aware
+    # gate assumes (#504); recommended is forced off. None otherwise. Additive.
+    fee_exclusion: str | None = None
 
 
 def evaluate_market(
@@ -186,6 +189,7 @@ def evaluate_market(
         coverage=forecast_set.coverage,
         venue=market.venue,
         policy_exclusion=policy_exclusion,
+        fee_exclusion=market.fee_exclusion,
         edge_floor_delta=min_edge_delta,
         edge_floor_delta_reason=edge_floor_delta_reason,
         fee_gap=_fee_gap(market.venue),
@@ -234,6 +238,7 @@ def evaluate_market(
             recommended = (
                 not uncalibratable
                 and not policy_excluded
+                and market.fee_exclusion is None
                 and (not require_calibration or calibrated == "full")
                 and p_win >= floor
                 and n_sources >= min_sources
@@ -262,6 +267,7 @@ def evaluate_market(
             recommended_no = (
                 not uncalibratable
                 and not policy_excluded
+                and market.fee_exclusion is None
                 and (not require_calibration or calibrated == "full")
                 and p_no >= no_floor
                 and n_sources >= min_sources
@@ -329,7 +335,8 @@ def evaluate_precip_market(
             edge = p_win - bracket.best_ask
             net_edge = edge - taker_fee_per_share(bracket.best_ask, fee_rate)
             recommended = (
-                p_win >= floor
+                market.fee_exclusion is None
+                and p_win >= floor
                 and n_sources >= min_sources
                 and net_edge >= min_edge
                 and (max_edge is None or edge <= max_edge)
@@ -352,7 +359,8 @@ def evaluate_precip_market(
             edge_no = p_no - bracket.no_ask
             net_edge_no = edge_no - taker_fee_per_share(bracket.no_ask, fee_rate)
             recommended_no = (
-                p_no >= no_floor
+                market.fee_exclusion is None
+                and p_no >= no_floor
                 and n_sources >= min_sources
                 and net_edge_no >= min_edge
                 and (max_edge is None or edge_no <= max_edge)
@@ -385,4 +393,5 @@ def evaluate_precip_market(
         excluded_no_ask=excluded,
         venue=market.venue,
         fee_gap=_fee_gap(market.venue),
+        fee_exclusion=market.fee_exclusion,
     )
