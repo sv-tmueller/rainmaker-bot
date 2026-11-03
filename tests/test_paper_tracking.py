@@ -27,7 +27,7 @@ from rainmaker.settle import regrade_polymarket_settlements, run_settlement
 from rainmaker.store.db import READ_METER, connect, init_schema
 from rainmaker.store.record import record_outcome, record_paper_order
 
-ERA_START = datetime(2026, 11, 2, tzinfo=UTC)
+ERA_START = datetime(2026, 11, 3, 7, 36, 10, tzinfo=UTC)
 T_IN_ERA = datetime(2026, 11, 3, 12, 0, tzinfo=UTC)
 
 _TMAX_SPEC = [
@@ -508,7 +508,8 @@ def test_order_before_the_first_era_never_counts():
 
 
 def test_first_era_is_the_fee_aware_gate():
-    assert PAPER_ERAS[0] == PaperEra(datetime(2026, 11, 2, tzinfo=UTC), "fee-aware gate (#491)")
+    # #491 (PR #497) merged at 2026-11-03T07:36:10Z.
+    assert PAPER_ERAS[0] == PaperEra(ERA_START, "fee-aware gate (#491)")
 
 
 # --- render ---------------------------------------------------------------

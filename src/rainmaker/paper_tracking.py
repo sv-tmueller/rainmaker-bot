@@ -40,7 +40,7 @@ class PaperEra:
 # docs/architecture/recommendation-gate.md). A prod calibration refit through
 # backfill.yml has no PR but is an era change too, so it needs an entry as well.
 PAPER_ERAS: tuple[PaperEra, ...] = (
-    PaperEra(datetime(2026, 11, 2, tzinfo=UTC), "fee-aware gate (#491)"),
+    PaperEra(datetime(2026, 11, 3, 7, 36, 10, tzinfo=UTC), "fee-aware gate (#491)"),
 )
 
 
