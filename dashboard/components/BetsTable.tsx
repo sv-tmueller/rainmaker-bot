@@ -4,8 +4,9 @@ import type { Bet } from "../lib/data";
 import { degC, pct, signed, withCelsius } from "../lib/format";
 
 function groupByCity(bets: Bet[]): { city: string; bets: Bet[] }[] {
-  // bets arrive edge-sorted; preserving first-seen order keeps cities ordered by
-  // their best edge, and each city's bets stay edge-sorted.
+  // bets arrive sorted by displayed edge (rankBets); preserving first-seen order
+  // keeps cities ordered by their best displayed edge, and each city's bets stay
+  // in that order.
   const order: string[] = [];
   const groups = new Map<string, Bet[]>();
   for (const b of bets) {
@@ -40,7 +41,8 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
       <div className="text-[10px] uppercase tracking-[0.1em] text-muted">
         Recommended bets{" "}
         <span className="normal-case tracking-normal text-faint">
-          · grouped by city, best edge first
+          · grouped by city, best edge first · edge net of the Polymarket taker fee,
+          Kalshi gross
         </span>
       </div>
       {bets.length === 0 ? (
@@ -112,8 +114,13 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
                       )}
                     </td>
                     <td className="text-right">{pct(b.pWin)}</td>
-                    <td className="text-right">{b.ask.toFixed(2)}</td>
-                    <td className="text-right font-semibold text-pos">{signed(b.edge)}</td>
+                    <td className="text-right">{b.ask === null ? "" : b.ask.toFixed(2)}</td>
+                    <td className="text-right font-semibold text-pos">
+                      {signed(b.shownEdge)}
+                      <span className="ml-1 text-[9px] font-normal uppercase tracking-wide text-faint">
+                        {b.edgeBasis}
+                      </span>
+                    </td>
                     <td className="pl-7 text-right text-faint">
                       {b.sigma === null ? "" : b.sigma.toFixed(1)}
                     </td>
