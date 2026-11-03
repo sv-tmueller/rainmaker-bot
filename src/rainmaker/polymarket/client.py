@@ -3,7 +3,12 @@ from typing import Any, cast
 
 import httpx
 
-from rainmaker.config import INTL_STATIONS, PRECIP_STATIONS, STATIONS
+from rainmaker.config import (
+    INTL_STATIONS,
+    POLYMARKET_TAKER_FEE_RATE,
+    PRECIP_STATIONS,
+    STATIONS,
+)
 from rainmaker.domain import Market, PrecipMonthlyMarket
 from rainmaker.polymarket.markets import parse_city, parse_market
 from rainmaker.polymarket.precip_markets import (
@@ -63,6 +68,68 @@ def fetch_closed_weather_events(
 _ALL_TEMP_STATIONS = {**STATIONS, **INTL_STATIONS}
 
 
+def _is_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def _bucket_fee_problem(bucket: dict[str, Any]) -> str | None:
+    """Why one bucket's fee block breaks the gate's fee assumption, else None.
+
+    A disabled fee (feesEnabled False) passes: the true fee is then 0, at or
+    below the fee the gate subtracts, so net edge is understated, never overstated.
+    """
+    enabled = bucket.get("feesEnabled")
+    if enabled is False:
+        return None
+    if enabled is None:
+        return "fee block is missing (no feesEnabled)"
+    if enabled is not True:
+        return f"feesEnabled is {enabled!r}, not a boolean"
+    schedule = bucket.get("feeSchedule")
+    if not isinstance(schedule, dict):
+        return "feeSchedule is missing"
+    rate = schedule.get("rate")
+    if not _is_number(rate) or rate != POLYMARKET_TAKER_FEE_RATE:
+        return f"feeSchedule rate is {rate!r}, assumed {POLYMARKET_TAKER_FEE_RATE}"
+    exponent = schedule.get("exponent")
+    if not _is_number(exponent) or exponent != 1:
+        return f"feeSchedule exponent is {exponent!r}, assumed 1"
+    if schedule.get("takerOnly") is not True:
+        return f"feeSchedule takerOnly is {schedule.get('takerOnly')!r}, assumed True"
+    return None
+
+
+def fee_schedule_exclusion(event: dict[str, Any]) -> str | None:
+    """Reason to bar a Polymarket event from recommendations, else None (#504).
+
+    The fee-aware gate (#491) assumes fee = POLYMARKET_TAKER_FEE_RATE * p * (1 - p)
+    on taker fills. Gamma carries the schedule on each bucket's market object. Any
+    bucket whose schedule differs, or has none, excludes the whole market: a
+    missing block means the Gamma schema drifted, and letting it pass would switch
+    the guard off. Never raises, so a malformed event cannot abort discovery.
+    """
+    markets = event.get("markets") if isinstance(event, dict) else None
+    if not isinstance(markets, list) or not markets:
+        return "fee schedule unverifiable: event has no market objects"
+    failures: list[tuple[str, str]] = []
+    for item in markets:
+        if not isinstance(item, dict):
+            failures.append(("?", "market object is not a dict"))
+            continue
+        problem = _bucket_fee_problem(item)
+        if problem is not None:
+            name = item.get("groupItemTitle") or item.get("question") or item.get("id") or "?"
+            failures.append((str(name), problem))
+    if not failures:
+        return None
+    name, problem = failures[0]
+    return (
+        f"Polymarket fee schedule does not match the gate's assumed "
+        f"{POLYMARKET_TAKER_FEE_RATE} x p x (1 - p) taker fee: bucket {name!r} "
+        f"{problem} ({len(failures)} of {len(markets)} buckets fail)"
+    )
+
+
 def _is_known_temp_event(event: dict[str, Any]) -> bool:
     try:
         city = parse_city(event.get("title", ""))
@@ -83,9 +150,15 @@ def discover_markets(events: list[dict[str, Any]]) -> list[Market]:
         if not _is_known_temp_event(ev):
             continue
         try:
-            markets.append(parse_market(ev))
+            market = parse_market(ev)
         except (ValueError, KeyError) as exc:
             print(f"skipping market {ev.get('id')}: {exc}", file=sys.stderr)
+            continue
+        fee_exclusion = fee_schedule_exclusion(ev)
+        if fee_exclusion is not None:
+            print(f"fee guard: market {market.id} excluded: {fee_exclusion}", file=sys.stderr)
+            market = market.model_copy(update={"fee_exclusion": fee_exclusion})
+        markets.append(market)
     return markets
 
 
@@ -110,7 +183,15 @@ def discover_precip_markets(events: list[dict[str, Any]]) -> list[PrecipMonthlyM
         if not _is_us_precip_event(ev):
             continue
         try:
-            markets.append(parse_precip_event(ev))
+            market = parse_precip_event(ev)
         except (ValueError, KeyError) as exc:
             print(f"skipping precip market {ev.get('id')}: {exc}", file=sys.stderr)
+            continue
+        fee_exclusion = fee_schedule_exclusion(ev)
+        if fee_exclusion is not None:
+            print(
+                f"fee guard: precip market {market.id} excluded: {fee_exclusion}", file=sys.stderr
+            )
+            market = market.model_copy(update={"fee_exclusion": fee_exclusion})
+        markets.append(market)
     return markets

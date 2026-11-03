@@ -108,6 +108,8 @@ def render_terminal(report: Report) -> str:
         lines.append(f"  coverage: {_coverage_str(m)}")
         if m.policy_exclusion:
             lines.append(f"  EXCLUDED from recommendations: {m.policy_exclusion}")
+        if m.fee_exclusion:
+            lines.append(f"  EXCLUDED from recommendations: {m.fee_exclusion}")
         if m.edge_floor_delta_reason:
             lines.append(f"  {m.edge_floor_delta_reason}")
         if m.fee_gap:
@@ -179,6 +181,8 @@ def render_markdown(report: Report) -> str:
         lines.append(f"- coverage: {_coverage_str(m)}")
         if m.policy_exclusion:
             lines.append(f"- EXCLUDED from recommendations: {m.policy_exclusion}")
+        if m.fee_exclusion:
+            lines.append(f"- EXCLUDED from recommendations: {m.fee_exclusion}")
         if m.edge_floor_delta_reason:
             lines.append(f"- {m.edge_floor_delta_reason}")
         if m.fee_gap:
