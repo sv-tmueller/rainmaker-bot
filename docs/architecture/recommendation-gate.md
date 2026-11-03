@@ -1163,13 +1163,16 @@ apply the Kalshi fee once its coefficient is confirmed.
 - P&L stays gross at the ask in `track`, `gate-sweep` and `backtest-pnl`, so it
   stays comparable with recorded sweeps. Net-of-fee P&L belongs to the paper
   trading report (#492).
-- The dashboard still shows `predictions.edge`, which is gross. Showing net or
-  labelling the column gross is a separate follow-up.
+- The dashboard's recommended-bets table shows and ranks on net edge for
+  Polymarket rows and gross edge for Kalshi rows, each cell tagged `net` or
+  `gross` (#506). It computes net client side from the stored gross `edge` and
+  the stored ask; a row with no ask shows gross. The stored `predictions.edge`
+  stays gross.
 - Tie-break divergence: the best bet per (market, run) is still picked on gross
-  edge in tracking, gate-sweep, venue-decomp, pnl_backtest and the dashboard,
-  while the report ranks on net. When two recommended outcomes in one market are
-  within about 1 point of gross edge, the report's top bet can differ from the
-  one tracking grades. This is small and accepted.
+  edge in tracking, gate-sweep, venue-decomp, pnl_backtest and the dashboard's
+  settled list, while the report ranks on net. When two recommended outcomes in
+  one market are within about 1 point of gross edge, the report's top bet can
+  differ from the one tracking grades. This is small and accepted.
 
 ### Expected effect
 
@@ -1180,3 +1183,68 @@ at a 0.40 ask the fee is 1.2 points, so a gross 0.125 edge (net 0.113) no longer
 clears 0.12. Kalshi recommendations do not change in this PR. The golden
 end-to-end fixtures contain no recommendation before or after, so their outputs
 change only in the new `net_edge` field, the legend and the column labels.
+
+## Update 2026-11-03: Polymarket fee-schedule drift guard (#504, batch #501)
+
+The fee-aware gate (#491) subtracts `POLYMARKET_TAKER_FEE_RATE x p x (1 - p)`
+from the edge. If Polymarket changes a market's fee schedule, that net edge is
+wrong. The guard bars such a market from recommendations and says why.
+
+### What is checked
+
+Gamma puts the fee block on each bucket's market object: `feesEnabled`,
+`feeType`, `feeSchedule` (`rate`, `exponent`, `takerOnly`, `rebateRate`).
+`fee_schedule_exclusion(event)` in `polymarket/client.py` checks every bucket.
+It never raises. A bucket matches when:
+
+- `feesEnabled is True`,
+- `feeSchedule.rate == POLYMARKET_TAKER_FEE_RATE` (a number, not a bool),
+- `feeSchedule.exponent == 1` (a number, not a bool),
+- `feeSchedule.takerOnly is True`.
+
+`feeType`, `rebateRate` and the legacy base-fee fields are ignored.
+
+### Decisions
+
+- **Missing schedule: excluded.** A missing block means the Gamma schema
+  drifted. Letting it pass would switch the guard off. The US temperature and
+  precip fixtures carry no fee block, so they are the "missing" case in tests.
+- **`feesEnabled: false`: kept.** The true fee is then 0, at or below the fee
+  the gate assumes, so net edge is understated, never overstated. The schedule
+  of a disabled bucket is not read.
+- **Any other difference: excluded, including a lower rate.** A human reviews
+  the constant before the gate trusts a new schedule.
+- **Mixed buckets: any failing bucket excludes the market.** The reason names
+  the first failing bucket, its value, and how many buckets fail.
+- **Decided at discovery, enforced at ranking.** `discover_markets` and
+  `discover_precip_markets` set `Market.fee_exclusion` /
+  `PrecipMonthlyMarket.fee_exclusion` and print one stderr line. Both
+  evaluators force `recommended` off on YES and NO and copy the reason into
+  `MarketReport.fee_exclusion`, the same shape as `policy_exclusion`. `p_win`,
+  `edge` and `net_edge` stay unchanged. The market is not skipped, so it stays
+  visible in the report and the store. Both renderers print
+  `EXCLUDED from recommendations: <reason>`.
+- **Precip uses the same guard.** Kalshi is untouched (`fee_exclusion` stays
+  None).
+- **Replay paths are not guarded** (`backtest-pnl`, `gate-sweep`,
+  `recover-gap`): they replay recorded or historical markets that never pass
+  through discovery.
+- The paper trader reads `predictions.recommended`, so it is covered without
+  any change.
+
+**Policy-era marker.** This is not a new policy era while live schedules match
+the constant. The gate is unchanged for a matching market, and an excluded
+market only loses `recommended`, so `PAPER_ERAS` gets no entry. A later change
+to `POLYMARKET_TAKER_FEE_RATE` or the fee formula after a drift would change
+what the gate recommends, and that would be a new era.
+
+### Expected effect
+
+If live US markets carry no fee block, every Polymarket recommendation is
+excluded until a reviewed code change (constant, formula or guard) merges. That
+is fail closed and intended. The first scheduled run after the merge shows which
+case holds. `markets.raw` gains one `fee_exclusion` key, null when the schedule
+matches. Rows stored before this change validate (the field defaults to None).
+The golden end-to-end test calls the parsers directly, not discovery, so it
+passes with no fixture or expectation change. The JSON report gains a
+`fee_exclusion: null` key.

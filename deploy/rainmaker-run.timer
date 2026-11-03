@@ -6,8 +6,8 @@ Description=rainmaker 3h job schedule
 # not all hit the upstream APIs on the hour.
 OnCalendar=*-*-* 00/3:00:00 UTC
 RandomizedDelaySec=10min
-# One catch-up run after downtime. Safe: settle and prune are idempotent and
-# run re-prices whatever is live.
+# One catch-up run after downtime. Safe: settle and prune are idempotent, run
+# re-prices whatever is live, and trade only acts on a run under an hour old.
 Persistent=true
 
 [Install]

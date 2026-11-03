@@ -95,6 +95,9 @@ class Market(BaseModel):
     target: Target
     buckets: list[Bucket]
     venue: str = "polymarket"  # "kalshi" when discovered from Kalshi
+    # Reason this market is barred from recommendations because its Polymarket
+    # fee schedule differs from the one the gate assumes (#504); None otherwise.
+    fee_exclusion: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -260,3 +263,6 @@ class PrecipMonthlyMarket(BaseModel):
     target: PrecipTarget
     buckets: list[PrecipBracket]
     venue: str = "polymarket"  # "kalshi" when discovered from Kalshi
+    # Reason this market is barred from recommendations because its Polymarket
+    # fee schedule differs from the one the gate assumes (#504); None otherwise.
+    fee_exclusion: str | None = None

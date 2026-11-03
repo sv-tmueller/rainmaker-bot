@@ -26,6 +26,7 @@ import math
 from dataclasses import dataclass
 from typing import Literal
 
+from rainmaker.fees import taker_fee_per_share
 from rainmaker.polymarket.book import OrderBook
 
 FillStatus = Literal["filled", "partial", "no_fill"]
@@ -43,6 +44,41 @@ class PaperFill:
     spent_usdc: float  # sum of shares x price per level, fee excluded
     fee_usdc: float  # sum of shares x fee_rate x p x (1 - p) per level
     avg_price: float | None  # spent / shares; None when shares == 0
+
+
+def limit_price(*, p_win: float, floor: float, fee_rate: float) -> float | None:
+    """The highest ask whose net edge still meets `floor`, or None if none exists.
+
+    Net edge at ask a is `p_win - a - fee_rate * a * (1 - a)`, strictly
+    decreasing on [0, 1] for fee_rate < 1. The limit is the smaller root of
+    `fee_rate * a^2 - (1 + fee_rate) * a + (p_win - floor) = 0`, written in the
+    rationalized form so there is no cancellation and fee_rate = 0 gives
+    `p_win - floor` exactly. The closed form encodes the exponent-1 fee
+    schedule (`p * (1 - p)`) that the discovery guard checks (#504); a market
+    with another schedule must not reach this function.
+
+    No clamping and no tick rounding (tick rounding is live-only): a root
+    outside (0, 1) means no valid limit, so the caller skips the candidate.
+    Raises ValueError unless every input is finite, `p_win` is in [0, 1],
+    `floor` is >= 0 and `fee_rate` is in [0, 1).
+    """
+    for name, value in (("p_win", p_win), ("floor", floor), ("fee_rate", fee_rate)):
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite, got {value}")
+    if not 0 <= p_win <= 1:
+        raise ValueError(f"p_win must be in [0, 1], got {p_win}")
+    if floor < 0:
+        raise ValueError(f"floor must be >= 0, got {floor}")
+    if not 0 <= fee_rate < 1:
+        raise ValueError(f"fee_rate must be in [0, 1), got {fee_rate}")
+    k = p_win - floor
+    if k <= 0:
+        return None
+    b = 1 + fee_rate
+    limit = 2 * k / (b + math.sqrt(b * b - 4 * fee_rate * k))
+    if not 0 < limit < 1:
+        return None
+    return limit
 
 
 def price_paper_order(
@@ -69,7 +105,8 @@ def price_paper_order(
         p = level.price
         if p > limit_price + _EPS_PRICE:
             break
-        per_share = p * (1 + fee_rate * (1 - p))
+        fee_ps = taker_fee_per_share(p, fee_rate)
+        per_share = p + fee_ps
         if per_share * level.size >= remaining:
             take = remaining / per_share
             remaining = 0.0
@@ -78,7 +115,7 @@ def price_paper_order(
             remaining -= per_share * take
         shares += take
         spent += take * p
-        fee += take * fee_rate * p * (1 - p)
+        fee += take * fee_ps
         if remaining == 0.0:
             break
 

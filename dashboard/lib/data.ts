@@ -1,3 +1,4 @@
+import { shownEdge } from "./fees";
 import { serverClient } from "./supabase";
 
 export type Bet = {
@@ -12,9 +13,21 @@ export type Bet = {
   sigma: number | null;
   nSources: number | null;
   pWin: number;
-  ask: number;
+  // null when the latest run has no stored price for this outcome.
+  ask: number | null;
+  // Gross stored edge (p_win - ask).
   edge: number;
+  // What the table shows and sorts on: net of the taker fee for a Polymarket
+  // row with a known ask, gross otherwise (edgeBasis says which).
+  shownEdge: number;
+  edgeBasis: "net" | "gross";
 };
+
+// Displayed-edge order, best first. Net and gross values mix on purpose,
+// matching the report's ranking.
+export function rankBets(bets: Bet[]): Bet[] {
+  return [...bets].sort((a, b) => b.shownEdge - a.shownEdge);
+}
 
 export type RunInfo = {
   startedAt: string;
@@ -337,8 +350,8 @@ export async function getDashboardData() {
       p.price as number,
     ]),
   );
-  const bets: Bet[] = (latestPreds.data ?? [])
-    .map((p) => {
+  const bets: Bet[] = rankBets(
+    (latestPreds.data ?? []).map((p): Bet => {
       let mu: number | null = null;
       let sigma: number | null = null;
       let nSources: number | null = null;
@@ -351,10 +364,14 @@ export async function getDashboardData() {
         // no parsable dist_params -> blank forecast cells
       }
       const side = sideOf(p.side);
+      const venue = venueOf.get(p.market_id) ?? "polymarket";
+      const ask = askOf.get(`${p.market_id}|${p.bucket}|${side}`) ?? null;
+      const edge = p.edge as number;
+      const shown = shownEdge(edge, ask, venue);
       return {
         title: titleOf.get(p.market_id) ?? (p.market_id as string),
         city: cityOf.get(p.market_id) ?? "",
-        venue: venueOf.get(p.market_id) ?? "polymarket",
+        venue,
         variable: variableOf.get(p.market_id) ?? "",
         slug: slugOf.get(p.market_id) ?? null,
         bucket: p.bucket as string,
@@ -363,11 +380,13 @@ export async function getDashboardData() {
         sigma,
         nSources,
         pWin: p.p_win as number,
-        ask: askOf.get(`${p.market_id}|${p.bucket}|${side}`) ?? 0,
-        edge: p.edge as number,
+        ask,
+        edge,
+        shownEdge: shown.value,
+        edgeBasis: shown.basis,
       };
-    })
-    .sort((a, b) => b.edge - a.edge);
+    }),
+  );
 
   // Assemble snapshots, split by venue. The query above reads newest-first
   // (capped); orderSnapshotRows restores ascending order before grouping.

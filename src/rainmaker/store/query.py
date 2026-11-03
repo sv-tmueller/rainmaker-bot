@@ -128,3 +128,39 @@ def new_exposure_for_day(conn: Conn, day: date) -> float:
         (day.isoformat(), (day + timedelta(days=1)).isoformat()),
     ).fetchone()
     return float(row["spend"])
+
+
+def latest_ok_run(conn: Conn) -> dict[str, Any] | None:
+    """The newest run with status 'ok' (`id` and `started_at`), or None.
+
+    The paper trader checks the age in Python: the stamp is ISO text, so the age
+    arithmetic is not portable SQL.
+    """
+    row = conn.execute(
+        "SELECT id, started_at FROM runs WHERE status = 'ok' ORDER BY started_at DESC LIMIT 1"
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def recommended_polymarket_outcomes(conn: Conn, run_id: str) -> list[dict[str, Any]]:
+    """One run's recommended Polymarket outcomes, with the price quoted in that run.
+
+    `quoted_ask` is the prices row of the same (market, outcome, side): the YES
+    ask for a YES bet, the NO ask for a NO bet. `edge` is the stored gross edge.
+    `raw` is the market JSON, where the CLOB token ids live; the row count is
+    bounded by one run's recommendations. A NULL side drops out of the joins
+    (fail closed).
+    """
+    rows = conn.execute(
+        "SELECT p.market_id AS market_id, p.bucket AS outcome, p.side AS side, "
+        "p.p_win AS p_win, p.edge AS edge, pr.price AS quoted_ask, "
+        "m.variable AS variable, m.raw AS raw "
+        "FROM predictions p "
+        "JOIN markets m ON m.id = p.market_id "
+        "JOIN prices pr ON pr.run_id = p.run_id AND pr.market_id = p.market_id "
+        "AND pr.outcome = p.bucket AND pr.side = p.side "
+        "WHERE p.run_id = ? AND p.recommended = 1 AND m.venue = 'polymarket' "
+        "ORDER BY p.market_id, p.bucket, p.side",
+        (run_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]

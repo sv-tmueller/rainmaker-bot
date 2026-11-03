@@ -1,5 +1,5 @@
 [Unit]
-Description=rainmaker 3h job (run, settle, prune)
+Description=rainmaker 3h job (run, trade, settle, prune)
 After=network-online.target
 Wants=network-online.target
 OnFailure=rainmaker-run-failure.service

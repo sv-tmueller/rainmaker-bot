@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# The 3h job on a host: run, settle, prune against Supabase Postgres. Started
-# by rainmaker-run.service; also safe to run by hand as the service user.
+# The 3h job on a host: run, trade, settle, prune against Supabase Postgres.
+# Started by rainmaker-run.service; also safe to run by hand as the service
+# user. trade is a no-op unless RAINMAKER_TRADE_MODE=paper is set in the env
+# file (unset, off or unknown does nothing, live is refused).
 #
 # Exit codes: 0 done, 1 refused (bad DSN) or a step failed, 75 another run
 # holds the lock (the unit treats 75 as success, so a skip raises no alert).
@@ -49,6 +51,7 @@ fi
 
 RAINMAKER="$REPO_DIR/.venv/bin/rainmaker"
 "$RAINMAKER" run --reports-dir "$STATE_DIR/reports"
+"$RAINMAKER" trade
 "$RAINMAKER" settle
 "$RAINMAKER" prune
 

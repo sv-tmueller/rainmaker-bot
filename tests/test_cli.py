@@ -1954,6 +1954,7 @@ METERED_COMMANDS = [
     ("clv", "_clv"),
     ("backfill", "_backfill"),
     ("paper-report", "_paper_report"),
+    ("trade", "_trade"),
 ]
 
 
@@ -2199,3 +2200,178 @@ def test_fail_on_source_errors_keeps_the_zero_fitted_exit(monkeypatch, tmp_path)
     with pytest.raises(SystemExit) as exc:
         _fit_run(monkeypatch, tmp_path, lambda i: "thin", ["--fail-on-source-errors"])
     assert exc.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# trade (paper trader, #502)
+# ---------------------------------------------------------------------------
+
+TRADE_NOW = datetime(2026, 11, 3, 18, 0, tzinfo=UTC)
+
+
+def _seed_trade_run(db: str) -> None:
+    """One ok run, 5 minutes old, with one recommended YES outcome at ask 0.58."""
+    from datetime import timedelta
+
+    from rainmaker.ranking.edge import MarketReport, RankedOutcome
+    from rainmaker.store.record import record_run
+
+    market = _market("TMAX")
+    bucket = market.buckets[0].model_copy(
+        update={"yes_token_id": "tok-yes", "best_ask": 0.58, "yes_price": 0.58}
+    )
+    market = market.model_copy(update={"buckets": [bucket]})
+    report = MarketReport(
+        market_id=market.id,
+        title=market.title,
+        city="NYC",
+        station="KLGA",
+        variable="TMAX",
+        settlement_date=market.target.local_date,
+        mu=70.0,
+        sigma=2.0,
+        n_sources=3,
+        calibrated="full",
+        coverage=[],
+        outcomes=[
+            RankedOutcome(
+                bucket_label="70-71°F",
+                side="YES",
+                p_win=0.80,
+                best_ask=0.58,
+                edge=0.22,
+                net_edge=0.2078,
+                recommended=True,
+            )
+        ],
+        excluded_no_ask=[],
+    )
+    conn = connect(db)
+    init_schema(conn)
+    started = TRADE_NOW - timedelta(minutes=5)
+    record_run(
+        conn,
+        run_id="r1",
+        started_at=started.isoformat(),
+        finished_at=(started + timedelta(minutes=1)).isoformat(),
+        status="ok",
+        evaluated=[(market, ForecastSet(target=market.target, samples=[], coverage=[]), report)],
+    )
+    conn.close()
+
+
+@pytest.mark.parametrize("mode", [None, "", "off", "bogus", "PAPER"])
+def test_trade_with_the_mode_unset_off_or_unknown_does_nothing(
+    monkeypatch, tmp_path, capsys, httpx_mock, mode
+):
+    db = tmp_path / "t.db"
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    if mode is None:
+        monkeypatch.delenv("RAINMAKER_TRADE_MODE", raising=False)
+    else:
+        monkeypatch.setenv("RAINMAKER_TRADE_MODE", mode)
+    cli.main(["trade", "--db", str(db)])
+    captured = capsys.readouterr()
+    assert "mode off" in captured.out
+    assert "store read" not in captured.err
+    assert httpx_mock.get_requests() == []
+    assert not db.exists()
+
+
+def test_trade_with_a_postgres_dsn_and_the_mode_off_never_connects(monkeypatch, capsys):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@db.invalid/postgres")
+    monkeypatch.setenv("RAINMAKER_TRADE_MODE", "off")
+    monkeypatch.setattr(cli, "connect", lambda *a, **k: pytest.fail("connected"))
+    cli.main(["trade"])
+    assert "mode off" in capsys.readouterr().out
+
+
+def test_trade_live_mode_is_refused_before_any_network_or_store(
+    monkeypatch, tmp_path, capsys, httpx_mock
+):
+    db = tmp_path / "t.db"
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("RAINMAKER_TRADE_MODE", "live")
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(["trade", "--db", str(db)])
+    assert excinfo.value.code == 1
+    assert "live" in capsys.readouterr().err
+    assert httpx_mock.get_requests() == []
+    assert not db.exists()
+
+
+def test_trade_paper_mode_prices_and_records_an_order(monkeypatch, tmp_path, capsys, httpx_mock):
+    import json
+    from pathlib import Path
+
+    from rainmaker.polymarket.book import CLOB_BOOK_URL
+    from rainmaker.polymarket.geoblock import GEOBLOCK_URL
+
+    fixtures = Path(__file__).parent / "fixtures"
+    db = str(tmp_path / "t.db")
+    _seed_trade_run(db)
+    book = json.loads((fixtures / "clob_book_trade_deep.json").read_text())
+    book["asset_id"] = "tok-yes"
+    geo = json.loads((fixtures / "polymarket_geoblock_allowed.json").read_text())
+    httpx_mock.add_response(url=GEOBLOCK_URL, json=geo)
+    httpx_mock.add_response(url=f"{CLOB_BOOK_URL}?token_id=tok-yes", json=book)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("RAINMAKER_TRADE_MODE", "paper")
+    monkeypatch.setattr(cli, "_now", lambda: TRADE_NOW)
+
+    cli.main(["trade", "--db", db])
+
+    out = capsys.readouterr().out
+    assert "trade: mode paper" in out
+    assert "geoblock: allowed (country DK, region 84)" in out
+    assert "203.0.113" not in out
+    assert "orders: 1 recorded (filled 1, partial 0, no_fill 0), 0 book errors" in out
+    conn = connect(db)
+    try:
+        row = conn.execute("SELECT status, token_id, created_at FROM paper_orders").fetchone()
+    finally:
+        conn.close()
+    assert (row["status"], row["token_id"], row["created_at"]) == (
+        "filled",
+        "tok-yes",
+        TRADE_NOW.isoformat(),
+    )
+
+
+def test_trade_paper_mode_fails_loudly_when_recording_an_order_raises(
+    monkeypatch, tmp_path, capsys, httpx_mock
+):
+    """A store failure must escape cli.main (the console script exits 1, the unit
+    fails, the alert fires), and no summary is printed as if the run had worked."""
+    import json
+    from pathlib import Path
+
+    from rainmaker.polymarket.book import CLOB_BOOK_URL
+    from rainmaker.polymarket.geoblock import GEOBLOCK_URL
+
+    fixtures = Path(__file__).parent / "fixtures"
+    db = str(tmp_path / "t.db")
+    _seed_trade_run(db)
+    book = json.loads((fixtures / "clob_book_trade_deep.json").read_text())
+    book["asset_id"] = "tok-yes"
+    geo = json.loads((fixtures / "polymarket_geoblock_allowed.json").read_text())
+    httpx_mock.add_response(url=GEOBLOCK_URL, json=geo)
+    httpx_mock.add_response(url=f"{CLOB_BOOK_URL}?token_id=tok-yes", json=book)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("RAINMAKER_TRADE_MODE", "paper")
+    monkeypatch.setattr(cli, "_now", lambda: TRADE_NOW)
+
+    def reject(*args, **kwargs):
+        raise ValueError("invalid paper order")
+
+    monkeypatch.setattr("rainmaker.trading.trader.record_paper_order", reject)
+
+    with pytest.raises(ValueError, match="invalid paper order"):
+        cli.main(["trade", "--db", db])
+
+    assert "orders:" not in capsys.readouterr().out
+    conn = connect(db)
+    try:
+        assert conn.execute("SELECT COUNT(*) AS n FROM paper_orders").fetchone()["n"] == 0
+    finally:
+        conn.close()

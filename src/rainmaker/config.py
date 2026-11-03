@@ -486,6 +486,9 @@ TRADE_STAKE_USDC = 5.0
 TRADE_MAX_NEW_EXPOSURE_PER_DAY_USDC = 50.0
 TRADE_MAX_OPEN_EXPOSURE_USDC = 150.0
 TRADE_MAX_POSITIONS_PER_OUTCOME = 1
+# The paper trader only prices against a run this fresh (#502): the quoted asks
+# come from that run, so an older run would size and limit against stale prices.
+TRADE_MAX_RUN_AGE_MINUTES = 60
 
 # Meteorological season start months: DJF=Dec, MAM=Mar, JJA=Jun, SON=Sep.
 _SEASON_START_MONTHS = {

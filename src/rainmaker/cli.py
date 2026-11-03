@@ -81,6 +81,12 @@ from rainmaker.tracking import (
     settled_rows,
     write_snapshot,
 )
+from rainmaker.trading.trader import (
+    check_geoblock,
+    render_trade_summary,
+    run_paper_trade,
+    trade_mode,
+)
 from rainmaker.venue_decomp import run_venue_decomp
 
 SUPPORTED_VARIABLES = {"TMAX", "TMIN"}
@@ -561,6 +567,40 @@ def _prune(db_path: str) -> None:
     finally:
         conn.close()
     print(f"pruned {deleted} redundant intraday row(s) -> {_db_label(db_path)}")
+
+
+def _trade(db_path: str) -> None:
+    """Paper trader: price the latest run's recommended bets against the live book.
+
+    The mode check comes first and touches nothing: no client, no store (a
+    Postgres connect is a network call). Unset, unknown and off are a no-op that
+    exits 0, so the host wrapper can call this unconditionally. Live is refused.
+    """
+    mode = trade_mode(os.environ.get("RAINMAKER_TRADE_MODE"))
+    if mode == "off":
+        print("trade: mode off, nothing to do")
+        return
+    if mode == "live":
+        print(
+            "trade: RAINMAKER_TRADE_MODE=live is refused; live orders are not built "
+            "(paper phase only)",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    # One client for the geoblock call and the book fetches; the short timeout
+    # bounds a hung CLOB inside the host unit's start timeout.
+    client = build_client(10.0)
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        geoblock = check_geoblock(client)
+        summary = run_paper_trade(conn, client, now=_now(), geoblock=geoblock)
+    finally:
+        client.close()
+        conn.close()
+    print(render_trade_summary(summary))
 
 
 def _paper_report(db_path: str) -> None:
@@ -1232,6 +1272,13 @@ def _main(argv: list[str] | None = None) -> None:
     )
     paper_report.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
+    trade = sub.add_parser(
+        "trade",
+        help="paper trader: price recommended bets against the live order book "
+        "(RAINMAKER_TRADE_MODE=paper; unset or off does nothing)",
+    )
+    trade.add_argument("--db", default=DB_PATH, help="SQLite database path")
+
     track = sub.add_parser("track", help="report P&L and calibration over settled markets")
     track.add_argument("--db", default=DB_PATH, help="SQLite database path")
     track.add_argument(
@@ -1393,6 +1440,8 @@ def _main(argv: list[str] | None = None) -> None:
         _regrade(db)
     elif args.command == "prune":
         _prune(db)
+    elif args.command == "trade":
+        _trade(db)
     elif args.command == "paper-report":
         _paper_report(db)
     elif args.command == "track":
