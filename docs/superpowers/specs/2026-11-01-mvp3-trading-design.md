@@ -247,8 +247,9 @@ Rules:
   gross `p_win - (MIN_EDGE + delta)`. Once the gate nets the taker fee out of
   edge, that gross limit would admit fills the gate rejects. "Paper mirrors
   live" needs the limit to use the same edge definition as the gate. The net
-  edge falls as the ask rises, so the limit is well defined. The trade command
-  computes it with #491's edge function. #490 takes the limit as an input.
+  edge falls as the ask rises, so the limit is well defined. The closed-form
+  `trading.pricing.limit_price` (#502) computes it with the gate's net-edge
+  definition. #490 takes the limit as an input.
 - **Order type:** fill what the book offers, up to the stake budget (spend plus
   fee), at or under the limit, then cancel the rest. This mirrors the planned
   live order type, a marketable limit order that may fill partially.
@@ -593,8 +594,9 @@ Out of scope until its own sign-off. Outline only.
 **Batch 3, trade command and cutover on this host.**
 
 - `rainmaker trade` in paper mode (size M), as in the 3h cycle section. It
-  orders and sizes by net edge, computes the limit with #491's edge function,
-  and passes `POLYMARKET_TAKER_FEE_RATE` to `price_paper_order`.
+  orders and sizes by net edge, computes the limit with the closed-form
+  `trading.pricing.limit_price` (#502, the gate's net-edge definition), and
+  passes `POLYMARKET_TAKER_FEE_RATE` to `price_paper_order`.
 - The mode check from `RAINMAKER_TRADE_MODE` (`off` or `paper`).
 - The operator cutover on the current host, per the runbook.
 
