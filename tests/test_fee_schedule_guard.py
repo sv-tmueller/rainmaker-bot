@@ -92,8 +92,10 @@ def test_other_rate_is_excluded_including_lower(rate):
     assert str(rate) in reason
 
 
-def test_exponent_drift_is_excluded():
-    reason = fee_schedule_exclusion(_with_fees(_london(), exponent=2))
+@pytest.mark.parametrize("exponent", [0, 0.5, 2])
+def test_exponent_drift_is_excluded_in_either_direction(exponent):
+    # Below 1 the real fee exceeds what the gate assumes, the harmful side.
+    reason = fee_schedule_exclusion(_with_fees(_london(), exponent=exponent))
     assert reason is not None
     assert "exponent" in reason
 
@@ -352,7 +354,7 @@ def test_fee_exclusion_survives_the_empty_forecast_early_return():
 # --- D. render ------------------------------------------------------------
 
 
-def _rendered_report(fee_exclusion: str | None) -> Report:
+def _rendered_report(fee_exclusion: str | None, policy_exclusion: str | None = None) -> Report:
     market_report = MarketReport(
         market_id="m1",
         title="Highest temperature in NYC on May 31?",
@@ -376,6 +378,7 @@ def _rendered_report(fee_exclusion: str | None) -> Report:
             )
         ],
         excluded_no_ask=[],
+        policy_exclusion=policy_exclusion,
         fee_exclusion=fee_exclusion,
     )
     return Report(run_date=date(2026, 5, 31), markets=[market_report])
@@ -387,6 +390,18 @@ def test_render_shows_fee_exclusion_in_terminal_and_markdown():
     markdown = render_markdown(report)
     assert "EXCLUDED from recommendations: fee schedule rate 0.06 differs" in terminal
     assert "- EXCLUDED from recommendations: fee schedule rate 0.06 differs" in markdown
+
+
+def test_render_shows_policy_and_fee_exclusion_lines_together():
+    report = _rendered_report("fee reason", policy_exclusion="policy reason")
+    terminal = render_terminal(report)
+    markdown = render_markdown(report)
+    for line in (
+        "EXCLUDED from recommendations: policy reason",
+        "EXCLUDED from recommendations: fee reason",
+    ):
+        assert line in terminal
+        assert line in markdown
 
 
 def test_render_omits_fee_exclusion_when_unset():

@@ -1229,12 +1229,19 @@ It never raises. A bucket matches when:
 - The paper trader reads `predictions.recommended`, so it is covered without
   any change.
 
+**Policy-era marker.** This is not a new policy era while live schedules match
+the constant. The gate is unchanged for a matching market, and an excluded
+market only loses `recommended`, so `PAPER_ERAS` gets no entry. A later change
+to `POLYMARKET_TAKER_FEE_RATE` or the fee formula after a drift would change
+what the gate recommends, and that would be a new era.
+
 ### Expected effect
 
 If live US markets carry no fee block, every Polymarket recommendation is
-excluded until the schedule is confirmed. That is fail closed and intended. The
-first scheduled run after the merge shows which case holds. `markets.raw` gains
-one `fee_exclusion` key, null when the schedule matches. Rows stored before
-this change validate (the field defaults to None). The golden end-to-end test
-calls the parsers directly, not discovery, so it passes with no fixture or
-expectation change. The JSON report gains a `fee_exclusion: null` key.
+excluded until a reviewed code change (constant, formula or guard) merges. That
+is fail closed and intended. The first scheduled run after the merge shows which
+case holds. `markets.raw` gains one `fee_exclusion` key, null when the schedule
+matches. Rows stored before this change validate (the field defaults to None).
+The golden end-to-end test calls the parsers directly, not discovery, so it
+passes with no fixture or expectation change. The JSON report gains a
+`fee_exclusion: null` key.
