@@ -1,6 +1,6 @@
 # Running the 3h job on a host (systemd)
 
-How to run the 3h job (`run`, `settle`, `prune`) on a Linux host under systemd
+How to run the 3h job (`run`, `trade`, `settle`, `prune`) on a Linux host under systemd
 instead of the GitHub Actions cron. The store stays Supabase Postgres, so the
 dashboard and every other workflow are unaffected. GitHub Actions keeps CI,
 daily diagnostics, backups and keepalive.
@@ -28,8 +28,8 @@ What the job does each time the timer fires (`deploy/rainmaker-run.sh`):
    difference: the new run is skipped and the in-flight run is left alone.
 3. Pings the optional dead-man URL (`/start`).
 4. Deletes reports older than 7 days, then runs `rainmaker run --reports-dir
-   /var/lib/rainmaker/reports`, `rainmaker settle` and `rainmaker prune` from
-   the venv's console script. It never calls `uv` at run time.
+   /var/lib/rainmaker/reports`, `rainmaker trade`, `rainmaker settle` and
+   `rainmaker prune` from the venv's console script. It never calls `uv` at run time.
 5. Pings the dead-man URL again on success.
 
 On any failure the unit's `OnFailure=` starts `rainmaker-run-failure.service`,
@@ -217,20 +217,56 @@ Before one, run `systemctl stop rainmaker-run.timer` and wait until
 `flock -w 1800 /var/lib/rainmaker/run.lock true` returns, then start the timer
 again afterwards.
 
-## The trade step (batch 3, not built yet)
+## The trade step
 
-Batch 3 adds paper trading to this job. It is not part of this kit and nothing
-reads `RAINMAKER_TRADE_MODE` today.
+`rainmaker trade` runs between `run` and `settle` in `deploy/rainmaker-run.sh`.
+It is the MVP 3.0 paper trader: it prices each recommended Polymarket bet of the
+run that just finished against the live order book and records it in
+`paper_orders`. It places no order and holds no credentials.
 
-- Planned shape: a `rainmaker trade` step between `run` and `settle` in
-  `deploy/rainmaker-run.sh`, gated by `RAINMAKER_TRADE_MODE` in the env file.
-  Unset or `off` means no trade step. `paper` enables paper trading.
+The mode comes from `RAINMAKER_TRADE_MODE` in the env file:
+
+| Value | Effect |
+|---|---|
+| unset, empty, `off` | no-op, exit 0, no network call and no store connection |
+| `paper` | the paper trader runs |
+| `live` | refused, exit 1, before any network call or store connection |
+| anything else (`PAPER`, a typo) | treated as `off`, with a warning on stderr |
+
+What a paper run does, in order:
+
+1. Calls the geoblock endpoint and records the result in the summary. In paper
+   mode a blocked, unreachable or unparseable result does not stop the run.
+   Only country and region are printed, never the IP.
+2. Takes the latest run with status `ok`. It trades only if that run started
+   within `TRADE_MAX_RUN_AGE_MINUTES` (60) and not in the future. A stale or
+   missing run is a normal no-trade exit 0 with the reason printed. The catch-up
+   run after downtime therefore does not trade on old prices.
+3. Loads that run's recommended Polymarket outcomes. The CLOB token id comes
+   from the stored market JSON. Net edge is the stored gross edge minus the
+   taker fee at the quoted ask.
+4. Sizes flat stakes by net edge under the risk caps in `config.py`, one open
+   position per outcome (across runs too).
+5. For each order, fetches the token's book, walks it with the fee-aware limit
+   price (the highest ask whose net edge still meets the gate floor, station
+   delta included) and records a `filled`, `partial` or `no_fill` row. A failed
+   book fetch records no row and is counted.
+6. Prints the summary: orders by status, USDC staked, how many orders each cap
+   blocked, book errors and the geoblock result.
+
+Exit codes: every no-trade path exits 0. A store failure or an invalid recorded
+order raises, fails the unit and fires the alert. A failed trade step stops
+`settle` and `prune` for that cycle (`set -e`); the next cycle catches up.
+
 - Roll it out as one clean day with the mode `off` on the new code, then switch
   to `paper`.
 - Kill switch: set `RAINMAKER_TRADE_MODE=off` in the env file. The next run
   picks it up, no restart needed. Hard stop: `systemctl disable --now
   rainmaker-run.timer`.
+- The HTTP client timeout is 10 s, so a hung book costs about 45 s per order
+  with retries, which fits the 20 minute unit timeout at the daily cap.
 - Never wire the trade step into `daily-run.yml`. Trading runs only on the host.
+  A test guards this.
 
 ## Calibration refits
 
