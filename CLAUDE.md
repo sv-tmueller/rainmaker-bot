@@ -203,6 +203,7 @@ src/rainmaker/
   trading/
     sizing.py         flat-stake sizing + risk caps (pure, no I/O)
 dashboard/            read-only Next.js dashboard (Vercel, behind Cloudflare Access)
+deploy/               systemd units, wrapper and env template for the 3h job on a host (runbook: docs/operations/host-deploy.md)
 .github/workflows/
   daily-run.yml       scheduled cron (every 3h): run -> settle -> prune against Supabase
   daily-diagnostics.yml  scheduled cron (daily): snapshot -> track -> tail-check against Supabase

@@ -1,0 +1,14 @@
+[Unit]
+Description=rainmaker 3h job schedule
+
+[Timer]
+# Same slots as the Actions cron "0 */3 * * *", with a random delay so runs do
+# not all hit the upstream APIs on the hour.
+OnCalendar=*-*-* 00/3:00:00 UTC
+RandomizedDelaySec=10min
+# One catch-up run after downtime. Safe: settle and prune are idempotent and
+# run re-prices whatever is live.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
