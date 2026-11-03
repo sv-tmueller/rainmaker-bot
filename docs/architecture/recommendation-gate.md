@@ -1163,13 +1163,16 @@ apply the Kalshi fee once its coefficient is confirmed.
 - P&L stays gross at the ask in `track`, `gate-sweep` and `backtest-pnl`, so it
   stays comparable with recorded sweeps. Net-of-fee P&L belongs to the paper
   trading report (#492).
-- The dashboard still shows `predictions.edge`, which is gross. Showing net or
-  labelling the column gross is a separate follow-up.
+- The dashboard's recommended-bets table shows and ranks on net edge for
+  Polymarket rows and gross edge for Kalshi rows, each cell tagged `net` or
+  `gross` (#506). It computes net client side from the stored gross `edge` and
+  the stored ask; a row with no ask shows gross. The stored `predictions.edge`
+  stays gross.
 - Tie-break divergence: the best bet per (market, run) is still picked on gross
-  edge in tracking, gate-sweep, venue-decomp, pnl_backtest and the dashboard,
-  while the report ranks on net. When two recommended outcomes in one market are
-  within about 1 point of gross edge, the report's top bet can differ from the
-  one tracking grades. This is small and accepted.
+  edge in tracking, gate-sweep, venue-decomp, pnl_backtest and the dashboard's
+  settled list, while the report ranks on net. When two recommended outcomes in
+  one market are within about 1 point of gross edge, the report's top bet can
+  differ from the one tracking grades. This is small and accepted.
 
 ### Expected effect
 
