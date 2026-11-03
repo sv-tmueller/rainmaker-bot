@@ -218,7 +218,7 @@ reads `RAINMAKER_TRADE_MODE` today.
 
 A prod calibration refit (the `backfill` workflow against Supabase) changes the
 forecast distribution the paper bank trades on, so it is a paper era change:
-add a `PAPER_ERAS` entry for it (see #492). This is step 3 of the regime refit
+add a `PAPER_ERAS` entry for it (see #492). This is step 4 of the regime refit
 rollout in `docs/operations/README.md`.
 
 ## Rotating secrets
