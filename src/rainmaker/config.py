@@ -412,6 +412,14 @@ MIN_EDGE = 0.12
 # Upper edge cap (#356): see the 2026-08-14 dated update in
 # docs/architecture/recommendation-gate.md for the gate-sweep evidence.
 MAX_EDGE = 0.25
+# Polymarket taker fee rate (#491). Weather markets charge
+# fee = shares * rate * p * (1 - p) on taker fills (feeSchedule rate 0.05,
+# exponent 1, takerOnly; docs.polymarket.com/trading/fees, fetched 2026-11-02,
+# and the Gamma feeSchedule block on the same date). The gate floor compares
+# against edge net of this fee; see the 2026-11-02 era in
+# docs/architecture/recommendation-gate.md. Shared with the paper pricing code,
+# which takes it as an argument (#490).
+POLYMARKET_TAKER_FEE_RATE = 0.05
 
 # Per-station recommendation-gate overrides (#302), keyed by ICAO. See
 # docs/architecture/recommendation-gate.md for the dated decision record.

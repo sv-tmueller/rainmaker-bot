@@ -23,6 +23,12 @@ floors, the lead filter, and venue. The best-edge bet is then re-picked via
 tracking's `_best_per_market_run` tie-break and scored at the stored ask via
 `_bet_won`/`compute_pnl`'s exact arithmetic.
 
+The min_edge floor compares edge net of the venue's taker fee at the stored
+ask (#491; Polymarket 0.05 x ask x (1 - ask), Kalshi none), as evaluate_market
+does now. Rows recorded before the fee-aware gate were recommended on gross
+edge, so a "live (replayed)" anchor can sit below "live (as recorded)": that
+delta is era drift, not a bug.
+
 The max_edge cap compares against the raw stored `edge`, not the
 delta-adjusted effective min_edge threshold: it matches the #205
 backtest-pnl `--max-edge` precedent, so a KSFO TMAX row can clear its
@@ -68,6 +74,7 @@ from rainmaker.config import (
     STATIONS,
 )
 from rainmaker.domain import utc_day
+from rainmaker.ranking.edge import taker_fee_per_share, taker_fee_rate
 from rainmaker.tracking import _best_per_market_run, _bet_won, _filter_venue, _wilson_interval
 
 LeadFilter = Literal["all", "exclude_0", "exclude_le_0"]
@@ -147,12 +154,18 @@ def _recompute_recommended(row: dict[str, Any], policy: Policy) -> bool:
     folded in -- see ranking/edge.py); today's STATION_EDGE_DELTA is re-added
     here so the effective threshold matches what evaluate_market would apply
     now, even though `policy.min_edge` sweeps only the base. `policy.max_edge`,
-    if set, caps the same raw edge directly (no delta), per the #205
-    backtest-pnl precedent.
+    if set, caps the same raw edge directly (no delta, no fee), per the #205
+    backtest-pnl precedent. The floor, in contrast, is applied to the edge net
+    of the venue taker fee (#491), matching evaluate_market.
     """
     edge = row.get("edge")
     if edge is None:
         return False
+    # Fee-aware floor (#491): the floor compares edge net of the venue's taker
+    # fee at the stored ask; the cap below stays on the gross stored edge. A
+    # legacy row with a null venue is a Polymarket row (as in _filter_venue).
+    fee = taker_fee_per_share(row["ask"], taker_fee_rate(row.get("venue") or "polymarket"))
+    net_edge = edge - fee
     icao = _icao_for(row)
     delta = STATION_EDGE_DELTA.get((icao, row["variable"]), 0.0) if icao is not None else 0.0
     effective_min_edge = policy.min_edge + delta
@@ -160,7 +173,7 @@ def _recompute_recommended(row: dict[str, Any], policy: Policy) -> bool:
     floor = policy.floor_no if side == "NO" else policy.floor
     return bool(
         row["p_win"] >= floor
-        and edge >= effective_min_edge
+        and net_edge >= effective_min_edge
         and (policy.max_edge is None or edge <= policy.max_edge)
     )
 

@@ -100,8 +100,12 @@ def test_tightening_min_edge_drops_marginal_bet_but_keeps_qualifying_bet():
     checks the two distinct outcomes that tightening can actually produce.
     """
     rows = [
-        # m1: sole recommended bucket, edge just above the base (0.05) min_edge.
-        _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.06, recommended=1, ask=0.60),
+        # m1: sole recommended bucket, edge above the base (0.05) min_edge net of
+        # the fee. The gross edge was 0.06 before #491, but the floor now compares
+        # net edge: at ask 0.60 the taker fee is 0.012, so 0.06 nets to 0.048 and
+        # misses the 0.05 base. 0.08 nets to 0.068: still marginal against the
+        # tightened 0.10 floor, now clear of the base.
+        _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.08, recommended=1, ask=0.60),
         # m2: two recommended siblings; the higher-edge one is already the pick.
         _row(
             market_id="m2",
@@ -126,10 +130,10 @@ def test_tightening_min_edge_drops_marginal_bet_but_keeps_qualifying_bet():
         ),
     ]
     base = replay_policy(rows, Policy(label="base", min_edge=0.05))
-    assert base["n_bets"] == 2  # m1's 0.06 bet and m2's 0.20 pick
+    assert base["n_bets"] == 2  # m1's 0.08 bet and m2's 0.20 pick
 
     tightened = replay_policy(rows, Policy(label="tight", min_edge=0.10))
-    assert tightened["n_bets"] == 1  # m1's marginal 0.06 bet is gone
+    assert tightened["n_bets"] == 1  # m1's marginal 0.08 bet is gone
     assert tightened["staked"] == pytest.approx(0.50)  # only m2's 0.20-edge pick remains
 
 
@@ -183,7 +187,10 @@ def test_ksfo_tmax_row_must_clear_base_plus_station_delta():
         city="San Francisco",
         variable="TMAX",
         p_win=0.85,
-        edge=0.13,  # clears base (0.12) but not base + KSFO/TMAX delta (0.17)
+        # Net of the fee (0.012 at ask 0.60) this is 0.133: it clears base (0.12)
+        # but not base + KSFO/TMAX delta (0.17). Keep the net inside [0.12, 0.17)
+        # or this row stops pinning STATION_EDGE_DELTA.
+        edge=0.145,
         recommended=1,  # stored recommended from an earlier era, before the delta applied
         ask=0.60,
     )
@@ -196,9 +203,11 @@ def test_ksfo_tmax_row_must_clear_base_plus_station_delta():
         city="San Francisco",
         variable="TMAX",
         p_win=0.85,
-        # Clears base + delta (0.17) with margin: an exact 0.17 literal falls
-        # just short of 0.12 + 0.05 in float arithmetic.
-        edge=0.18,
+        # Clears base + delta (0.17) net of the fee with margin. Widened from 0.18
+        # for #491: the floor compares net edge, and at ask 0.55 the taker fee is
+        # 0.0124, so 0.18 nets to 0.1676 and misses 0.17. 0.19 nets to 0.1776.
+        # (An exact 0.17 literal also falls short of 0.12 + 0.05 in float math.)
+        edge=0.19,
         recommended=1,
         ask=0.55,
     )
@@ -562,3 +571,58 @@ def test_leads_none_keeps_every_row_including_negative_catch_up_leads():
     ]
     assert run_sweep(rows)["anchors"]["as_recorded"]["n_bets"] == 1
     assert run_sweep(rows, leads=None)["anchors"]["as_recorded"]["n_bets"] == 1
+
+
+# (j) fee-aware floor (#491) ----------------------------------------------
+
+
+def test_polymarket_row_inside_the_fee_band_is_dropped_but_kalshi_survives():
+    """Gross edge 0.125 clears the 0.12 floor; net of the Polymarket taker fee
+    (0.05 x 0.40 x 0.60 = 0.012) it is 0.113 and does not. Kalshi's fee is not
+    applied (known gap), so the same numbers stay recommended there."""
+    poly = _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.125, recommended=1, ask=0.40)
+    kalshi = _row(
+        market_id="m2",
+        run_id="r1",
+        p_win=0.85,
+        edge=0.125,
+        recommended=1,
+        ask=0.40,
+        venue="kalshi",
+    )
+    assert replay_policy([poly], LIVE_POLICY)["n_bets"] == 0
+    assert replay_policy([kalshi], LIVE_POLICY)["n_bets"] == 1
+
+
+def test_legacy_row_with_null_venue_is_charged_the_polymarket_fee():
+    legacy = _row(
+        market_id="m1",
+        run_id="r1",
+        p_win=0.85,
+        edge=0.125,
+        recommended=1,
+        ask=0.40,
+        venue=None,  # type: ignore[arg-type]
+    )
+    assert replay_policy([legacy], LIVE_POLICY)["n_bets"] == 0
+
+
+def test_max_edge_cap_compares_gross_edge_with_the_fee_applied_to_the_floor_only():
+    """Gross 0.255 is over the 0.25 cap. Its net (0.255 - 0.0125 = 0.2425) is
+    under it, so a net-based cap would wrongly keep the row."""
+    row = _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.255, recommended=1, ask=0.50)
+    assert replay_policy([row], LIVE_POLICY)["n_bets"] == 0
+    at_cap = _row(market_id="m2", run_id="r1", p_win=0.85, edge=0.25, recommended=1, ask=0.50)
+    assert replay_policy([at_cap], LIVE_POLICY)["n_bets"] == 1
+
+
+def test_replayed_live_anchor_matches_recorded_when_rows_clear_the_net_floor():
+    """The replay and the as-recorded anchor agree when every stored row also
+    clears the fee-aware floor; they diverge only on rows inside the fee band
+    (era drift, as for any gate change)."""
+    clear = _row(market_id="m1", run_id="r1", p_win=0.85, edge=0.20, recommended=1, ask=0.60)
+    band = _row(market_id="m2", run_id="r1", p_win=0.85, edge=0.125, recommended=1, ask=0.40)
+    both = [clear, band]
+    assert replay_policy([clear], LIVE_POLICY)["n_bets"] == as_recorded([clear])["n_bets"] == 1
+    assert as_recorded(both)["n_bets"] == 2
+    assert replay_policy(both, LIVE_POLICY)["n_bets"] == 1

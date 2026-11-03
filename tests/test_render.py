@@ -23,10 +23,20 @@ def _market_report() -> MarketReport:
         ],
         outcomes=[
             RankedOutcome(
-                bucket_label="70-71°F", p_win=0.93, best_ask=0.40, edge=0.53, recommended=True
+                bucket_label="70-71°F",
+                p_win=0.93,
+                best_ask=0.40,
+                edge=0.53,
+                net_edge=0.52,
+                recommended=True,
             ),
             RankedOutcome(
-                bucket_label="72-73°F", p_win=0.04, best_ask=0.30, edge=-0.26, recommended=False
+                bucket_label="72-73°F",
+                p_win=0.04,
+                best_ask=0.30,
+                edge=-0.26,
+                net_edge=-0.27,
+                recommended=False,
             ),
         ],
         excluded_no_ask=["59°F or below"],
@@ -48,7 +58,8 @@ def test_render_terminal_shows_key_columns_and_recommended_marker():
     assert "70-71°F" in text
     assert "0.93" in text  # p_win
     assert "0.40" in text  # best ask
-    assert "0.53" in text  # edge
+    assert "+0.52" in text  # net edge (gross 0.53 minus the fee)
+    assert "0.53" not in text  # the gross figure is not shown as the edge
     assert "REC" in text  # recommended marker on the recommended row
     assert "59°F or below" in text  # excluded note
     assert "calibrated" in text  # calibration status shown
@@ -58,7 +69,7 @@ def test_render_markdown_has_table_and_settlement_date():
     report = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
     md = render_markdown(report)
     assert md.startswith("# Rainmaker report 2026-05-31")
-    assert "| bucket | side | P(win) | ask | edge | rec |" in md
+    assert "| bucket | side | P(win) | ask | edge (net) | rec |" in md
     assert "2026-05-31" in md
 
 
@@ -212,6 +223,7 @@ def _rec_market(city: str, title: str, edge: float) -> MarketReport:
                 p_win=0.90,
                 best_ask=round(0.90 - edge, 2),
                 edge=edge,
+                net_edge=edge,
                 recommended=True,
             )
         ],
@@ -256,6 +268,7 @@ def test_render_shows_side_for_no_bet():
                 p_win=0.95,
                 best_ask=0.70,
                 edge=0.25,
+                net_edge=0.24,
                 recommended=True,
             )
         ],
@@ -283,7 +296,12 @@ def test_render_uses_inch_unit_for_precip():
         coverage=[SourceCoverage(source="open-meteo", ok=True, n_samples=40)],
         outcomes=[
             RankedOutcome(
-                bucket_label='2-3"', p_win=0.40, best_ask=0.29, edge=0.11, recommended=False
+                bucket_label='2-3"',
+                p_win=0.40,
+                best_ask=0.29,
+                edge=0.11,
+                net_edge=0.10,
+                recommended=False,
             )
         ],
         excluded_no_ask=[],
@@ -311,7 +329,12 @@ def test_render_summary_says_none_when_no_recommendations():
         coverage=[SourceCoverage(source="nws", ok=True, n_samples=1)],
         outcomes=[
             RankedOutcome(
-                bucket_label="72-73°F", p_win=0.04, best_ask=0.30, edge=-0.26, recommended=False
+                bucket_label="72-73°F",
+                p_win=0.04,
+                best_ask=0.30,
+                edge=-0.26,
+                net_edge=-0.27,
+                recommended=False,
             )
         ],
         excluded_no_ask=[],
@@ -476,3 +499,104 @@ def test_render_bias_corrected_label():
     assert "bias-corrected" in md
     assert "uncalibrated" not in text
     assert "uncalibrated" not in md
+
+
+# ---------------------------------------------------------------------------
+# Fee-aware report (#491): edges shown are net of the Polymarket taker fee,
+# the legend says so, each summary line is labelled, and Kalshi carries a gap
+# note because its fee is not applied.
+# ---------------------------------------------------------------------------
+
+_LEGEND_NET = "net of the Polymarket taker fee"
+_LEGEND_KALSHI = "Kalshi edges are gross"
+
+
+def _kalshi_report() -> MarketReport:
+    return _market_report().model_copy(
+        update={
+            "venue": "kalshi",
+            "fee_gap": "Kalshi taker fee not applied: edges on this market are gross.",
+            "outcomes": [
+                RankedOutcome(
+                    bucket_label="70-71°F",
+                    p_win=0.93,
+                    best_ask=0.40,
+                    edge=0.53,
+                    net_edge=0.53,
+                    recommended=True,
+                )
+            ],
+        }
+    )
+
+
+def test_render_legend_says_net_of_fee_and_kalshi_gross_in_both_renderers():
+    report = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
+    for out in (render_terminal(report), render_markdown(report)):
+        header = out.split("Recommended bets")[0]
+        assert _LEGEND_NET in header
+        assert _LEGEND_KALSHI in header
+        assert "0.05" in header  # the rate, so the owner can check it
+
+
+def test_render_displays_net_edge_not_gross():
+    report = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
+    text = render_terminal(report)
+    md = render_markdown(report)
+    assert "edge=+0.52 net" in text  # summary line, labelled
+    assert "| +0.52 net |" in md
+    assert "+0.52" in md and "+0.53" not in md
+
+
+def test_render_per_market_edge_column_is_labelled_net_or_gross():
+    poly = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
+    kalshi = Report(run_date=date(2026, 5, 31), markets=[_kalshi_report()])
+    assert "edge(net)" in render_terminal(poly)
+    assert "edge(net)" in render_markdown(poly).replace("edge (net)", "edge(net)")
+    assert "edge(gross)" in render_terminal(kalshi)
+    assert "edge (gross)" in render_markdown(kalshi)
+    assert "edge=+0.53 gross" in render_terminal(kalshi)
+    assert "| +0.53 gross |" in render_markdown(kalshi)
+
+
+def test_render_shows_kalshi_fee_gap_note_only_for_kalshi():
+    kalshi = Report(run_date=date(2026, 5, 31), markets=[_kalshi_report()])
+    poly = Report(run_date=date(2026, 5, 31), markets=[_market_report()])
+    note = "Kalshi taker fee not applied: edges on this market are gross."
+    assert note in render_terminal(kalshi)
+    assert note in render_markdown(kalshi)
+    assert "taker fee not applied" not in render_terminal(poly)
+    assert "taker fee not applied" not in render_markdown(poly)
+
+
+def test_recommended_summary_sorts_by_net_edge_not_gross():
+    def market(city: str, edge: float, net_edge: float) -> MarketReport:
+        m = _rec_market(city, f"Highest temperature in {city} on May 31?", edge)
+        outcome = m.outcomes[0].model_copy(update={"net_edge": net_edge})
+        return m.model_copy(update={"outcomes": [outcome]})
+
+    # Seattle has the larger gross edge but the smaller net edge.
+    report = Report(
+        run_date=date(2026, 5, 31),
+        markets=[market("Seattle", 0.40, 0.30), market("NYC", 0.35, 0.34)],
+    )
+    for render in (render_terminal, render_markdown):
+        out = render(report)
+        summary = out.split("Highest temperature in Seattle")[0]
+        assert summary.index("NYC") < summary.index("Seattle")
+
+
+def test_recommended_summary_orders_bets_within_a_city_by_net_edge_not_gross():
+    base = _rec_market("NYC", "Highest temperature in NYC on May 31?", 0.40)
+    # 70-71 has the larger gross edge but the smaller net edge.
+    first = base.outcomes[0].model_copy(update={"edge": 0.40, "net_edge": 0.30})
+    second = base.outcomes[0].model_copy(
+        update={"bucket_label": "72-73°F", "edge": 0.35, "net_edge": 0.34}
+    )
+    report = Report(
+        run_date=date(2026, 5, 31),
+        markets=[base.model_copy(update={"outcomes": [first, second]})],
+    )
+    for render in (render_terminal, render_markdown):
+        summary = render(report).split("Highest temperature in NYC")[0]
+        assert summary.index("72-73°F") < summary.index("70-71°F")
