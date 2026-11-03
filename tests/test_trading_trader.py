@@ -440,7 +440,7 @@ def test_check_geoblock_reports_an_unparseable_body(clob, client):
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as odd:
         result = check_geoblock(odd)
-    assert result.startswith("check failed (ValidationError")
+    assert result == "check failed (ValidationError), recorded only in paper"
 
 
 # ---------------------------------------------------------------------------
@@ -468,6 +468,9 @@ def test_end_to_end_records_a_filled_a_partial_and_a_no_fill_order(conn, clob, c
     assert filled["limit_price"] == pytest.approx(expected_limit)
     assert filled["fill_price"] == pytest.approx(0.58)
     assert filled["shares"] * filled["fill_price"] + filled["fee_usdc"] == pytest.approx(5.0)
+    # Pins fee_rate=POLYMARKET_TAKER_FEE_RATE: the line above holds at rate 0 too.
+    assert filled["fee_usdc"] > 0
+    assert filled["fee_usdc"] == pytest.approx(filled["shares"] * taker_fee_per_share(0.58, RATE))
     assert filled["created_at"] == NOW.isoformat()
     assert filled["run_id"] == "run-1"
     assert filled["market_id"] == "900001"
@@ -477,6 +480,13 @@ def test_end_to_end_records_a_filled_a_partial_and_a_no_fill_order(conn, clob, c
     assert partial["shares"] == pytest.approx(6.0)  # 3 at 0.58 and 3 at 0.59, then over the limit
     spent = partial["shares"] * partial["fill_price"] + partial["fee_usdc"]
     assert spent < 5.0
+    partial_book = OrderBook.model_validate_json(partial["book_snapshot"])
+    walked = [a for a in partial_book.asks if a.price <= partial["limit_price"] + 1e-9]
+    assert sum(a.size for a in walked) == pytest.approx(partial["shares"])  # every level taken
+    assert partial["fee_usdc"] > 0
+    assert partial["fee_usdc"] == pytest.approx(
+        sum(a.size * taker_fee_per_share(a.price, RATE) for a in walked)
+    )
     assert partial["edge"] == pytest.approx(0.79 - 0.58 - fee)
 
     no_fill = got[names["no_fill"]]
@@ -721,6 +731,22 @@ def test_a_failed_book_fetch_records_no_row_and_the_other_orders_still_record(co
     assert summary.planned == 4
     text = render_trade_summary(summary)
     assert "3 book errors" in text
+
+
+def test_a_store_write_failure_propagates_instead_of_counting_as_a_book_error(
+    conn, clob, client, monkeypatch
+):
+    """record_paper_order raises ValueError, which _BOOK_ERRORS also lists. A
+    widened try block would swallow it and no alert would fire."""
+    three_order_store(conn, clob)
+
+    def reject(*args, **kwargs):
+        raise ValueError("invalid paper order")
+
+    monkeypatch.setattr("rainmaker.trading.trader.record_paper_order", reject)
+    with pytest.raises(ValueError, match="invalid paper order"):
+        trade(conn, client)
+    assert rows(conn) == []
 
 
 @pytest.mark.parametrize(

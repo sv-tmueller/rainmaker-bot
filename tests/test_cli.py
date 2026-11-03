@@ -2336,3 +2336,42 @@ def test_trade_paper_mode_prices_and_records_an_order(monkeypatch, tmp_path, cap
         "tok-yes",
         TRADE_NOW.isoformat(),
     )
+
+
+def test_trade_paper_mode_fails_loudly_when_recording_an_order_raises(
+    monkeypatch, tmp_path, capsys, httpx_mock
+):
+    """A store failure must escape cli.main (the console script exits 1, the unit
+    fails, the alert fires), and no summary is printed as if the run had worked."""
+    import json
+    from pathlib import Path
+
+    from rainmaker.polymarket.book import CLOB_BOOK_URL
+    from rainmaker.polymarket.geoblock import GEOBLOCK_URL
+
+    fixtures = Path(__file__).parent / "fixtures"
+    db = str(tmp_path / "t.db")
+    _seed_trade_run(db)
+    book = json.loads((fixtures / "clob_book_trade_deep.json").read_text())
+    book["asset_id"] = "tok-yes"
+    geo = json.loads((fixtures / "polymarket_geoblock_allowed.json").read_text())
+    httpx_mock.add_response(url=GEOBLOCK_URL, json=geo)
+    httpx_mock.add_response(url=f"{CLOB_BOOK_URL}?token_id=tok-yes", json=book)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("RAINMAKER_TRADE_MODE", "paper")
+    monkeypatch.setattr(cli, "_now", lambda: TRADE_NOW)
+
+    def reject(*args, **kwargs):
+        raise ValueError("invalid paper order")
+
+    monkeypatch.setattr("rainmaker.trading.trader.record_paper_order", reject)
+
+    with pytest.raises(ValueError, match="invalid paper order"):
+        cli.main(["trade", "--db", db])
+
+    assert "orders:" not in capsys.readouterr().out
+    conn = connect(db)
+    try:
+        assert conn.execute("SELECT COUNT(*) AS n FROM paper_orders").fetchone()["n"] == 0
+    finally:
+        conn.close()
