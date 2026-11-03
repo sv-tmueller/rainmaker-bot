@@ -356,8 +356,10 @@ Trigger order:
    numbers to confirm the intended distortion (e.g. the #404 TMIN wedge)
    disappeared.
 4. A prod refit is also a paper era change: add a `PAPER_ERAS` entry for it
-   (see #492 and `docs/operations/host-deploy.md`), so paper results are not
-   pooled across calibration regimes.
+   in `src/rainmaker/paper_tracking.py` (see #492 and
+   `docs/operations/host-deploy.md`), starting at the UTC time of the backfill
+   run, so paper results are not pooled across calibration regimes. It is a
+   code change: ship it by PR, then cut a new deploy tag.
 
 Between steps 1 and 2 the live run is misaligned by construction: new
 forecast generation, old calibration cells. Expect degraded recommendations

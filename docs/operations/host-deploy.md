@@ -122,8 +122,10 @@ the host always runs a commit that passed CI.
    ' "$TAG"
    ```
 
-3. Install the units and check the installed copies. The check must print
-   nothing:
+3. Install the units and check the installed copies. A line naming a
+   `rainmaker-run*` unit is a failure. Lines about other units (for example a
+   vendor unit's `CPUAccounting=` notice) can be ignored. Do not ignore lines
+   by path: the installed copies also report under `/etc/systemd/system/`.
 
    ```bash
    cd /opt/rainmaker/deploy
@@ -144,8 +146,10 @@ again.
 Do this with the timer disabled and the Actions cron still on.
 
 1. Pick a time with no Actions run in progress and none about to start (the
-   Actions slots are every 3 hours on the hour). Check
-   `gh run list --workflow scheduled-run --status in_progress`.
+   Actions slots are every 3 hours on the hour). From a workstation logged in
+   to `gh`, or on the Actions tab, check that both
+   `gh run list --workflow scheduled-run --status in_progress` and
+   `gh run list --workflow scheduled-run --status queued` print nothing.
 2. Start one run and watch it:
 
    ```bash
@@ -169,8 +173,20 @@ Do this with the timer disabled and the Actions cron still on.
    The job exits 1 with "refusing to run", the failure unit starts, and the
    issue `ops: host-run workflow failing` is created. Close that issue
    afterwards. If the token is unset, the failure unit logs that and exits 1.
-4. Overlap lock: start the job twice in quick succession and check the second
-   journal shows `skipping this run` and a clean exit.
+4. Overlap lock: hold the lock as the service user, then start the job. Do
+   not start the unit twice: systemd merges a second start into the running
+   job, so no second run happens. A by-hand wrapper run does not work either,
+   because it has no env file and the DSN guard refuses it before the lock.
+
+   ```bash
+   sudo -u rainmaker flock /var/lib/rainmaker/run.lock sleep 120 &
+   systemctl start rainmaker-run.service
+   journalctl -u rainmaker-run.service --no-pager | tail
+   ```
+
+   Expect `skipping this run`, exit 0, and no `ops: host-run workflow failing`
+   issue. Stop the holder afterwards with `kill %1` (or wait out the 120
+   seconds).
 
 ## Cutover
 
@@ -182,8 +198,10 @@ from overlapping and writing duplicate rows.
    `.github/workflows/daily-run.yml` and keeps `workflow_dispatch`. Do not
    disable the workflow in the Actions tab: that also disables manual runs.
    Merge it.
-2. Check no Actions run is in progress:
-   `gh run list --workflow scheduled-run --status in_progress` prints nothing.
+2. Check no Actions run is in progress or queued. From a workstation logged
+   in to `gh`, or on the Actions tab, both
+   `gh run list --workflow scheduled-run --status in_progress` and
+   `gh run list --workflow scheduled-run --status queued` print nothing.
 3. Enable the timer:
 
    ```bash
@@ -218,8 +236,10 @@ reads `RAINMAKER_TRADE_MODE` today.
 
 A prod calibration refit (the `backfill` workflow against Supabase) changes the
 forecast distribution the paper bank trades on, so it is a paper era change:
-add a `PAPER_ERAS` entry for it (see #492). This is step 4 of the regime refit
-rollout in `docs/operations/README.md`.
+add a `PAPER_ERAS` entry for it in `src/rainmaker/paper_tracking.py` (see
+#492). The entry starts at the UTC time of the backfill run. It is a code
+change: ship it by PR, then cut a new deploy tag so the host picks it up. This
+is step 4 of the regime refit rollout in `docs/operations/README.md`.
 
 ## Rotating secrets
 
@@ -268,7 +288,11 @@ Without installing anything, from a repo checkout:
 systemd-analyze verify --man=no deploy/*.service deploy/*.timer
 ```
 
-The command must print nothing. `systemd-analyze verify` exits 0 even for
-unknown keys and bad values, so empty output is the real pass condition.
-`tests/test_deploy_units.py` runs the same check in CI and skips only when
+A line naming a `rainmaker-run*` unit is a failure. Lines about other units
+(for example a vendor unit's `CPUAccounting=` notice) can be ignored. Do not
+ignore lines by path. `systemd-analyze verify` exits 0 even for unknown keys
+and bad values, so the output, not the exit code, is the pass condition.
+`tests/test_deploy_units.py` runs the same check on the repo copies in CI. It
+drops lines that start with a system unit directory, which is safe there
+because the repo copies do not live under one. It skips only when
 `systemd-analyze` is not installed.
