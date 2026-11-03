@@ -12,10 +12,11 @@ as blocked. Confirmed against https://docs.polymarket.com/api-reference/geoblock
 - The answer is computed per request (`cache-control: no-store`), and it
   describes the caller's own egress IP only. It says nothing about any other
   host.
-- Close-only regions (can close, cannot open) report `blocked: true`. This bot
-  only opens positions and holds them to settlement, so close-only counts as
-  blocked. No country list is hard-coded: the endpoint is what Polymarket
-  enforces, and its published lists change without notice.
+
+Whether every close-only region (can close, cannot open) reports `blocked: true`
+is unconfirmed. The guard trusts `blocked` and hard-codes no country list,
+because the endpoint is what Polymarket enforces and its published lists change
+without notice.
 
 Only `blocked` decides. `ip`, `country` and `region` are diagnostics, so a host
 with no region data is not false-blocked. Tested against saved fixtures only,
@@ -46,9 +47,10 @@ class GeoblockedError(RuntimeError):
 def fetch_geoblock(client: httpx.Client) -> GeoblockStatus:
     """The geoblock status of the caller's IP. Raises on any failure.
 
-    Redirects are not followed, so a 3xx raises and fails closed.
+    Redirects are never followed, even on a client built with
+    `follow_redirects=True`, so a 3xx raises and fails closed.
     """
-    resp = client.get(GEOBLOCK_URL)
+    resp = client.get(GEOBLOCK_URL, follow_redirects=False)
     resp.raise_for_status()
     return GeoblockStatus.model_validate(resp.json())
 

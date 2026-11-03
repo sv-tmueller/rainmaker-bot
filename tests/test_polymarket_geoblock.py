@@ -109,6 +109,16 @@ def test_non_2xx_fails_closed(httpx_mock, status_code, headers, content):
         require_unblocked(client)
 
 
+def test_redirect_fails_closed_even_when_client_follows_redirects(httpx_mock):
+    # The target answers "not blocked", so a followed redirect would fail open.
+    target = "https://example.test/elsewhere"
+    httpx_mock.add_response(url=GEOBLOCK_URL, status_code=302, headers={"Location": target})
+    httpx_mock.add_response(url=target, json={"blocked": False}, is_optional=True)
+    with httpx.Client(follow_redirects=True) as client, pytest.raises(GeoblockedError):
+        require_unblocked(client)
+    assert len(httpx_mock.get_requests()) == 1
+
+
 @pytest.mark.parametrize(
     "content",
     [b"<html>hello</html>", b"", b"[]", b"null", b'"ok"'],

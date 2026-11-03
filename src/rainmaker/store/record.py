@@ -5,6 +5,7 @@ rendered report, so every run is fully reconstructable.
 """
 
 import json
+import math
 from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Literal, get_args
@@ -332,13 +333,25 @@ def record_paper_order(
 
     Raises ValueError for input that exposure queries would read as zero spend
     and so let an order past the caps: an unknown status or side, a fill without
-    a price or shares, or a naive timestamp. created_at is stored as UTC so the
-    per-day exposure query is a true UTC day.
+    a price or shares, a naive timestamp, shares that are not finite and >= 0,
+    a fill_price that is not None or finite and > 0, or a fee_usdc that is not
+    None or finite and >= 0. The number checks apply to every status: SQLite
+    stores a NaN as NULL, which the spend sum reads as zero, and an inf would
+    break sizing. created_at is stored as UTC so the per-day exposure query is a
+    true UTC day.
     """
     if status not in get_args(PaperOrderStatus):
         raise ValueError(f"unknown paper order status: {status!r}")
     if side not in get_args(PaperOrderSide):
         raise ValueError(f"unknown paper order side: {side!r}")
+    if not (math.isfinite(shares) and shares >= 0):
+        raise ValueError(f"paper order shares must be finite and >= 0, got {shares!r}")
+    if fill_price is not None and not (math.isfinite(fill_price) and fill_price > 0):
+        raise ValueError(
+            f"paper order fill_price must be None or finite and > 0, got {fill_price!r}"
+        )
+    if fee_usdc is not None and not (math.isfinite(fee_usdc) and fee_usdc >= 0):
+        raise ValueError(f"paper order fee_usdc must be None or finite and >= 0, got {fee_usdc!r}")
     if status != "no_fill" and (fill_price is None or shares <= 0):
         raise ValueError(f"a {status} paper order needs a fill price and positive shares")
     if created_at.tzinfo is None:
