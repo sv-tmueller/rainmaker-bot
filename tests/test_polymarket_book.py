@@ -25,6 +25,8 @@ def _book(
         asset_id="tok",
         market="0xabc",
         timestamp_ms=1,
+        min_order_size=5.0,
+        tick_size=0.001,
         bids=[BookLevel(price=p, size=s) for p, s in bids or []],
         asks=[BookLevel(price=p, size=s) for p, s in asks],
     )
@@ -93,8 +95,8 @@ def test_book_sorts_asks_ascending_and_bids_descending():
     assert [lv.price for lv in book.bids] == [0.3, 0.2, 0.1]
 
 
-@pytest.mark.parametrize("stake", [0.0, -1.0])
-def test_walk_rejects_non_positive_stake(stake):
+@pytest.mark.parametrize("stake", [0.0, -1.0, float("nan"), float("inf"), float("-inf")])
+def test_walk_rejects_non_positive_or_non_finite_stake(stake):
     with pytest.raises(ValueError):
         walk_asks(_book([(0.4, 10)]), stake)
 
@@ -184,3 +186,55 @@ def test_fetch_book_malformed_level_raises(httpx_mock):
     httpx_mock.add_response(url=BOOK_URL, json=data)
     with httpx.Client() as client, pytest.raises(ValueError):
         fetch_book(YES_TOKEN, client)
+
+
+def test_fetch_book_parses_min_order_size_and_tick_size(httpx_mock):
+    httpx_mock.add_response(url=BOOK_URL, json=_fixture("clob_book_nyc_7071_yes.json"))
+    with httpx.Client() as client:
+        book = fetch_book(YES_TOKEN, client)
+    assert book.min_order_size == 5.0
+    assert book.tick_size == 0.001
+
+
+@pytest.mark.parametrize("key", ["min_order_size", "tick_size"])
+def test_fetch_book_missing_key_raises_key_error(httpx_mock, key):
+    data = _fixture("clob_book_nyc_7071_yes.json")
+    del data[key]
+    httpx_mock.add_response(url=BOOK_URL, json=data)
+    with httpx.Client() as client, pytest.raises(KeyError):
+        fetch_book(YES_TOKEN, client)
+
+
+def _book_with(**overrides: Any) -> OrderBook:
+    fields: dict[str, Any] = {
+        "asset_id": "tok",
+        "market": "0xabc",
+        "timestamp_ms": 1,
+        "min_order_size": 5.0,
+        "tick_size": 0.001,
+        "bids": [],
+        "asks": [],
+    }
+    fields.update(overrides)
+    return OrderBook(**fields)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"min_order_size": -1.0},
+        {"min_order_size": float("nan")},
+        {"min_order_size": float("inf")},
+        {"tick_size": 0.0},
+        {"tick_size": 1.0},
+        {"tick_size": float("nan")},
+    ],
+)
+def test_order_book_rejects_bad_min_size_or_tick(overrides):
+    with pytest.raises(ValueError):
+        _book_with(**overrides)
+
+
+def test_order_book_requires_min_size_and_tick():
+    with pytest.raises(ValueError):
+        OrderBook(asset_id="tok", market="0xabc", timestamp_ms=1, bids=[], asks=[])  # type: ignore[call-arg]
