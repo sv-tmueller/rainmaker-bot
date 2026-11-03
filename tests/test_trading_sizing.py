@@ -112,11 +112,13 @@ def test_open_position_takes_precedence_over_open_cap():
 
 
 def test_duplicate_in_batch_takes_precedence_over_open_cap():
-    # Open 145 leaves room for one 10 stake (cap 150). The second candidate on
+    # Open 145 leaves room for one 5 stake (cap 150). The second candidate on
     # the same outcome must be a duplicate, not an open_cap block.
     result = run(
         [cand("m1", "A", 0.5, "YES"), cand("m1", "A", 0.4, "NO")],
         open_exposure_usdc=145.0,
+        stake_usdc=5.0,
+        max_open_exposure_usdc=150.0,
     )
     assert order_keys(result) == [("m1", "A", "YES")]
     assert blocked_reasons(result) == ["duplicate_in_batch"]

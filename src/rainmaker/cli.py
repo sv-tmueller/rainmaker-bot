@@ -1268,7 +1268,7 @@ def _main(argv: list[str] | None = None) -> None:
 
     paper_report = sub.add_parser(
         "paper-report",
-        help="grade paper orders against the go-live criterion (read-only)",
+        help="report paper orders against the go-live criterion (read-only)",
     )
     paper_report.add_argument("--db", default=DB_PATH, help="SQLite database path")
 

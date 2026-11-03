@@ -52,9 +52,10 @@ some weeks of waiting and no money at risk.
 
 ## Decisions
 
-Each decision was taken with the owner on 2026-11-01, except two that the
-architect proposed in the #475 sub-plan: "Polymarket only" and "Paper mirrors
-live". Both are marked below and are open for owner review at this PR.
+Each decision was taken with the owner on 2026-11-01, except the hosting
+decision (2026-11-02) and two that the architect proposed in the #475
+sub-plan: "Polymarket only" and "Paper mirrors live". The two proposals are
+marked below and are open for owner review at this PR.
 
 ### Paper first
 
@@ -203,7 +204,9 @@ Rules:
   exceed them. After the run, the store holds the actual spend and the next run
   sees it.
 - **Kill switch input:** #478 takes a boolean. A true value yields zero
-  orders. Where the boolean comes from is defined in the kill switch section.
+  orders. In paper, the trade command passes `halted=False` after the mode
+  check passes. In live, the halt flag supplies it (see the kill switch
+  section).
 - **Fixed positions cap:** a value of `TRADE_MAX_POSITIONS_PER_OUTCOME` above 1
   needs a spec decision and a count query first. #493 enforces the fixed 1.
 
@@ -244,8 +247,9 @@ Rules:
   gross `p_win - (MIN_EDGE + delta)`. Once the gate nets the taker fee out of
   edge, that gross limit would admit fills the gate rejects. "Paper mirrors
   live" needs the limit to use the same edge definition as the gate. The net
-  edge falls as the ask rises, so the limit is well defined. The trade command
-  computes it with #491's edge function. #490 takes the limit as an input.
+  edge falls as the ask rises, so the limit is well defined. The closed-form
+  `trading.pricing.limit_price` (#502) computes it with the gate's net-edge
+  definition. #490 takes the limit as an input.
 - **Order type:** fill what the book offers, up to the stake budget (spend plus
   fee), at or under the limit, then cancel the rest. This mirrors the planned
   live order type, a marketable limit order that may fill partially.
@@ -269,18 +273,18 @@ Rules:
   `takerOnly` on both temperature and precipitation markets. #490's pricing
   takes `fee_rate` as a required argument, so the trade command passes
   `POLYMARKET_TAKER_FEE_RATE` in.
-- **Fee units.** Say it plainly, because the two units differ by a factor of
-  the price. Edge and the limit price are per share. The fee per share is
+- **Fee units.** The two units differ by a factor of the price. Edge and the
+  limit price are per share. The fee per share is
   `rate x p x (1 - p)`, about 1.1 points at a 0.67 ask. ROI is per USDC of
   outlay. The fee per USDC is `rate x (1 - p)`, about 1.65% at a 0.67 ask. The
   1.65% figure is an ROI-unit number. Subtracting it from a per-share edge
   would overcharge by a factor of `1 / p`.
-- **Fee against the measured edge.** At a 0.67 price the fee is about 1.65% of
-  the spend. That is larger than the +0.6% row of the 0.12 sweep and about
-  equal to the +1.6% row, so the fee is the same size as the whole measured
-  edge. The fee is computed per filled level and stored in `fee_usdc`. It sits
-  inside the stake: the walk spends only what leaves room for the fee, so
-  `spent_usdc + fee_usdc <= TRADE_STAKE_USDC`.
+- **Fee against the measured edge.** At a 0.67 price the fee is about 1.65%
+  per USDC of spend (an ROI-unit figure). That is larger than the +0.6% row of
+  the 0.12 sweep and about equal to the +1.6% row, so the fee is the same size
+  as the whole measured edge. The fee is computed per filled level and stored
+  in `fee_usdc`. It sits inside the stake: the walk spends only what leaves
+  room for the fee, so `spent_usdc + fee_usdc <= TRADE_STAKE_USDC`.
 - **Fee-aware gate (owner decision, 2026-11-02).** The owner chose the
   fee-aware gate as the first fee mitigation. #491 computes `net_edge = edge -
   fee per share at the ask`. The gate floor and the ranking use `net_edge`. The
@@ -428,10 +432,9 @@ Why these numbers:
   the taker fee costs about 1.65% per USDC of outlay (an ROI-unit figure, see
   the fee units rule), so the measured edge implies a net ROI of about -1.0%
   to 0.0%. At the old gate the criterion is therefore expected to fail unless
-  paper fills beat the sweep's edge. The fee-aware gate (#491) is a strict
+  paper fills beat the sweep's edge. That is the purpose of paper first: to
+  find this out before money is at risk. The fee-aware gate (#491) is a strict
   tightening, so fewer bets pass it, and the go-live numbers do not change.
-  That is the purpose of paper first: to find this out before money is at
-  risk.
 - **0.5 cents.** The typical ask is about 0.67, so one cent per share costs
   about 1.5 ROI points. That wipes out the measured edge.
 
@@ -482,7 +485,7 @@ The spec states the limits plainly.
   re-graded. ROI, fill rate and the execution gap count only rows with status
   `filled` or `partial`.
 - Bootstrap confidence intervals are deferred out of #492. The go-live check is
-  70 or more days out, so a follow-up issue lands before then.
+  70 or more days out, so a follow-up issue should land before then.
 
 ## Hosting and cutover
 
@@ -531,8 +534,9 @@ from the store.
 TDD for the math: the book walk, sizing and caps, and the go-live criterion
 (the bootstrap and the three checks). Synthetic inputs with known answers.
 API clients are tested against saved fixtures (`tests/fixtures/`), never live
-endpoints. The golden end-to-end test is untouched: the trade command is a
-separate entry point and does not change forecasting, calibration or ranking.
+endpoints. The trade command is a separate entry point and leaves the golden
+end-to-end test untouched. The fee-aware gate (#491) did update that test, to
+assert ranking by net edge.
 
 ## Live phase outline
 
@@ -590,8 +594,9 @@ Out of scope until its own sign-off. Outline only.
 **Batch 3, trade command and cutover on this host.**
 
 - `rainmaker trade` in paper mode (size M), as in the 3h cycle section. It
-  orders and sizes by net edge, computes the limit with #491's edge function,
-  and passes `POLYMARKET_TAKER_FEE_RATE` to `price_paper_order`.
+  orders and sizes by net edge, computes the limit with the closed-form
+  `trading.pricing.limit_price` (#502, the gate's net-edge definition), and
+  passes `POLYMARKET_TAKER_FEE_RATE` to `price_paper_order`.
 - The mode check from `RAINMAKER_TRADE_MODE` (`off` or `paper`).
 - The operator cutover on the current host, per the runbook.
 

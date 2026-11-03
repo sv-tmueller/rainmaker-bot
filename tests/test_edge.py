@@ -848,8 +848,8 @@ def test_evaluate_precip_market_ranks_brackets():
     yes = [o for o in report.outcomes if o.side == "YES"]
     assert len(yes) == 6  # one YES per inch bracket
     assert abs(sum(o.p_win for o in yes) - 1.0) < 1e-6  # partition sums to one
-    edges = [o.edge for o in report.outcomes]
-    assert edges == sorted(edges, reverse=True)  # ranked by edge desc
+    nets = [o.net_edge for o in report.outcomes]
+    assert nets == sorted(nets, reverse=True)  # ranked by net edge desc
 
 
 def test_evaluate_precip_market_sigma_matches_floored_gamma():
@@ -2130,5 +2130,58 @@ def test_precip_cap_compares_gross_and_sorts_by_net():
         o = _side(report, side)
         assert o.edge > 0.25 > o.net_edge
         assert o.recommended is False
+    nets = [o.net_edge for o in report.outcomes]
+    assert nets == sorted(nets, reverse=True)
+
+
+def test_precip_outcomes_are_sorted_by_net_edge_not_gross():
+    # Same flip as the temperature test: YES on the mid bracket (ask near 0.33)
+    # against NO on a far tail (no_ask near 0.85). Gross prefers the YES by
+    # 0.25 points, but the larger fee on the YES flips the order on net.
+    def bracket(label: str, lo: float, hi: float, **asks: float) -> PrecipBracket:
+        return PrecipBracket(
+            label=label,
+            kind="range",
+            lo=lo,
+            hi=hi,
+            threshold=None,
+            yes_token_id="t",
+            best_ask=asks.get("best_ask"),
+            best_bid=None,
+            yes_price=0.0,
+            no_ask=asks.get("no_ask"),
+        )
+
+    target = _precip_max_edge_target()
+
+    def evaluate(brackets: list[PrecipBracket]) -> MarketReport:
+        market = PrecipMonthlyMarket(id="pm1", slug="s", title="t", target=target, buckets=brackets)
+        return evaluate_precip_market(
+            market,
+            _precip_forecast_set(target, mean=2.5, var=0.6),
+            floor=0.0,
+            min_sources=0,
+            min_edge=0.0,
+            var_floor=PRECIP_VAR_FLOOR,
+        )
+
+    probe = evaluate(
+        [
+            bracket("2-3in", 2.0, 3.0, best_ask=0.5, no_ask=0.5),
+            bracket("5-6in", 5.0, 6.0, best_ask=0.5, no_ask=0.5),
+        ]
+    )
+    p_mid = _side_for(probe, "2-3in", "YES").p_win
+    p_tail_no = _side_for(probe, "5-6in", "NO").p_win
+    report = evaluate(
+        [
+            bracket("2-3in", 2.0, 3.0, best_ask=p_mid - 0.1500),
+            bracket("5-6in", 5.0, 6.0, no_ask=p_tail_no - 0.1475),
+        ]
+    )
+    mid, tail = _side_for(report, "2-3in", "YES"), _side_for(report, "5-6in", "NO")
+    assert mid.edge > tail.edge  # gross order
+    assert mid.net_edge < tail.net_edge  # net order is the reverse
+    assert [o.bucket_label for o in report.outcomes] == ["5-6in", "2-3in"]
     nets = [o.net_edge for o in report.outcomes]
     assert nets == sorted(nets, reverse=True)

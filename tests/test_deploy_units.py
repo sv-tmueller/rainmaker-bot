@@ -1,9 +1,9 @@
 """Static checks on the systemd units under deploy/ (#480).
 
 `systemd-analyze verify` exits 0 even for unknown keys and bad values, and
-only prints "ignoring ..." for them. So this test fails on any output, not just
-a nonzero exit. It skips only where the tool is absent (CI's ubuntu runner has
-it, so the skip is a local-only case).
+only prints "ignoring ..." for them. So the verify test fails on any output
+about the repo units, not just a nonzero exit. It skips only where the tool is
+absent (CI's ubuntu runner has it, so the skip is a local-only case).
 """
 
 import re
