@@ -235,6 +235,21 @@ def test_order_book_rejects_bad_min_size_or_tick(overrides):
         _book_with(**overrides)
 
 
-def test_order_book_requires_min_size_and_tick():
+def test_order_book_accepts_zero_min_order_size():
+    assert _book_with(min_order_size=0.0).min_order_size == 0.0
+
+
+@pytest.mark.parametrize("missing", ["min_order_size", "tick_size"])
+def test_order_book_requires_min_size_and_tick(missing):
+    fields: dict[str, Any] = {
+        "asset_id": "tok",
+        "market": "0xabc",
+        "timestamp_ms": 1,
+        "min_order_size": 5.0,
+        "tick_size": 0.001,
+        "bids": [],
+        "asks": [],
+    }
+    del fields[missing]
     with pytest.raises(ValueError):
-        OrderBook(asset_id="tok", market="0xabc", timestamp_ms=1, bids=[], asks=[])  # type: ignore[call-arg]
+        OrderBook(**fields)

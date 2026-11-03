@@ -1,16 +1,20 @@
 import inspect
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any, get_args
 
+import httpx
 import pytest
+from pytest_httpx import HTTPXMock
 
-from rainmaker.polymarket.book import BookLevel, OrderBook, walk_asks
+from rainmaker.polymarket.book import CLOB_BOOK_URL, BookLevel, OrderBook, fetch_book, walk_asks
 from rainmaker.store.record import PaperOrderStatus
 from rainmaker.trading.pricing import FillStatus, PaperFill, price_paper_order
 
 FIXTURES = Path(__file__).parent / "fixtures"
+BOOK_URL = re.compile(re.escape(CLOB_BOOK_URL))
 f = 0.05  # local test fee rate; the real constant lives in config (#491)
 
 
@@ -26,21 +30,11 @@ def _book(asks: list[tuple[float, float]], min_order_size: float = 5.0) -> Order
     )
 
 
-def _fixture_book(name: str) -> OrderBook:
+def _fixture_book(httpx_mock: HTTPXMock, name: str) -> OrderBook:
     data: dict[str, Any] = json.loads((FIXTURES / name).read_text())
-
-    def level(raw: dict[str, str]) -> BookLevel:
-        return BookLevel(price=float(raw["price"]), size=float(raw["size"]))
-
-    return OrderBook(
-        asset_id=data["asset_id"],
-        market=data["market"],
-        timestamp_ms=int(data["timestamp"]),
-        min_order_size=float(data["min_order_size"]),
-        tick_size=float(data["tick_size"]),
-        bids=[level(lv) for lv in data["bids"]],
-        asks=[level(lv) for lv in data["asks"]],
-    )
+    httpx_mock.add_response(url=BOOK_URL, json=data)
+    with httpx.Client() as client:
+        return fetch_book(data["asset_id"], client)
 
 
 def _price(book: OrderBook, stake: float, limit: float = 0.99, fee: float = f) -> PaperFill:
@@ -150,11 +144,14 @@ def test_zero_fee_matches_walk_asks():
 
 
 def test_exact_depth_is_filled_despite_float_drift():
-    asks = [(0.1, 30), (0.2, 30), (0.7, 30)]
-    stake = sum(p * (1 + f * (1 - p)) * s for p, s in asks)
+    # The stake is price plus per-share fee, summed per level. For this book
+    # the walk is left with a residual of about 1.5e-14 USDC, not exactly 0,
+    # so only the tolerance on `remaining` keeps the status `filled`.
+    asks = [(0.453, 160), (0.544, 8)]
+    stake = sum((p + f * p * (1 - p)) * s for p, s in asks)
     fill = _price(_book(asks), stake)
     assert fill.status == "filled"
-    assert fill.shares == pytest.approx(90.0)
+    assert fill.shares == pytest.approx(168.0)
 
 
 @pytest.mark.parametrize("fee", [0.0, 0.05, 0.5])
@@ -175,22 +172,22 @@ def test_fill_plus_fee_never_exceeds_stake(fee):
 # --- fixtures ---
 
 
-def test_no_fixture_filled_within_limit():
-    fill = _price(_fixture_book("clob_book_nyc_7071_no.json"), 5.0, limit=0.02)
+def test_no_fixture_filled_within_limit(httpx_mock):
+    fill = _price(_fixture_book(httpx_mock, "clob_book_nyc_7071_no.json"), 5.0, limit=0.02)
     assert fill.status == "filled"
     assert fill.spent_usdc == pytest.approx(4.76299, abs=1e-4)
     assert fill.fee_usdc == pytest.approx(0.23701, abs=1e-4)
     assert fill.spent_usdc + fill.fee_usdc == pytest.approx(5.0)
 
 
-def test_yes_fixture_ask_above_limit_is_no_fill():
-    fill = _price(_fixture_book("clob_book_nyc_7071_yes.json"), 5.0, limit=0.99)
+def test_yes_fixture_ask_above_limit_is_no_fill(httpx_mock):
+    fill = _price(_fixture_book(httpx_mock, "clob_book_nyc_7071_yes.json"), 5.0, limit=0.99)
     assert fill.status == "no_fill"
     assert fill.avg_price is None
 
 
-def test_empty_fixture_is_no_fill():
-    fill = _price(_fixture_book("clob_book_empty.json"), 5.0)
+def test_empty_fixture_is_no_fill(httpx_mock):
+    fill = _price(_fixture_book(httpx_mock, "clob_book_empty.json"), 5.0)
     assert fill.status == "no_fill"
     assert fill.shares == 0.0
 
