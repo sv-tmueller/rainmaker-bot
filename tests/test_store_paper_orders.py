@@ -1,3 +1,4 @@
+import math
 from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
@@ -96,6 +97,18 @@ def test_record_paper_order_round_trips_every_column(conn):
         {"status": "filled", "fill_price": None},
         {"status": "partial", "shares": 0.0},
         {"created_at": datetime(2026, 7, 1, 12, 0)},
+        {"fill_price": math.nan},
+        {"fill_price": math.inf},
+        {"fill_price": 0.0},
+        {"fill_price": -0.4},
+        {"status": "no_fill", "fill_price": math.nan},
+        {"shares": math.nan},
+        {"shares": math.inf},
+        {"status": "no_fill", "fill_price": None, "shares": math.nan},
+        {"status": "no_fill", "fill_price": None, "shares": -1.0},
+        {"fee_usdc": math.nan},
+        {"fee_usdc": -0.5},
+        {"fee_usdc": math.inf},
     ],
 )
 def test_record_paper_order_rejects_values_that_would_read_as_zero_exposure(conn, overrides):

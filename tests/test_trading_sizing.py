@@ -111,6 +111,17 @@ def test_open_position_takes_precedence_over_open_cap():
     assert blocked_reasons(result) == ["open_position"]
 
 
+def test_duplicate_in_batch_takes_precedence_over_open_cap():
+    # Open 145 leaves room for one 10 stake (cap 150). The second candidate on
+    # the same outcome must be a duplicate, not an open_cap block.
+    result = run(
+        [cand("m1", "A", 0.5, "YES"), cand("m1", "A", 0.4, "NO")],
+        open_exposure_usdc=145.0,
+    )
+    assert order_keys(result) == [("m1", "A", "YES")]
+    assert blocked_reasons(result) == ["duplicate_in_batch"]
+
+
 def test_cap_blocked_candidate_is_not_counted_as_planned():
     result = run(
         [cand("m1", "o1", 0.5, "YES"), cand("m1", "o1", 0.4, "NO")],
@@ -261,6 +272,12 @@ def test_negative_exposure_or_cap_raises(name):
 @pytest.mark.parametrize("positions", [0, -1])
 def test_max_positions_below_one_raises(positions):
     with pytest.raises(ValueError, match="max_positions_per_outcome"):
+        run([cand("m1", "a", 0.1)], max_positions_per_outcome=positions)
+
+
+@pytest.mark.parametrize("positions", [2, 3])
+def test_max_positions_above_one_raises(positions):
+    with pytest.raises(ValueError, match="spec decision and a count query"):
         run([cand("m1", "a", 0.1)], max_positions_per_outcome=positions)
 
 
