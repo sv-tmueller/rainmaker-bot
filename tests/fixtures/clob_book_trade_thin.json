@@ -1,0 +1,18 @@
+{
+  "market": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "asset_id": "replaced-by-the-test-with-the-requested-token",
+  "timestamp": "1793647809952",
+  "hash": "0000000000000000000000000000000000000000",
+  "bids": [
+    {"price": "0.50", "size": "100"}
+  ],
+  "asks": [
+    {"price": "0.75", "size": "500"},
+    {"price": "0.59", "size": "3"},
+    {"price": "0.58", "size": "3"}
+  ],
+  "min_order_size": "5",
+  "tick_size": "0.001",
+  "neg_risk": true,
+  "last_trade_price": "0.580"
+}
