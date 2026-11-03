@@ -1,0 +1,37 @@
+[Unit]
+Description=rainmaker 3h job failure alert
+
+[Service]
+Type=oneshot
+User=rainmaker
+Group=rainmaker
+WorkingDirectory=/var/lib/rainmaker
+StateDirectory=rainmaker
+EnvironmentFile=/etc/rainmaker/rainmaker.env
+# The alert path needs the GitHub token and the ping URL, never the database
+# or the Synoptic credentials.
+UnsetEnvironment=DATABASE_URL RAINYDAY_SYNOPTIC_TOKEN
+ExecStart=/usr/bin/bash /opt/rainmaker/deploy/rainmaker-run-failure.sh
+TimeoutStartSec=5min
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+UMask=0027
