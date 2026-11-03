@@ -6,9 +6,9 @@ The advisory recommends a bet only when all four gates hold
 - `p_win >= CONFIDENCE_FLOOR` (0.80, relaxed from 0.90; see the resolution below)
 - `n_sources >= MIN_SOURCES` (2)
 - `net_edge >= MIN_EDGE` (0.12, raised from 0.05 to 0.07 in #350 and to 0.12 in
-  #440; see the 2026-08-13 and 2026-10-19 updates below). Since 2026-11-02 the
-  floor compares edge net of the Polymarket taker fee (see the 2026-11-02
-  update at the end)
+  #440; see the 2026-08-13 and 2026-10-19 updates below). From the first run
+  after #491 merges, the floor compares edge net of the Polymarket taker fee
+  (see the 2026-11-02 update at the end)
 - `edge <= MAX_EDGE` (0.25; see the 2026-08-14 update below). The cap stays on
   gross edge
 
@@ -1153,7 +1153,9 @@ apply the Kalshi fee once its coefficient is confirmed.
   Polymarket). So the "live (replayed)" anchor replays the gate that runs now.
   Rows recorded before this era were recommended on gross edge, so the replayed
   anchor can sit below "live (as recorded)": era drift, not a bug.
-  `--since <merge date>` restricts any view to this era.
+  To restrict any view to this era, get the date of the #491 merge commit with
+  `git log -1 --format=%cs <merge commit of #491>` and pass it to `track`,
+  `gate-sweep` and `venue-decomp` as `--since YYYY-MM-DD`.
 - `backtest-pnl` and `recover-gap` inherit the fee through `evaluate_market`.
   The weekly-metrics replay therefore drops bets that cleared only gross, and
   its bet counts from the first run after the merge are not comparable with

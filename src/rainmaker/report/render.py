@@ -72,7 +72,7 @@ def render_terminal(report: Report) -> str:
     lines: list[str] = [
         f"Rainmaker report {report.run_date.isoformat()}",
         "",
-        "P(win)=our probability  ask=price paid  "
+        "P(win)=our probability  ask=quoted price (Polymarket fee extra)  "
         "side YES=buy bucket, NO=sell bucket  (all 0-1)  REC=passes gates",
         f"Edge is {_EDGE_LEGEND}.",
         "",
@@ -134,7 +134,7 @@ def render_markdown(report: Report) -> str:
     lines: list[str] = [
         f"# Rainmaker report {report.run_date.isoformat()}",
         "",
-        "_P(win) = our probability  ask = price paid"
+        "_P(win) = our probability  ask = quoted price (Polymarket fee extra)"
         "  side YES = buy bucket, NO = sell bucket"
         "  (all 0-1)  rec = passes gates_",
         "",

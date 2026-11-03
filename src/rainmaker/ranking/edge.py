@@ -30,7 +30,8 @@ def _f_to_c(sample: ForecastSample) -> ForecastSample:
 # Polymarket.
 KALSHI_FEE_GAP = (
     "Kalshi taker fee not applied (coefficient unconfirmed): edges on this "
-    "market are gross and overstate it against Polymarket, whose edges are net of fees."
+    "market are gross and overstate this market's edge against Polymarket, "
+    "whose edges are net of fees."
 )
 
 

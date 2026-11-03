@@ -584,3 +584,19 @@ def test_recommended_summary_sorts_by_net_edge_not_gross():
         out = render(report)
         summary = out.split("Highest temperature in Seattle")[0]
         assert summary.index("NYC") < summary.index("Seattle")
+
+
+def test_recommended_summary_orders_bets_within_a_city_by_net_edge_not_gross():
+    base = _rec_market("NYC", "Highest temperature in NYC on May 31?", 0.40)
+    # 70-71 has the larger gross edge but the smaller net edge.
+    first = base.outcomes[0].model_copy(update={"edge": 0.40, "net_edge": 0.30})
+    second = base.outcomes[0].model_copy(
+        update={"bucket_label": "72-73°F", "edge": 0.35, "net_edge": 0.34}
+    )
+    report = Report(
+        run_date=date(2026, 5, 31),
+        markets=[base.model_copy(update={"outcomes": [first, second]})],
+    )
+    for render in (render_terminal, render_markdown):
+        summary = render(report).split("Highest temperature in NYC")[0]
+        assert summary.index("72-73°F") < summary.index("70-71°F")

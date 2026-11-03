@@ -2020,6 +2020,16 @@ def test_max_edge_cap_compares_gross_not_net():
     assert o.recommended is False
 
 
+def test_max_edge_cap_compares_gross_not_net_on_no_side():
+    p_no = _max_edge_probe_p_win("NO")
+    # gross 0.255 is over the 0.25 cap; net (about 0.2456 at no_ask 0.25) would
+    # sneak under it.
+    report = _fee_gate_eval(_max_edge_market(no_ask=p_no - 0.255))
+    o = _side(report, "NO")
+    assert o.edge > 0.25 > o.net_edge
+    assert o.recommended is False
+
+
 def test_gross_at_cap_is_kept_when_net_clears_floor():
     p_win = _max_edge_probe_p_win("YES")
     o = _side(_fee_gate_eval(_max_edge_market(best_ask=p_win - 0.25)), "YES")
@@ -2115,9 +2125,10 @@ def test_precip_kalshi_copy_stays_gross_and_recommended():
 
 def test_precip_cap_compares_gross_and_sorts_by_net():
     p_win, p_no = _precip_probe()
-    report = _precip_fee_eval(_precip_max_edge_market(best_ask=p_win - 0.255, no_ask=p_no - 0.20))
-    yes = _side(report, "YES")
-    assert yes.edge > 0.25 > yes.net_edge
-    assert yes.recommended is False
+    report = _precip_fee_eval(_precip_max_edge_market(best_ask=p_win - 0.255, no_ask=p_no - 0.255))
+    for side in ("YES", "NO"):
+        o = _side(report, side)
+        assert o.edge > 0.25 > o.net_edge
+        assert o.recommended is False
     nets = [o.net_edge for o in report.outcomes]
     assert nets == sorted(nets, reverse=True)

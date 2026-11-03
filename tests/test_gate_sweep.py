@@ -130,10 +130,10 @@ def test_tightening_min_edge_drops_marginal_bet_but_keeps_qualifying_bet():
         ),
     ]
     base = replay_policy(rows, Policy(label="base", min_edge=0.05))
-    assert base["n_bets"] == 2  # m1's 0.06 bet and m2's 0.20 pick
+    assert base["n_bets"] == 2  # m1's 0.08 bet and m2's 0.20 pick
 
     tightened = replay_policy(rows, Policy(label="tight", min_edge=0.10))
-    assert tightened["n_bets"] == 1  # m1's marginal 0.06 bet is gone
+    assert tightened["n_bets"] == 1  # m1's marginal 0.08 bet is gone
     assert tightened["staked"] == pytest.approx(0.50)  # only m2's 0.20-edge pick remains
 
 
@@ -187,7 +187,10 @@ def test_ksfo_tmax_row_must_clear_base_plus_station_delta():
         city="San Francisco",
         variable="TMAX",
         p_win=0.85,
-        edge=0.13,  # clears base (0.12) but not base + KSFO/TMAX delta (0.17)
+        # Net of the fee (0.012 at ask 0.60) this is 0.133: it clears base (0.12)
+        # but not base + KSFO/TMAX delta (0.17). Keep the net inside [0.12, 0.17)
+        # or this row stops pinning STATION_EDGE_DELTA.
+        edge=0.145,
         recommended=1,  # stored recommended from an earlier era, before the delta applied
         ask=0.60,
     )
