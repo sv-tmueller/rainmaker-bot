@@ -84,6 +84,17 @@ _MIGRATIONS: list[tuple[str, list[str]]] = [
             "ALTER TABLE tracking_snapshot_new RENAME TO tracking_snapshot",
         ],
     ),
+    # Paper-order grading (#492): won is 1/0, NULL means not graded or not
+    # gradable (same shape as predictions.won, 0006); pnl_usdc is realized P&L
+    # after the fee. No graded_at: grading is idempotent on won IS NULL.
+    # 0014's RLS already covers the table.
+    (
+        "0015_paper_orders_grading",
+        [
+            "ALTER TABLE paper_orders ADD COLUMN won INTEGER",
+            "ALTER TABLE paper_orders ADD COLUMN pnl_usdc REAL",
+        ],
+    ),
 ]
 
 # Tables created by the base schema. Every one gets RLS enabled on Postgres so

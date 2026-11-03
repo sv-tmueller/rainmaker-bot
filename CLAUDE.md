@@ -115,6 +115,10 @@ Python 3.11+ managed with uv. Commands:
   edge gap: ROI by city x venue, plus a price-proxy reprojection at implied_prob
   vs ask; read-only diagnostic, ad hoc, not part of a scheduled workflow;
   `--since YYYY-MM-DD` matches `track`/`tail-check`)
+- Paper report: `uv run rainmaker paper-report` (report over the paper
+  orders: status counts, fill rate, net ROI, execution gap, per-era counts, and
+  the PENDING / GO / NO-GO verdict against the go-live criterion; read-only,
+  `--db`; the policy era is the `PAPER_ERAS` constant, not a flag)
 - Snapshot: `uv run rainmaker snapshot` (upsert the daily metrics row the dashboard reads)
 - Backfill: `uv run rainmaker backfill --city <X>` (fit a calibration cell and
   backtest accuracy from history; `--city all` covers every city)
@@ -159,6 +163,7 @@ src/rainmaker/
   venue_decomp.py     decompose the Kalshi-vs-Polymarket edge gap (city x venue, price-proxy)
   recover_gap.py      rediscover + reprice runs missed during the pre-#361 ICAO-guard gap
   settlement_divergence.py  divergence spike: NCEI vs ASOS vs resolved winners
+  paper_tracking.py grade paper orders at settle + the paper-report go-live verdict
   forecasts/
     base.py           ForecastSample, ForecastSet, ForecastSource protocol
     nws.py            NWS fetch + parse

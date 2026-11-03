@@ -37,6 +37,7 @@ from rainmaker.backfill import fetch_actuals, fetch_monthly_precip
 from rainmaker.config import INTL_STATIONS, PRECIP_STATIONS, STATIONS
 from rainmaker.forecasts.asos import ICAO_TO_ASOS_STATION, fetch_asos_daily_extreme
 from rainmaker.forecasts.wrh import fetch_wrh_hourly_extreme
+from rainmaker.paper_tracking import grade_paper_orders, regrade_paper_orders_for_market
 from rainmaker.probability.outcomes import settles
 from rainmaker.probability.precip_outcomes import precip_settles
 from rainmaker.store.db import Conn
@@ -313,6 +314,7 @@ def run_settlement(
         settled += 1
 
     _grade_predictions(conn)
+    grade_paper_orders(conn)
     return settled, waiting
 
 
@@ -321,7 +323,7 @@ def regrade_polymarket_settlements(conn: Conn, client: httpx.Client, regraded_at
 
     Fetches the daily extreme for every settled Polymarket TMAX/TMIN market via wrh
     (primary) with ASOS fallback, overwrites outcomes.actual_value, and re-grades
-    predictions.won.
+    predictions.won and the paper orders' won and pnl_usdc.
 
     Markets are batched by (station_icao, variable): one request covers all markets
     at the same station for the same variable.
@@ -373,6 +375,7 @@ def regrade_polymarket_settlements(conn: Conn, client: httpx.Client, regraded_at
                 continue
             record_outcome(conn, m["market_id"], value, regraded_at)
             _grade_predictions_for_market(conn, m["market_id"], value)
+            regrade_paper_orders_for_market(conn, m["market_id"], value)
             regraded += 1
 
     return regraded

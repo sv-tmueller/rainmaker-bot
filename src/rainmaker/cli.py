@@ -42,6 +42,7 @@ from rainmaker.forecasts.precip import PrecipForecastSet, build_precip_forecast_
 from rainmaker.gate_sweep import run_sweep
 from rainmaker.httpclient import OPEN_METEO_DOMAINS, build_backfill_client, build_client
 from rainmaker.kalshi.client import discover_kalshi_markets, discover_kalshi_precip_markets
+from rainmaker.paper_tracking import compute_paper_report, load_paper_rows, render_paper_report
 from rainmaker.pnl_backtest import backtest_pnl, render_pnl_report
 from rainmaker.polymarket.client import (
     discover_markets,
@@ -560,6 +561,18 @@ def _prune(db_path: str) -> None:
     finally:
         conn.close()
     print(f"pruned {deleted} redundant intraday row(s) -> {_db_label(db_path)}")
+
+
+def _paper_report(db_path: str) -> None:
+    if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        init_schema(conn)
+        rows = load_paper_rows(conn)
+    finally:
+        conn.close()
+    print(render_paper_report(compute_paper_report(rows)))
 
 
 def _track(db_path: str, since: str | None = None) -> None:
@@ -1213,6 +1226,12 @@ def _main(argv: list[str] | None = None) -> None:
     prune = sub.add_parser("prune", help="delete redundant intraday rows for settled markets")
     prune.add_argument("--db", default=DB_PATH, help="SQLite database path")
 
+    paper_report = sub.add_parser(
+        "paper-report",
+        help="grade paper orders against the go-live criterion (read-only)",
+    )
+    paper_report.add_argument("--db", default=DB_PATH, help="SQLite database path")
+
     track = sub.add_parser("track", help="report P&L and calibration over settled markets")
     track.add_argument("--db", default=DB_PATH, help="SQLite database path")
     track.add_argument(
@@ -1374,6 +1393,8 @@ def _main(argv: list[str] | None = None) -> None:
         _regrade(db)
     elif args.command == "prune":
         _prune(db)
+    elif args.command == "paper-report":
+        _paper_report(db)
     elif args.command == "track":
         since = args.since.isoformat() if args.since is not None else None
         _track(db, since)
