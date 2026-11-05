@@ -29,6 +29,77 @@ export function rankBets(bets: Bet[]): Bet[] {
   return [...bets].sort((a, b) => b.shownEdge - a.shownEdge);
 }
 
+// A recommended prediction row as read by the bets query, before per-market
+// enrichment or the price lookup.
+export type RawBetPredictionRow = {
+  market_id: string;
+  bucket: string;
+  side: string | null;
+  p_win: number;
+  edge: number;
+  dist_params: string | null;
+};
+
+// Per-market fields that decorate a prediction row into a Bet. venue stays
+// nullable here: mapBetRow owns the null -> "polymarket" default, so the
+// defaulted path is exercised through the helper rather than at the call site.
+export type BetEnrichment = {
+  title: string;
+  city: string;
+  venue: string | null;
+  variable: string;
+  slug: string | null;
+};
+
+// A stored side is a string; anything but an explicit "NO" is YES (legacy rows
+// are YES).
+function sideOf(s: unknown): "YES" | "NO" {
+  return s === "NO" ? "NO" : "YES";
+}
+
+// One prediction row -> one Bet. Pure: no Supabase access, no I/O. The caller
+// looks up the price by side and passes the raw Map result (undefined when the
+// latest run stored no price), and the null normalization happens here so the
+// "no ask" path is owned and tested in one place rather than at the call site.
+export function mapBetRow(
+  p: RawBetPredictionRow,
+  e: BetEnrichment,
+  rawAsk: number | null | undefined,
+): Bet {
+  let mu: number | null = null;
+  let sigma: number | null = null;
+  let nSources: number | null = null;
+  try {
+    const d = JSON.parse(p.dist_params as string);
+    if (typeof d?.mu === "number") mu = d.mu;
+    if (typeof d?.sigma === "number") sigma = d.sigma;
+    if (typeof d?.n_sources === "number") nSources = d.n_sources;
+  } catch {
+    // no parsable dist_params -> blank forecast cells
+  }
+  const venue = e.venue ?? "polymarket";
+  const ask = rawAsk ?? null;
+  const edge = p.edge;
+  const shown = shownEdge(edge, ask, venue);
+  return {
+    title: e.title,
+    city: e.city,
+    venue,
+    variable: e.variable,
+    slug: e.slug,
+    bucket: p.bucket,
+    side: sideOf(p.side),
+    mu,
+    sigma,
+    nSources,
+    pWin: p.p_win,
+    ask,
+    edge,
+    shownEdge: shown.value,
+    edgeBasis: shown.basis,
+  };
+}
+
 export type RunInfo = {
   startedAt: string;
   okSources: string[] | null;
@@ -317,8 +388,9 @@ export async function getDashboardData() {
 
   const titleOf = new Map((marketsQ.data ?? []).map((m) => [m.id, m.title as string]));
   const cityOf = new Map((marketsQ.data ?? []).map((m) => [m.id, (m.city as string | null) ?? ""]));
+  // Raw venue (nullable): mapBetRow owns the null -> "polymarket" default.
   const venueOf = new Map(
-    (marketsQ.data ?? []).map((m) => [m.id, (m.venue as string | null) ?? "polymarket"]),
+    (marketsQ.data ?? []).map((m) => [m.id, (m.venue as string | null) ?? null]),
   );
   const variableOf = new Map(
     (marketsQ.data ?? []).map((m) => [m.id, (m.variable as string | null) ?? ""]),
@@ -327,6 +399,13 @@ export async function getDashboardData() {
   const settleDateOf = new Map(
     (marketsQ.data ?? []).map((m) => [m.id, (m.settlement_date as string | null) ?? null]),
   );
+  const enrichmentOf = (id: string): BetEnrichment => ({
+    title: titleOf.get(id) ?? id,
+    city: cityOf.get(id) ?? "",
+    venue: venueOf.get(id) ?? null,
+    variable: variableOf.get(id) ?? "",
+    slug: slugOf.get(id) ?? null,
+  });
   // Assemble run health.
   let run: RunInfo | null = null;
   if (runRow) {
@@ -343,7 +422,6 @@ export async function getDashboardData() {
   }
 
   // Assemble bets for the latest run. Price is keyed by side; legacy rows are YES.
-  const sideOf = (s: unknown): "YES" | "NO" => (s === "NO" ? "NO" : "YES");
   const askOf = new Map(
     (latestPrices.data ?? []).map((p) => [
       `${p.market_id}|${p.outcome}|${sideOf(p.side)}`,
@@ -351,41 +429,13 @@ export async function getDashboardData() {
     ]),
   );
   const bets: Bet[] = rankBets(
-    (latestPreds.data ?? []).map((p): Bet => {
-      let mu: number | null = null;
-      let sigma: number | null = null;
-      let nSources: number | null = null;
-      try {
-        const d = JSON.parse(p.dist_params as string);
-        if (typeof d?.mu === "number") mu = d.mu;
-        if (typeof d?.sigma === "number") sigma = d.sigma;
-        if (typeof d?.n_sources === "number") nSources = d.n_sources;
-      } catch {
-        // no parsable dist_params -> blank forecast cells
-      }
-      const side = sideOf(p.side);
-      const venue = venueOf.get(p.market_id) ?? "polymarket";
-      const ask = askOf.get(`${p.market_id}|${p.bucket}|${side}`) ?? null;
-      const edge = p.edge as number;
-      const shown = shownEdge(edge, ask, venue);
-      return {
-        title: titleOf.get(p.market_id) ?? (p.market_id as string),
-        city: cityOf.get(p.market_id) ?? "",
-        venue,
-        variable: variableOf.get(p.market_id) ?? "",
-        slug: slugOf.get(p.market_id) ?? null,
-        bucket: p.bucket as string,
-        side,
-        mu,
-        sigma,
-        nSources,
-        pWin: p.p_win as number,
-        ask,
-        edge,
-        shownEdge: shown.value,
-        edgeBasis: shown.basis,
-      };
-    }),
+    (latestPreds.data ?? []).map((p) =>
+      mapBetRow(
+        p as RawBetPredictionRow,
+        enrichmentOf(p.market_id as string),
+        askOf.get(`${p.market_id}|${p.bucket}|${sideOf(p.side)}`),
+      ),
+    ),
   );
 
   // Assemble snapshots, split by venue. The query above reads newest-first
