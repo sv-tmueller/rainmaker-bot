@@ -150,7 +150,10 @@ does this:
    the limit price, and price the order with `price_paper_order`
    (`trading/pricing.py`, #490). It takes the fee rate as an argument and walks
    the book with a budget sized so that `spent_usdc + fee_usdc <=
-   TRADE_STAKE_USDC`. It applies the minimum order size. The trader records the
+   TRADE_STAKE_USDC`. It applies the minimum order size. An order whose best ask
+   gives a gross edge over `MAX_EDGE` is refused whole (no row, counted as
+   `implausible_edge`), because a cheap fill strengthens the stale-quote or
+   model-error signal the gate's cap exists for. The trader records the
    result, spend and fee included, in `paper_orders` (#477).
 9. Print a summary: orders by status, USDC staked, how many orders each cap
    blocked, and the geoblock result.

@@ -249,8 +249,10 @@ What a paper run does, in order:
    position per outcome (across runs too).
 5. For each order, fetches the token's book, walks it with the fee-aware limit
    price (the highest ask whose net edge still meets the gate floor, station
-   delta included) and records a `filled`, `partial` or `no_fill` row. A failed
-   book fetch records no row and is counted.
+   delta included) and records a `filled`, `partial` or `no_fill` row. An order
+   whose best ask gives a gross edge over `MAX_EDGE` is refused whole and
+   counted as `implausible_edge`: no row is recorded. A failed book fetch
+   records no row and is counted.
 6. Prints the summary: orders by status, USDC staked, how many orders each cap
    blocked, book errors and the geoblock result.
 

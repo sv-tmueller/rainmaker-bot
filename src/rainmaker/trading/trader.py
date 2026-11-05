@@ -26,6 +26,11 @@ Paper-mode behaviour:
   (`MIN_EDGE` plus the station delta; the precip gate has no delta).
 - A failed book fetch records no row. It still used its planned cap room within
   the run, which is conservative.
+- An order whose best ask gives a gross edge over `MAX_EDGE` is refused whole
+  and counted as `implausible_edge`. A cheap fill strengthens the stale-quote
+  or model-error signal the cap exists for, so the trader refuses rather than
+  skipping the cheap levels for pricier ones. Its planned cap room is used, as
+  for a failed book fetch.
 """
 
 import math
@@ -37,6 +42,7 @@ from typing import Any, Literal, get_args
 import httpx
 
 from rainmaker.config import (
+    MAX_EDGE,
     MIN_EDGE,
     POLYMARKET_TAKER_FEE_RATE,
     STATION_EDGE_DELTA,
@@ -59,7 +65,7 @@ from rainmaker.trading.sizing import Candidate, size_orders
 
 TradeMode = Literal["off", "paper", "live"]
 
-_SKIP_REASONS = ("bad_row", "no_token", "no_limit")
+_SKIP_REASONS = ("bad_row", "no_token", "no_limit", "implausible_edge")
 _BLOCK_REASONS = ("halted", "open_position", "duplicate_in_batch", "open_cap", "daily_cap")
 _STATUSES = ("filled", "partial", "no_fill")
 
@@ -299,6 +305,16 @@ def run_paper_trade(
             summary.book_errors += 1
             summary.order_lines.append(
                 f"book error: {c.market_id} {c.outcome} {c.side}: {type(exc).__name__}"
+            )
+            continue
+        # asks are sorted best-first, so asks[0] is the best ask. Refuse the
+        # whole order: a marketable limit takes the cheapest asks first, so
+        # skipping the cheap levels would not mirror a live order.
+        if book.asks and ctx.p_win - book.asks[0].price > MAX_EDGE:
+            summary.skipped["implausible_edge"] += 1
+            summary.order_lines.append(
+                f"skipped: {c.market_id} {c.outcome} {c.side}: implausible edge "
+                "(p_win - best_ask over MAX_EDGE)"
             )
             continue
         fill = price_paper_order(
