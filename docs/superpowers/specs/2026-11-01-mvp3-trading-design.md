@@ -633,5 +633,8 @@ updates the code.
   keeps `min_order_size` and `tick_size`, and the walk uses `min_order_size`.
   `neg_risk` is for the live batch.
 - **Denmark.** Closed. The hosting decision of 2026-11-02 supersedes it.
-- **Optional guard.** Fail closed if Gamma's fee schedule disagrees with
-  `POLYMARKET_TAKER_FEE_RATE`. Not planned yet.
+- **Optional guard.** Resolved by #504. A market whose Gamma fee schedule
+  disagrees with `POLYMARKET_TAKER_FEE_RATE` is barred from recommendations
+  and the reason printed, so a drifted schedule cannot pass a wrong net edge
+  through the gate. See `docs/architecture/recommendation-gate.md`
+  ("Polymarket fee-schedule drift guard").

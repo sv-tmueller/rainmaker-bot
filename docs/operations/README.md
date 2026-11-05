@@ -255,9 +255,9 @@ Optional flags: `--reports-dir <dir>` (default `reports/`) and `--db <path>`.
 
 ### How to read it
 
-The report leads with **Recommended bets (ranked by edge)**. That is the list
-to act on. If it says "No bets pass the gates today", there is nothing worth
-betting and you stop there.
+The report leads with **Recommended bets (grouped by city, best edge first)**.
+That is the list to act on. If it says "No bets pass the gates today", there
+is nothing worth betting and you stop there.
 
 Each bet shows:
 
