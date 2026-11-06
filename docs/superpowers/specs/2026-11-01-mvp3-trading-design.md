@@ -487,8 +487,14 @@ The spec states the limits plainly.
   outcome agree. When `regrade.yml` rewrites an outcome, the paper orders are
   re-graded. ROI, fill rate and the execution gap count only rows with status
   `filled` or `partial`.
-- Bootstrap confidence intervals are deferred out of #492. The go-live check is
-  70 or more days out, so a follow-up issue should land before then.
+- The bootstrap ROI interval landed in #513. It clusters the latest era's sample
+  by settlement date, draws that many dates with replacement 10,000 times at a
+  fixed seed, and pools each resample's ROI as `sum(pnl) / sum(outlay)`. The
+  report prints the 90% percentile interval, the resample count and the date
+  count just above the verdict. It never feeds the verdict: it is a separate
+  `RoiInterval` on the report, not a `Check`, so the four go-live thresholds
+  cannot move with it. Under two settlement dates no interval is printed, since
+  every resample of one date is identical.
 
 ## Hosting and cutover
 

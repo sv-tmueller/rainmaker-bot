@@ -15,6 +15,9 @@ from rainmaker.paper_tracking import (
     GO_LIVE_MIN_NET_ROI,
     GO_LIVE_MIN_ORDERS,
     PAPER_ERAS,
+    ROI_INTERVAL_LEVEL,
+    ROI_INTERVAL_MIN_DATES,
+    ROI_INTERVAL_RESAMPLES,
     PaperEra,
     compute_paper_report,
     grade_paper_orders,
@@ -542,3 +545,84 @@ def test_render_shows_verdict_checks_and_counts(conn):
 def test_render_of_an_empty_store_is_pending(conn):
     text = render_paper_report(compute_paper_report(load_paper_rows(conn)))
     assert "PENDING" in text
+
+
+# --- report: bootstrap ROI interval (#513) ---------------------------------
+
+
+def _spread(n=400, dates=60):
+    # Every order on one date shares that date's weather, so a date wins or loses
+    # as a block. That is the correlation the bootstrap has to resample.
+    return [_row(i, won=(i % dates) < dates // 2, day=i % dates) for i in range(n)]
+
+
+def test_roi_interval_tolerates_a_null_settlement_date():
+    # settlement_date is nullable in the schema; the review flagged that
+    # sorted(by_date) raised TypeError when None mixed with date strings.
+    rows = _spread(n=10, dates=2)
+    rows[0] = {**rows[0], "settlement_date": None}
+    report = compute_paper_report(rows)
+    # The None row clusters under "" instead of crashing the sort. The
+    # report-level count (a set) always tolerated None; it sees 3 dates here.
+    assert report.roi_interval is not None
+    assert report.dates == 3
+    assert report.roi_interval.dates == 3
+
+
+def test_roi_interval_is_deterministic():
+    rows = _spread(dates=15)
+    a = compute_paper_report(rows).roi_interval
+    b = compute_paper_report(rows).roi_interval
+    assert a is not None and a == b
+    assert a.resamples == ROI_INTERVAL_RESAMPLES
+    assert a.level == ROI_INTERVAL_LEVEL
+    assert a.dates == 15
+    assert a.lo <= a.hi
+
+
+def test_roi_interval_widens_as_dates_fall_with_orders_held_constant():
+    wide = compute_paper_report(_spread(n=400, dates=5)).roi_interval
+    mid = compute_paper_report(_spread(n=400, dates=15)).roi_interval
+    narrow = compute_paper_report(_spread(n=400, dates=60)).roi_interval
+    assert wide is not None and mid is not None and narrow is not None
+    width = lambda iv: iv.hi - iv.lo  # noqa: E731
+    assert width(wide) > width(mid) > width(narrow)
+
+
+def test_too_few_dates_yields_no_interval_and_says_so():
+    one = compute_paper_report(_spread(n=10, dates=1))
+    assert one.dates == 1
+    assert one.roi_interval is None
+    assert "too few settlement dates" in render_paper_report(one)
+
+    empty = compute_paper_report([])
+    assert empty.dates == 0
+    assert empty.roi_interval is None
+    assert "too few settlement dates" in render_paper_report(empty)
+
+
+def test_at_the_floor_the_interval_is_computed():
+    assert ROI_INTERVAL_MIN_DATES == 2
+    report = compute_paper_report(_spread(n=40, dates=2))
+    assert report.dates == 2
+    assert report.roi_interval is not None
+
+
+def test_render_shows_level_resamples_and_date_count():
+    report = compute_paper_report(_spread(n=400, dates=15))
+    text = render_paper_report(report)
+    assert "90%" in text
+    assert "10000 resamples" in text
+    assert "15 settlement dates" in text
+
+
+def test_roi_interval_never_touches_the_verdict_path():
+    report = compute_paper_report(_baseline())
+    assert report.verdict == "GO"
+    assert [c.name for c in report.checks] == [
+        "sample",
+        "dates",
+        "net ROI",
+        "execution gap",
+    ]
+    assert report.roi_interval is not None
