@@ -503,7 +503,74 @@ def test_end_to_end_records_a_filled_a_partial_and_a_no_fill_order(conn, clob, c
 
     assert summary.recorded == {"filled": 1, "partial": 1, "no_fill": 1}
     assert summary.book_errors == 0
+    assert summary.skipped["implausible_edge"] == 0  # the empty book is not a refusal
     assert sorted(clob.fetched_tokens()[:3]) == ["yes-a", "yes-b", "yes-c"]
+
+
+# ---------------------------------------------------------------------------
+# the gross-edge cap
+# ---------------------------------------------------------------------------
+
+
+def test_a_gross_edge_over_max_edge_is_refused_and_counted_as_implausible_edge(conn, clob, client):
+    """The DEEP book's best ask is 0.58, so p_win 0.84 is a gross edge of 0.26."""
+    market = _market("900001", [_bucket("70-71°F", 70, 0.58, 0.45, token="a")])
+    seed(conn, [(market, [_outcome("70-71°F", "YES", 0.84, 0.58)])])
+    clob.books["yes-a"] = DEEP
+    summary = trade(conn, client)
+
+    assert rows(conn) == []
+    assert summary.skipped["implausible_edge"] == 1
+    assert clob.fetched_tokens() == ["yes-a"]  # the book is still fetched
+    assert summary.planned == 1
+    assert summary.planned_stake_usdc == pytest.approx(5.0)  # the cap room was used
+    text = render_trade_summary(summary)
+    assert "implausible_edge 1" in text
+    assert any("implausible edge" in line for line in text.splitlines())
+
+
+def test_the_cap_reads_the_live_book_not_the_quoted_ask(conn, clob, client):
+    """The policy keys on the book's best ask, not the stored quoted ask.
+
+    Quoted ask 0.58 with p_win 0.84 would be a refused gross edge of 0.26;
+    the live book's best ask is 0.70, a live edge of 0.14, so the order
+    records. A trader that read ctx.quoted_ask instead would refuse it.
+    """
+    market = _market("900001", [_bucket("70-71°F", 70, 0.58, 0.45, token="a")])
+    seed(conn, [(market, [_outcome("70-71°F", "YES", 0.84, 0.58)])])
+    clob.books["yes-a"] = dict(
+        _fixture(DEEP), asset_id="yes-a", asks=[{"price": "0.70", "size": "500"}]
+    )
+    summary = trade(conn, client)
+
+    assert summary.skipped["implausible_edge"] == 0
+    (row,) = rows(conn)
+    assert row["status"] == "filled"
+    assert row["fill_price"] == pytest.approx(0.70)
+
+
+def test_an_edge_exactly_at_max_edge_is_priced_and_recorded(conn, clob, client):
+    """Strictly greater-than: an edge of exactly 0.25 is allowed."""
+    # 0.83 - 0.58 is exactly 0.25 in binary floating point, so this pins the
+    # boundary without a tolerance on the comparison inside the trader.
+    market = _market("900001", [_bucket("70-71°F", 70, 0.58, 0.45, token="a")])
+    seed(conn, [(market, [_outcome("70-71°F", "YES", 0.83, 0.58)])])
+    clob.books["yes-a"] = DEEP
+    summary = trade(conn, client)
+
+    (row,) = rows(conn)
+    assert row["status"] == "filled"
+    assert row["token_id"] == "yes-a"
+    assert row["side"] == "YES"
+    assert row["stake_usdc"] == 5.0
+    assert row["p_win"] == pytest.approx(0.83)
+    assert row["quoted_ask"] == pytest.approx(0.58)
+    assert row["fill_price"] == pytest.approx(0.58)
+    assert row["limit_price"] == pytest.approx(
+        limit_price(p_win=0.83, floor=MIN_EDGE, fee_rate=RATE)
+    )
+    assert summary.skipped["implausible_edge"] == 0
+    assert summary.recorded == {"filled": 1, "partial": 0, "no_fill": 0}
 
 
 def test_a_no_candidate_is_priced_on_the_no_token_and_the_no_ask(conn, clob, client):
@@ -617,7 +684,11 @@ def test_orders_are_ranked_by_net_edge_not_gross_edge(conn, clob, client):
         ],
     )
     seed_open_position(conn, "900002", 145.0, created_at=NOW - timedelta(days=2))
-    clob.books["yes-b"] = DEEP
+    # Its quoted ask is 0.85, so the book's best ask must stay near it: DEEP's
+    # 0.58 would be a live gross edge of 0.40 and is now refused.
+    clob.books["yes-b"] = dict(
+        _fixture(DEEP), asset_id="yes-b", asks=[{"price": "0.80", "size": "500"}]
+    )
     summary = trade(conn, client)
     assert [
         r["outcome"] for r in rows(conn, "SELECT * FROM paper_orders WHERE run_id='run-1'")
@@ -846,7 +917,10 @@ def test_summary_counts_match_the_recorded_rows(conn, clob, client):
     assert "trade: mode paper" in lines
     assert f"geoblock: {GEO_OK}" in lines
     assert any(line.startswith("run: run-1 started ") and "7 min ago" in line for line in lines)
-    assert "candidates: 3 loaded, 0 skipped (bad_row 0, no_token 0, no_limit 0)" in lines
+    assert (
+        "candidates: 3 loaded, 0 skipped (bad_row 0, no_token 0, no_limit 0, implausible_edge 0)"
+        in lines
+    )
     assert any(
         line.startswith("sizing: 3 orders, 0 blocked (halted 0, open_position 0") for line in lines
     )
@@ -885,11 +959,11 @@ def test_candidates_with_no_token_a_bad_row_or_no_limit_are_skipped_and_counted(
     clob.books["yes-4"] = DEEP
     summary = trade(conn, client)
     assert summary.loaded == 1
-    assert summary.skipped == {"bad_row": 1, "no_token": 2, "no_limit": 1}
+    assert summary.skipped == {"bad_row": 1, "no_token": 2, "no_limit": 1, "implausible_edge": 0}
     assert clob.fetched_tokens() == ["yes-4"]
     assert len(rows(conn)) == 1
     assert (
-        "candidates: 1 loaded, 4 skipped (bad_row 1, no_token 2, no_limit 1)"
+        "candidates: 1 loaded, 4 skipped (bad_row 1, no_token 2, no_limit 1, implausible_edge 0)"
         in render_trade_summary(summary).splitlines()
     )
 

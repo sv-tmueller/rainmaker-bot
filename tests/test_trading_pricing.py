@@ -144,9 +144,9 @@ def test_zero_fee_matches_walk_asks():
 
 
 def test_exact_depth_is_filled_despite_float_drift():
-    # The stake is price plus per-share fee, summed per level. For this book
-    # the walk is left with a residual of about 1.5e-14 USDC, not exactly 0,
-    # so only the tolerance on `remaining` keeps the status `filled`.
+    # The stake is price plus per-share fee, summed per level. The walk is left
+    # with a tiny nonzero residual, not exactly 0, so only the tolerance on
+    # `remaining` keeps the status `filled`.
     asks = [(0.453, 160), (0.544, 8)]
     stake = sum((p + f * p * (1 - p)) * s for p, s in asks)
     fill = _price(_book(asks), stake)

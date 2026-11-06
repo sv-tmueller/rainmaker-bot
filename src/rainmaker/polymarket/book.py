@@ -114,9 +114,10 @@ def walk_asks(book: OrderBook, stake_usdc: float) -> Fill:
     `spent_usdc < stake_usdc`, `sufficient=False`) and does not raise; the
     caller decides what to do. This walk is gross: it ignores the taker fee
     and any limit price. The paper trader does not use it: `trading.pricing`
-    prices the paper orders, and it labels a fill short of the stake
-    `partial`. An empty ask side fills nothing (`avg_price=None`). No
-    rounding to ticks or share sizes happens here.
+    prices the paper orders, and it labels a fill short of the stake `partial`
+    and a fill below the minimum order size `no_fill`. An empty ask side fills
+    nothing (`avg_price=None`). No rounding to ticks or share sizes happens
+    here.
     """
     if not math.isfinite(stake_usdc) or stake_usdc <= 0:
         raise ValueError(f"stake_usdc must be a positive finite number, got {stake_usdc}")
