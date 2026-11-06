@@ -529,8 +529,30 @@ def test_a_gross_edge_over_max_edge_is_refused_and_counted_as_implausible_edge(c
     assert any("implausible edge" in line for line in text.splitlines())
 
 
+def test_the_cap_reads_the_live_book_not_the_quoted_ask(conn, clob, client):
+    """The policy keys on the book's best ask, not the stored quoted ask.
+
+    Quoted ask 0.58 with p_win 0.84 would be a refused gross edge of 0.26;
+    the live book's best ask is 0.70, a live edge of 0.14, so the order
+    records. A trader that read ctx.quoted_ask instead would refuse it.
+    """
+    market = _market("900001", [_bucket("70-71°F", 70, 0.58, 0.45, token="a")])
+    seed(conn, [(market, [_outcome("70-71°F", "YES", 0.84, 0.58)])])
+    clob.books["yes-a"] = dict(
+        _fixture(DEEP), asset_id="yes-a", asks=[{"price": "0.70", "size": "500"}]
+    )
+    summary = trade(conn, client)
+
+    assert summary.skipped["implausible_edge"] == 0
+    (row,) = rows(conn)
+    assert row["status"] == "filled"
+    assert row["fill_price"] == pytest.approx(0.70)
+
+
 def test_an_edge_exactly_at_max_edge_is_priced_and_recorded(conn, clob, client):
     """Strictly greater-than: an edge of exactly 0.25 is allowed."""
+    # 0.83 - 0.58 is exactly 0.25 in binary floating point, so this pins the
+    # boundary without a tolerance on the comparison inside the trader.
     market = _market("900001", [_bucket("70-71°F", 70, 0.58, 0.45, token="a")])
     seed(conn, [(market, [_outcome("70-71°F", "YES", 0.83, 0.58)])])
     clob.books["yes-a"] = DEEP
