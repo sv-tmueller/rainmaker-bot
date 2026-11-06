@@ -8,7 +8,6 @@ import { orderSnapshotRows, splitSnapshotsByVenue, type RawSnapshotRow } from ".
 
 function row(overrides: Partial<RawSnapshotRow> & { snapshot_date: string }): RawSnapshotRow {
   return {
-    snapshot_date: overrides.snapshot_date,
     n_bets: 1,
     wins: 1,
     losses: 0,
