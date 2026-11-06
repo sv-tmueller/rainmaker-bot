@@ -556,6 +556,19 @@ def _spread(n=400, dates=60):
     return [_row(i, won=(i % dates) < dates // 2, day=i % dates) for i in range(n)]
 
 
+def test_roi_interval_tolerates_a_null_settlement_date():
+    # settlement_date is nullable in the schema; the review flagged that
+    # sorted(by_date) raised TypeError when None mixed with date strings.
+    rows = _spread(n=10, dates=2)
+    rows[0] = {**rows[0], "settlement_date": None}
+    report = compute_paper_report(rows)
+    # The None row clusters under "" instead of crashing the sort. The
+    # report-level count (a set) always tolerated None; it sees 3 dates here.
+    assert report.roi_interval is not None
+    assert report.dates == 3
+    assert report.roi_interval.dates == 3
+
+
 def test_roi_interval_is_deterministic():
     rows = _spread(dates=15)
     a = compute_paper_report(rows).roi_interval

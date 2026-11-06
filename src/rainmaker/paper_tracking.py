@@ -272,7 +272,10 @@ def _bootstrap_roi_interval(sample: list[dict[str, Any]]) -> RoiInterval | None:
     """
     by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in sample:
-        by_date[r["settlement_date"]].append(r)
+        # settlement_date is nullable in the schema; every app writer supplies
+        # it, but a row without one clusters under "" rather than crashing
+        # the sort (a robustness regression the #513 review asked to close).
+        by_date[r["settlement_date"] or ""].append(r)
     dates = sorted(by_date)
     if len(dates) < ROI_INTERVAL_MIN_DATES:
         return None
