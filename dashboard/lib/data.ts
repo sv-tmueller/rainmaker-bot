@@ -1,3 +1,4 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { shownEdge } from "./fees";
 import { serverClient } from "./supabase";
 
@@ -307,9 +308,9 @@ function edgeKeyGreater(a: SettledCandidateRow, b: SettledCandidateRow): boolean
   return a.side > b.side;
 }
 
-export async function getDashboardData() {
-  const db = serverClient();
-
+// db is an injection seam for tests: production callers pass nothing and get
+// the real server client, so the default keeps the call site unchanged.
+export async function getDashboardData(db: SupabaseClient = serverClient()) {
   // Wave 1: bounded independent reads.
   // outcomes: newest-first, capped at 30. The settled list shows 10 bets; 30
   // recently-settled markets is plenty and keeps reads bounded as history grows.
