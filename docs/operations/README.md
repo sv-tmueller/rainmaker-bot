@@ -82,7 +82,7 @@ spike, #465).
   unless you pass `--allow-prod`. A SQLite path needs no flag.
 - Pass the flag only when the question needs prod data. Run once and keep the
   output instead of re-reading.
-- `rainmaker delay-replay` has the same `--allow-prod` guard. Most other
+- `rainmaker delay-replay` has the same `--allow-prod` guard. The other
   `rainmaker` commands have no such guard, because the scheduled workflows need
   prod. The rule still applies to hand runs with `DATABASE_URL` exported.
 - The `delay-replay` workflow (Actions tab, Run workflow) runs

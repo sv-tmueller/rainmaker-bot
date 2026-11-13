@@ -16,9 +16,7 @@ permissions:
   contents: read
 concurrency:
   group: delay-replay
-  # Unlike gate-sweep: a second click queues instead of killing a run whose
-  # full read is already paid for.
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   replay:
     runs-on: ubuntu-latest
