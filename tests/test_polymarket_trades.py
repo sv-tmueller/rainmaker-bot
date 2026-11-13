@@ -20,17 +20,17 @@ from rainmaker.polymarket.trades import (
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def _trades_fixture() -> list[dict[str, Any]]:
+def _trades_fixture() -> dict[str, Any]:
     return json.loads((FIXTURES / "polymarket_trades_weather.json").read_text())
 
 
 def test_fetch_fills_returns_buy_fills_for_token(httpx_mock):
-    """Only BUY trades for the matching asset (yes_token_id) are returned.
+    """Only BUY trades for the matching token_id (yes_token_id) are returned.
 
-    The fixture has:
-    - 2 BUY records for asset "d0" at timestamps 1772452750 and 1772366350
-    - 1 SELL record for asset "d0" (excluded: not a BUY)
-    - 1 BUY record for asset "d1" (excluded: wrong token)
+    The fixture is a v2 envelope ({"data": [...]}) with:
+    - 2 BUY records for token_id "d0" at timestamps 1772452750 and 1772366350
+    - 1 SELL record for token_id "d0" (excluded: not a BUY)
+    - 1 BUY record for token_id "d1" (excluded: wrong token)
     """
     httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), json=_trades_fixture())
     with httpx.Client() as client:
@@ -44,13 +44,17 @@ def test_fetch_fills_returns_buy_fills_for_token(httpx_mock):
 
 
 def test_fetch_fills_uses_correct_query_params(httpx_mock):
-    """The request uses market= (conditionId) and side=BUY query params."""
+    """v2 filters by condition= (v1's market= is rejected with a 400)."""
     httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), json=_trades_fixture())
     with httpx.Client() as client:
         fetch_fills("0xcond_d", "d0", client)
-    params = httpx_mock.get_requests()[0].url.params
-    assert params["market"] == "0xcond_d"
+    url = httpx_mock.get_requests()[0].url
+    assert url.path.endswith("/v2/trades")
+    params = url.params
+    assert params["condition"] == "0xcond_d"
     assert params["side"] == "BUY"
+    assert params["limit"] == "500"
+    assert "market" not in params
 
 
 def test_fetch_fills_no_asset_returns_empty(httpx_mock):
@@ -65,6 +69,18 @@ def test_fetch_fills_raises_on_http_error(httpx_mock):
     httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), status_code=500)
     with httpx.Client() as client:
         with pytest.raises(httpx.HTTPStatusError):
+            fetch_fills("0xcond_d", "d0", client)
+
+
+def test_fetch_fills_410_retired_body_surfaces_in_error(httpx_mock):
+    """A retired endpoint must fail loudly and say why, not read as no fills."""
+    httpx_mock.add_response(
+        url=re.compile(re.escape(TRADES_URL)),
+        status_code=410,
+        json={"error": "Data API v1 has been retired", "migration": "https://x/v2/"},
+    )
+    with httpx.Client() as client:
+        with pytest.raises(httpx.HTTPStatusError, match="retired"):
             fetch_fills("0xcond_d", "d0", client)
 
 
