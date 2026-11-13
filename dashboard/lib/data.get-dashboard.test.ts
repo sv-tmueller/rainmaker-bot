@@ -14,7 +14,7 @@ type Row = Record<string, unknown>;
 // Filters are accepted and ignored, so the canned data is shaped to be what the
 // unfiltered reads would return (empty outcomes makes every settled query
 // short-circuit before it runs).
-function fakeDb(tables: Record<string, Row[]>): SupabaseClient {
+function fakeDb(tables: Record<string, Row[]>, orCalls: string[] = []): SupabaseClient {
   const builder = (table: string) => {
     const rows = tables[table] ?? [];
     const b = {
@@ -24,6 +24,10 @@ function fakeDb(tables: Record<string, Row[]>): SupabaseClient {
       eq: () => b,
       not: () => b,
       in: () => b,
+      or: (filter: string) => {
+        orCalls.push(`${table}: ${filter}`);
+        return b;
+      },
       then: (resolve: (value: { data: Row[]; error: null }) => unknown) =>
         resolve({ data: rows, error: null }),
     };
@@ -83,6 +87,10 @@ const tables: Record<string, Row[]> = {
       city: "New York",
       venue: "polymarket",
       variable: "TMAX",
+      raw: JSON.stringify({
+        target: { station: { icao: "KNYC" } },
+        buckets: [{ label: "80-81", yes_token_id: "tok-ny" }],
+      }),
     },
     {
       id: "m-null",
@@ -92,6 +100,10 @@ const tables: Record<string, Row[]> = {
       city: "Chicago",
       venue: null,
       variable: "TMAX",
+      raw: JSON.stringify({
+        target: { station: { icao: "KORD" } },
+        buckets: [{ label: "70-71", yes_token_id: "tok-chi" }],
+      }),
     },
     {
       id: "m-kalshi",
@@ -101,6 +113,10 @@ const tables: Record<string, Row[]> = {
       city: "Denver",
       venue: "kalshi",
       variable: "TMIN",
+      raw: JSON.stringify({
+        target: { station: { icao: "KDEN" } },
+        buckets: [{ label: "50-51", yes_token_id: "tok-kalshi" }],
+      }),
     },
   ],
   // m-poly has no price row, so its ask stays null and its edge stays gross.
@@ -142,7 +158,22 @@ describe("getDashboardData", () => {
     expect(ny.shownEdge).toBe(0.1);
     expect(ny.mu).toBe(80.5);
 
+    // The YES token and station come from markets.raw, for Polymarket rows
+    // only (a null venue is Polymarket). Kalshi gets neither.
+    expect(ny.yesTokenId).toBe("tok-ny");
+    expect(ny.station).toBe("KNYC");
+    expect(chicago.yesTokenId).toBe("tok-chi");
+    expect(chicago.station).toBe("KORD");
+    expect(kalshi.yesTokenId).toBeNull();
+    expect(kalshi.station).toBeNull();
+
     expect(data.run?.startedAt).toBe("2026-11-06T00:00:00Z");
     expect(data.run?.okSources).toEqual(["nws"]);
+  });
+
+  it("reads markets.raw only through the Polymarket-or-null-venue filter", async () => {
+    const orCalls: string[] = [];
+    await getDashboardData(fakeDb(tables, orCalls));
+    expect(orCalls).toEqual(["markets: venue.is.null,venue.eq.polymarket"]);
   });
 });
