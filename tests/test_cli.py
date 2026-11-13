@@ -615,20 +615,41 @@ def test_snapshot_backfill_command_reports_zero_on_noop(monkeypatch, tmp_path, c
     assert "backfilled 0 rows over 0 dates" in out
 
 
+def _fake_stats(n=0, wins=0, pnl=0.0, roi=0.0):
+    return {
+        "n_bets": n,
+        "wins": wins,
+        "losses": n - wins,
+        "total_pnl": pnl,
+        "staked": 0.0,
+        "roi": roi,
+        "net_pnl": pnl,
+        "net_outlay": 0.0,
+        "net_roi": roi,
+        "fee_unapplied_bets": 0,
+    }
+
+
+def _fake_summary(n=0, wins=0, pnl=0.0, roi=0.0, skipped=0):
+    """A compute_pnl_summary result with the headline set and every split empty."""
+    zero = _fake_stats()
+    return {
+        "overall": _fake_stats(n, wins, pnl, roi),
+        "by_lead": {"same_day": zero, "lead_1_plus": zero, "catch_up": zero},
+        "by_venue": {"polymarket": zero, "kalshi": zero},
+        "skipped": skipped,
+        "dates": 0,
+        "net_roi_interval": None,
+    }
+
+
 def test_track_command_reports_pnl_and_calibration(monkeypatch, tmp_path, capsys):
-    # overall (venue=None) has bets; the per-venue calls return none so only the
-    # overall line prints (the per-venue breakdown is covered in test_tracking).
+    # The venue and lead splits are empty here; they are covered in test_tracking.
     monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
     monkeypatch.setattr(
         cli,
-        "compute_pnl",
-        lambda conn, venue=None, *, rows=None: {
-            "n_bets": 2 if venue is None else 0,
-            "wins": 1,
-            "losses": 1,
-            "total_pnl": 0.3,
-            "roi": 0.42,
-        },
+        "compute_pnl_summary",
+        lambda rows, since=None: _fake_summary(n=2, wins=1, pnl=0.3, roi=0.42),
     )
     monkeypatch.setattr(
         cli,
@@ -639,22 +660,15 @@ def test_track_command_reports_pnl_and_calibration(monkeypatch, tmp_path, capsys
     out = capsys.readouterr().out
     assert "P&L: 2 bets, 1-1" in out
     assert "Brier 0.127" in out
-    assert "skipped" not in out  # no skipped key in the mocked pnl: stays silent
+    assert "skipped" not in out  # zero skips in the mocked summary: stays silent
 
 
 def test_track_command_prints_skipped_count_when_nonzero(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
     monkeypatch.setattr(
         cli,
-        "compute_pnl",
-        lambda conn, venue=None, *, rows=None: {
-            "n_bets": 2 if venue is None else 0,
-            "wins": 1,
-            "losses": 1,
-            "total_pnl": 0.3,
-            "roi": 0.42,
-            "skipped": 4 if venue is None else 0,
-        },
+        "compute_pnl_summary",
+        lambda rows, since=None: _fake_summary(n=2, wins=1, pnl=0.3, roi=0.42, skipped=4),
     )
     monkeypatch.setattr(
         cli,
@@ -669,22 +683,15 @@ def test_track_command_prints_skipped_count_when_nonzero(monkeypatch, tmp_path, 
 def test_track_command_prints_skipped_when_only_calibration_has_skips(
     monkeypatch, tmp_path, capsys
 ):
-    # compute_pnl's population (recommended best-per-market-run bets) can miss an
+    # The P&L population (recommended best-per-market-run bets) can miss an
     # ungradable row that compute_calibration's broader yes_rows population catches
     # (#333 round 1: a settled row with recommended=0). The skipped line must still
     # surface nonzero.
     monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
     monkeypatch.setattr(
         cli,
-        "compute_pnl",
-        lambda conn, venue=None, *, rows=None: {
-            "n_bets": 2 if venue is None else 0,
-            "wins": 1,
-            "losses": 1,
-            "total_pnl": 0.3,
-            "roi": 0.42,
-            "skipped": 0,
-        },
+        "compute_pnl_summary",
+        lambda rows, since=None: _fake_summary(n=2, wins=1, pnl=0.3, roi=0.42, skipped=0),
     )
     monkeypatch.setattr(
         cli,
@@ -758,17 +765,7 @@ def test_track_command_fetches_settled_rows_exactly_once(monkeypatch, tmp_path, 
         return []
 
     monkeypatch.setattr(cli, "settled_rows", _settled_rows)
-    monkeypatch.setattr(
-        cli,
-        "compute_pnl",
-        lambda conn, venue=None, *, rows=None: {
-            "n_bets": 0,
-            "wins": 0,
-            "losses": 0,
-            "total_pnl": 0.0,
-            "roi": 0.0,
-        },
-    )
+    monkeypatch.setattr(cli, "compute_pnl_summary", lambda rows, since=None: _fake_summary())
     monkeypatch.setattr(
         cli,
         "compute_calibration",
@@ -780,7 +777,7 @@ def test_track_command_fetches_settled_rows_exactly_once(monkeypatch, tmp_path, 
 
 
 def test_track_command_since_flag_fetches_settled_rows_exactly_once(monkeypatch, tmp_path, capsys):
-    """--since must not add a query: compute_calibration_by_cell takes rows= only."""
+    """--since must not add a query: the summary and the cell breakdown take rows only."""
     fetch_count = 0
 
     def _settled_rows(conn):
@@ -789,17 +786,7 @@ def test_track_command_since_flag_fetches_settled_rows_exactly_once(monkeypatch,
         return []
 
     monkeypatch.setattr(cli, "settled_rows", _settled_rows)
-    monkeypatch.setattr(
-        cli,
-        "compute_pnl",
-        lambda conn, venue=None, *, rows=None: {
-            "n_bets": 0,
-            "wins": 0,
-            "losses": 0,
-            "total_pnl": 0.0,
-            "roi": 0.0,
-        },
-    )
+    monkeypatch.setattr(cli, "compute_pnl_summary", lambda rows, since=None: _fake_summary())
     monkeypatch.setattr(
         cli,
         "compute_calibration",
@@ -814,17 +801,7 @@ def test_track_command_since_flag_prints_regime_filtered_breakdown(monkeypatch, 
     captured: dict[str, str | None] = {}
 
     monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
-    monkeypatch.setattr(
-        cli,
-        "compute_pnl",
-        lambda conn, venue=None, *, rows=None: {
-            "n_bets": 0,
-            "wins": 0,
-            "losses": 0,
-            "total_pnl": 0.0,
-            "roi": 0.0,
-        },
-    )
+    monkeypatch.setattr(cli, "compute_pnl_summary", lambda rows, since=None: _fake_summary())
     monkeypatch.setattr(
         cli,
         "compute_calibration",
@@ -849,17 +826,7 @@ def test_track_command_without_since_omits_since_line_but_shows_breakdown(
     monkeypatch, tmp_path, capsys
 ):
     monkeypatch.setattr(cli, "settled_rows", lambda conn: [])
-    monkeypatch.setattr(
-        cli,
-        "compute_pnl",
-        lambda conn, venue=None, *, rows=None: {
-            "n_bets": 0,
-            "wins": 0,
-            "losses": 0,
-            "total_pnl": 0.0,
-            "roi": 0.0,
-        },
-    )
+    monkeypatch.setattr(cli, "compute_pnl_summary", lambda rows, since=None: _fake_summary())
     monkeypatch.setattr(
         cli,
         "compute_calibration",
@@ -878,6 +845,142 @@ def test_track_command_without_since_omits_since_line_but_shows_breakdown(
 
     assert "since:" not in out  # omitting --since prints no filter line
     assert "TMAX" in out
+
+
+def _seed_bet(
+    conn, market_id, *, venue, started_at, settlement_date, ask, actual, bucket="70-71°F"
+):
+    """One recommended YES bet on a settled market (a win when actual is 70 or 71)."""
+    conn.execute(
+        "INSERT INTO runs (id, started_at, status) VALUES (?, ?, ?)",
+        (f"run-{market_id}", started_at, "ok"),
+    )
+    conn.execute(
+        "INSERT INTO markets (id, city, variable, settlement_date, venue) VALUES (?, ?, ?, ?, ?)",
+        (market_id, "NYC", "TMAX", settlement_date, venue),
+    )
+    conn.execute(
+        "INSERT INTO prices (run_id, market_id, outcome, price, implied_prob, captured_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (f"run-{market_id}", market_id, bucket, ask, ask, "t"),
+    )
+    conn.execute(
+        "INSERT INTO predictions (run_id, market_id, bucket, p_win, edge, recommended, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (f"run-{market_id}", market_id, bucket, 0.9, 0.2, 1, "t"),
+    )
+    conn.execute(
+        "INSERT INTO outcomes (market_id, actual_value, settled_at) VALUES (?, ?, ?)",
+        (market_id, actual, "t"),
+    )
+
+
+def _seed_pnl_history(db_path: str, *, catch_up: bool = False) -> None:
+    """Old polymarket win (lead 2), then two June bets: a same-day Kalshi loss and a
+    lead-1 polymarket win. --since 2026-06-01 keeps only the June pair."""
+    conn = connect(db_path)
+    init_schema(conn)
+    _seed_bet(
+        conn, "m1", venue="polymarket", started_at="2026-05-28T00:00:00",
+        settlement_date="2026-05-30", ask=0.40, actual=71.0,
+    )  # fmt: skip
+    _seed_bet(
+        conn, "m2", venue="kalshi", started_at="2026-06-10T00:00:00",
+        settlement_date="2026-06-10", ask=0.35, actual=75.0,
+    )  # fmt: skip
+    _seed_bet(
+        conn, "m3", venue="polymarket", started_at="2026-06-11T00:00:00",
+        settlement_date="2026-06-12", ask=0.40, actual=71.0,
+    )  # fmt: skip
+    if catch_up:
+        _seed_bet(
+            conn, "m4", venue="polymarket", started_at="2026-06-14T00:00:00",
+            settlement_date="2026-06-13", ask=0.50, actual=71.0,
+        )  # fmt: skip
+    conn.commit()
+    conn.close()
+
+
+def test_track_prints_gross_headline_with_net_of_fee_beside_it(tmp_path, capsys):
+    db = str(tmp_path / "t.db")
+    _seed_pnl_history(db)
+    cli.main(["track", "--db", db])
+    out = capsys.readouterr().out
+    assert "P&L: 3 bets, 2-1" in out
+    assert "gross ROI" in out
+    assert "net of fees: ROI" in out
+    assert "Kalshi fee not applied on 1 bet" in out
+    assert "kalshi: 1 bet" in out and "fee not applied" in out.split("kalshi: 1 bet")[1]
+    assert "bootstrap interval" in out  # three settlement dates
+    assert "10000 resamples over 3 settlement dates" in out
+    assert "same-day (lead 0): 1 bet, 0-1" in out
+    assert "lead 1+: 2 bets, 2-0" in out
+    assert "catch-up" not in out  # nothing at lead < 0: the line stays out
+
+
+def test_track_prints_a_catch_up_line_only_when_there_are_catch_up_bets(tmp_path, capsys):
+    db = str(tmp_path / "t.db")
+    _seed_pnl_history(db, catch_up=True)
+    cli.main(["track", "--db", db])
+    out = capsys.readouterr().out
+    assert "catch-up (lead <0): 1 bet, 1-0" in out
+    assert "P&L: 4 bets, 3-1" in out
+
+
+def test_track_since_restricts_the_pnl_block_and_labels_the_pooled_line(tmp_path, capsys):
+    db = str(tmp_path / "t.db")
+    _seed_pnl_history(db)
+    cli.main(["track", "--db", db])
+    plain = capsys.readouterr().out
+    cli.main(["track", "--db", db, "--since", "2026-06-01"])
+    since = capsys.readouterr().out
+    assert "P&L: 3 bets" in plain
+    assert "P&L (since 2026-06-01): 2 bets, 1-1" in since
+    assert "P&L: 3 bets" not in since
+    assert "10000 resamples over 2 settlement dates" in since
+    assert "calibration (all runs):" in since
+    assert "calibration:" in plain and "(all runs)" not in plain
+
+
+def test_track_says_so_when_there_are_too_few_dates_for_an_interval(tmp_path, capsys):
+    db = str(tmp_path / "t.db")
+    conn = connect(db)
+    init_schema(conn)
+    _seed_bet(
+        conn, "m1", venue="polymarket", started_at="2026-05-28T00:00:00",
+        settlement_date="2026-05-30", ask=0.40, actual=71.0,
+    )  # fmt: skip
+    conn.commit()
+    conn.close()
+    cli.main(["track", "--db", db])
+    out = capsys.readouterr().out
+    assert "too few settlement dates (1) for a bootstrap ROI interval" in out
+
+
+def test_track_without_bets_prints_the_headline_and_no_splits(tmp_path, capsys):
+    cli.main(["track", "--db", str(tmp_path / "t.db")])
+    out = capsys.readouterr().out
+    assert "P&L: 0 bets, 0-0" in out
+    assert "net of fees" not in out and "same-day" not in out
+
+
+def test_attribution_prints_the_pnl_block_above_each_view(tmp_path, capsys):
+    db = str(tmp_path / "t.db")
+    _seed_pnl_history(db)
+    cli.main(["attribution", "--db", db])
+    plain = capsys.readouterr().out
+    assert plain.count("P&L") == 1 and "P&L: 3 bets, 2-1" in plain
+    assert plain.index("P&L: 3 bets") < plain.index("--- City ---")
+    assert "net of fees: ROI" in plain
+
+    cli.main(["attribution", "--db", db, "--since", "2026-06-01"])
+    out = capsys.readouterr().out
+    first = out.index("P&L (all runs): 3 bets")
+    divider = out.index("since: 2026-06-01")
+    second = out.index("P&L (since 2026-06-01): 2 bets")
+    assert first < out.index("--- City ---") < divider < second
+    assert out.count("net of fees: ROI") == 2
+    assert "segment tables below are gross" in out
 
 
 def test_prune_command_reports_rows_pruned(monkeypatch, tmp_path, capsys):

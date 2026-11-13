@@ -71,12 +71,13 @@ from rainmaker.store.record import (
     save_calibration,
 )
 from rainmaker.tracking import (
+    ROI_INTERVAL_MIN_DATES,
     backfill_snapshots,
     compute_attribution,
     compute_calibration,
     compute_calibration_by_cell,
     compute_clv,
-    compute_pnl,
+    compute_pnl_summary,
     compute_tail_calibration,
     settled_rows,
     write_snapshot,
@@ -615,6 +616,62 @@ def _paper_report(db_path: str) -> None:
     print(render_paper_report(compute_paper_report(rows)))
 
 
+def _bets(n: int) -> str:
+    return f"{n} bet" if n == 1 else f"{n} bets"
+
+
+def _split_line(label: str, s: dict[str, Any], note: str = "") -> str:
+    """One gross-and-net line for a lead or venue split."""
+    return (
+        f"  {label}: {_bets(s['n_bets'])}, {s['wins']}-{s['losses']}, "
+        f"total {s['total_pnl']:+.2f}u, gross ROI {s['roi']:+.1%}, "
+        f"net ROI {s['net_roi']:+.1%}{note}"
+    )
+
+
+def _print_pnl_summary(summary: dict[str, Any], scope: str | None = None) -> None:
+    """The P&L block of `track` and `attribution` (#525).
+
+    Gross at the ask stays the headline, so a recorded sweep stays comparable;
+    net of the taker fee is printed beside it. Splits that are empty are left out.
+    """
+    o = summary["overall"]
+    head = "P&L" if scope is None else f"P&L ({scope})"
+    print(
+        f"{head}: {_bets(o['n_bets'])}, {o['wins']}-{o['losses']}, "
+        f"total {o['total_pnl']:+.2f}u, gross ROI {o['roi']:+.1%}"
+    )
+    if o["n_bets"] == 0:
+        return
+    net = (
+        f"  net of fees: ROI {o['net_roi']:+.1%} "
+        f"(total {o['net_pnl']:+.2f}u on {o['net_outlay']:.2f}u outlay)"
+    )
+    if o["fee_unapplied_bets"]:
+        net += f"; Kalshi fee not applied on {_bets(o['fee_unapplied_bets'])}"
+    print(net)
+    iv = summary["net_roi_interval"]
+    if iv is None:
+        print(
+            f"  too few settlement dates ({summary['dates']}) for a bootstrap ROI interval "
+            f"(need >= {ROI_INTERVAL_MIN_DATES})"
+        )
+    else:
+        print(
+            f"  net ROI {iv.level:.0%} bootstrap interval: {iv.lo:+.1%} to {iv.hi:+.1%} "
+            f"({iv.resamples} resamples over {iv.dates} settlement dates; informational)"
+        )
+    lead = summary["by_lead"]
+    print(_split_line("same-day (lead 0)", lead["same_day"]))
+    print(_split_line("lead 1+", lead["lead_1_plus"]))
+    if lead["catch_up"]["n_bets"]:
+        print(_split_line("catch-up (lead <0)", lead["catch_up"]))
+    for venue, vp in summary["by_venue"].items():
+        if vp["n_bets"] == 0:
+            continue  # only show a venue that actually has settled bets
+        print(_split_line(venue, vp, "; fee not applied" if venue == "kalshi" else ""))
+
+
 def _track(db_path: str, since: str | None = None) -> None:
     if "://" not in db_path:  # a Postgres DSN has no local parent dir to create
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -622,38 +679,28 @@ def _track(db_path: str, since: str | None = None) -> None:
     try:
         init_schema(conn)
         # Fetch the full settled history once and share it across all calls below
-        # (#277: the cron ran this query 4x per `track` invocation). since only
-        # narrows compute_calibration_by_cell's own population; the pooled pnl/cal
-        # aggregate below stays over the full history either way.
+        # (#277: the cron ran this query 4x per `track` invocation). since narrows
+        # the P&L block and the per-(variable, lead) breakdown; the pooled
+        # Brier/hit-rate line stays over the full history either way.
         rows = settled_rows(conn)
-        pnl = compute_pnl(conn, rows=rows)
+        summary = compute_pnl_summary(rows, since=since)
         cal = compute_calibration(conn, rows=rows)
-        by_venue = {v: compute_pnl(conn, venue=v, rows=rows) for v in ("polymarket", "kalshi")}
         by_cell = compute_calibration_by_cell(rows, since=since)
     finally:
         conn.close()
-    print(
-        f"P&L: {pnl['n_bets']} bets, {pnl['wins']}-{pnl['losses']}, "
-        f"total {pnl['total_pnl']:+.2f}u, ROI {pnl['roi']:+.1%}"
-    )
-    # compute_pnl's population is recommended best-per-market-run bets only;
+    _print_pnl_summary(summary, None if since is None else f"since {since}")
+    # The P&L population is recommended best-per-market-run bets only;
     # compute_calibration's is broader (all YES rows plus that same bet
-    # population), so it can catch an ungradable row compute_pnl's narrower
-    # population never sees (#333 round 1). Surface whichever is larger so a
-    # skip anywhere in either population is never silently dropped.
-    skipped = max(pnl.get("skipped", 0), cal.get("skipped", 0))
+    # population), so it can catch an ungradable row the narrower population
+    # never sees (#333 round 1). Surface whichever is larger so a skip anywhere
+    # in either population is never silently dropped.
+    skipped = max(summary["skipped"], cal.get("skipped", 0))
     if skipped:
         print(f"skipped {skipped} ungradable settled row(s)")
-    for venue, vp in by_venue.items():
-        if vp["n_bets"] == 0:
-            continue  # only show a venue that actually has settled bets
-        print(
-            f"  {venue}: {vp['n_bets']} bets, {vp['wins']}-{vp['losses']}, "
-            f"total {vp['total_pnl']:+.2f}u, ROI {vp['roi']:+.1%}"
-        )
     brier = "n/a" if cal["brier"] is None else f"{cal['brier']:.3f}"
     hit = "n/a" if cal["hit_rate"] is None else f"{cal['hit_rate']:.0%}"
-    print(f"calibration: Brier {brier}, recommended hit rate {hit} (n={cal['n']})")
+    pooled = "calibration" if since is None else "calibration (all runs)"
+    print(f"{pooled}: Brier {brier}, recommended hit rate {hit} (n={cal['n']})")
 
     if since is not None:
         print(f"since: {since}")
@@ -676,6 +723,9 @@ _ATTRIBUTION_DIM_LABELS = {
     "edge": "Edge bucket",
     "p_win": "p_win bucket",
 }
+
+
+_ATTRIBUTION_GROSS_NOTE = "(the segment tables below are gross at the ask, before any fee)"
 
 
 def _print_attribution(result: dict[str, list[dict[str, Any]]]) -> None:
@@ -710,11 +760,17 @@ def _attribution(db_path: str, since: str | None = None) -> None:
         rows = settled_rows(conn)
         full = compute_attribution(conn, rows=rows)
         since_result = compute_attribution(conn, since=since, rows=rows) if since else None
+        full_pnl = compute_pnl_summary(rows)
+        since_pnl = compute_pnl_summary(rows, since=since) if since else None
     finally:
         conn.close()
+    _print_pnl_summary(full_pnl, None if since is None else "all runs")
+    print(_ATTRIBUTION_GROSS_NOTE)
     _print_attribution(full)
-    if since is not None and since_result is not None:
+    if since is not None and since_result is not None and since_pnl is not None:
         print(f"\nsince: {since}")
+        _print_pnl_summary(since_pnl, f"since {since}")
+        print(_ATTRIBUTION_GROSS_NOTE)
         _print_attribution(since_result)
 
 
@@ -1285,8 +1341,9 @@ def _main(argv: list[str] | None = None) -> None:
         "--since",
         type=date.fromisoformat,
         default=None,
-        help="restrict the per-(variable, lead) breakdown to runs started on or "
-        "after this date (YYYY-MM-DD)",
+        help="restrict the P&L block and the per-(variable, lead) breakdown to runs "
+        "started on or after this date (YYYY-MM-DD); the pooled Brier line stays "
+        "all-time",
     )
 
     attr = sub.add_parser(
@@ -1297,8 +1354,8 @@ def _main(argv: list[str] | None = None) -> None:
         "--since",
         type=date.fromisoformat,
         default=None,
-        help="also print a second attribution restricted to runs started on or "
-        "after this date (YYYY-MM-DD)",
+        help="also print a second P&L block and attribution restricted to runs "
+        "started on or after this date (YYYY-MM-DD)",
     )
 
     clv_cmd = sub.add_parser(
