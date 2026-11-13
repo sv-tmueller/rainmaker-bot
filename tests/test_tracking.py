@@ -2633,3 +2633,226 @@ def test_bootstrap_roi_interval_is_none_without_outlay():
     from rainmaker.tracking import bootstrap_roi_interval
 
     assert bootstrap_roi_interval({"2026-06-01": (0.0, 0.0), "2026-06-02": (0.0, 0.0)}) is None
+
+
+# --- compute_pnl_summary: net-of-fee P&L, lead split, interval (#525) -------
+
+
+def _bet_row(
+    market_id,
+    *,
+    ask,
+    won=True,
+    venue="polymarket",
+    settlement_date="2026-06-01",
+    started_at="2026-06-01T08:00:00",
+    variable="TMAX",
+    bucket="70-71°F",
+):
+    """One settled recommended YES bet as settled_rows() would return it."""
+    return {
+        "market_id": market_id,
+        "run_id": f"run-{market_id}",
+        "bucket": bucket,
+        "side": "YES",
+        "p_win": 0.9,
+        "edge": 0.2,
+        "recommended": 1,
+        "variable": variable,
+        "venue": venue,
+        "outcome_spec": None,
+        "city": "NYC",
+        "settlement_date": settlement_date,
+        "started_at": started_at,
+        "ask": ask,
+        "implied_prob": ask,
+        "actual_value": 71.0 if won else 90.0,
+        "settled_at": "t",
+    }
+
+
+def test_pnl_summary_known_answer_polymarket_win_and_loss():
+    from rainmaker.tracking import compute_pnl_summary
+
+    rows = [_bet_row("m1", ask=0.40, won=True), _bet_row("m2", ask=0.60, won=False)]
+    o = compute_pnl_summary(rows)["overall"]
+    assert (o["n_bets"], o["wins"], o["losses"]) == (2, 1, 1)
+    assert o["total_pnl"] == pytest.approx(0.0)
+    assert o["roi"] == pytest.approx(0.0)
+    # fee per share is 0.05 * ask * (1 - ask) = 0.012 on both bets
+    assert o["net_pnl"] == pytest.approx(-0.024)
+    assert o["net_outlay"] == pytest.approx(1.024)
+    assert o["net_roi"] == pytest.approx(-0.0234375)
+    assert o["fee_unapplied_bets"] == 0
+
+
+def test_pnl_summary_kalshi_pays_no_fee_and_is_flagged():
+    from rainmaker.tracking import compute_pnl_summary
+
+    summary = compute_pnl_summary([_bet_row("m1", ask=0.50, venue="kalshi")])
+    o = summary["overall"]
+    assert o["net_pnl"] == pytest.approx(o["total_pnl"]) == pytest.approx(0.50)
+    assert o["net_roi"] == pytest.approx(o["roi"])
+    assert o["fee_unapplied_bets"] == 1
+    assert summary["by_venue"]["kalshi"]["fee_unapplied_bets"] == 1
+    assert summary["by_venue"]["polymarket"]["n_bets"] == 0
+
+
+def test_pnl_summary_charges_a_null_venue_as_polymarket():
+    from rainmaker.tracking import compute_pnl_summary
+
+    summary = compute_pnl_summary([_bet_row("m1", ask=0.40, venue=None)])
+    assert summary["overall"]["net_pnl"] == pytest.approx(0.60 - 0.012)
+    assert summary["overall"]["fee_unapplied_bets"] == 0
+    assert summary["by_venue"]["polymarket"]["n_bets"] == 1
+
+
+def test_pnl_summary_unknown_venue_raises_rather_than_skipping_the_fee():
+    from rainmaker.tracking import compute_pnl_summary
+
+    with pytest.raises(ValueError, match="unknown venue"):
+        compute_pnl_summary([_bet_row("m1", ask=0.40, venue="betfair")])
+
+
+def test_pnl_summary_net_never_beats_gross():
+    from rainmaker.tracking import compute_pnl_summary
+
+    rows = [
+        _bet_row(f"m{i}", ask=0.05 + 0.09 * i, won=bool(i % 2), venue="polymarket")
+        for i in range(10)
+    ]
+    o = compute_pnl_summary(rows)["overall"]
+    assert o["net_roi"] <= o["roi"]
+
+
+def test_pnl_summary_ungradable_bet_is_skipped_everywhere():
+    from rainmaker.tracking import compute_pnl_summary
+
+    rows = [
+        _bet_row("m1", ask=0.40),
+        _bet_row("m2", ask=0.40, variable="PRCP", bucket="inches"),
+    ]
+    summary = compute_pnl_summary(rows)
+    assert summary["skipped"] == 1
+    assert summary["overall"]["n_bets"] == 1
+    parts = [*summary["by_lead"].values(), *summary["by_venue"].values()]
+    assert sum(p["n_bets"] for p in parts) == 2  # lead split and venue split, 1 each
+
+
+def test_pnl_summary_gross_matches_compute_pnl_overall_and_per_venue():
+    from rainmaker.tracking import compute_pnl_summary
+
+    conn = connect(":memory:")
+    _setup_attribution_fixture(conn, add_since_bets=True)
+    rows = settled_rows(conn)
+    summary = compute_pnl_summary(rows)
+    for stats, expected in (
+        (summary["overall"], compute_pnl(conn, rows=rows)),
+        (summary["by_venue"]["polymarket"], compute_pnl(conn, venue="polymarket", rows=rows)),
+        (summary["by_venue"]["kalshi"], compute_pnl(conn, venue="kalshi", rows=rows)),
+    ):
+        for key in ("n_bets", "wins", "losses", "total_pnl", "roi"):
+            assert stats[key] == pytest.approx(expected[key])
+    assert summary["skipped"] == compute_pnl(conn, rows=rows)["skipped"]
+    conn.close()
+
+
+def test_pnl_summary_since_differs_from_all_runs_and_matches_filtered_compute_pnl():
+    from rainmaker.tracking import compute_pnl_summary
+
+    conn = connect(":memory:")
+    _setup_attribution_fixture(conn, add_since_bets=True)
+    rows = settled_rows(conn)
+    since = "2026-06-01"
+    all_runs = compute_pnl_summary(rows)["overall"]
+    recent = compute_pnl_summary(rows, since=since)["overall"]
+    filtered = compute_pnl(conn, rows=[r for r in rows if r["started_at"] >= since])
+    conn.close()
+    assert all_runs["n_bets"] == 5 and recent["n_bets"] == 2
+    assert recent["total_pnl"] == pytest.approx(filtered["total_pnl"])
+    assert recent["roi"] == pytest.approx(filtered["roi"])
+    assert recent["n_bets"] == filtered["n_bets"]
+    assert recent["roi"] != pytest.approx(all_runs["roi"])
+
+
+def test_pnl_summary_lead_split_adds_up_and_same_day_matches_attribution():
+    from rainmaker.tracking import compute_pnl_summary
+
+    def at(settles, started, **kw):
+        return {
+            "settlement_date": f"2026-06-{settles:02d}",
+            "started_at": f"2026-06-{started:02d}T08:00:00",
+            **kw,
+        }
+
+    rows = [  # catch-up (lead -1), same-day (0), lead 1 and lead 3
+        _bet_row("m1", ask=0.30, won=True, **at(1, 2)),
+        _bet_row("m2", ask=0.40, won=False, **at(1, 1)),
+        _bet_row("m3", ask=0.50, won=True, **at(2, 1)),
+        _bet_row("m4", ask=0.60, won=True, venue="kalshi", **at(4, 1)),
+    ]
+    summary = compute_pnl_summary(rows)
+    overall = summary["overall"]
+    lead = summary["by_lead"]
+    assert (lead["catch_up"]["n_bets"], lead["same_day"]["n_bets"]) == (1, 1)
+    assert lead["lead_1_plus"]["n_bets"] == 2
+    for key in (
+        "n_bets",
+        "wins",
+        "losses",
+        "total_pnl",
+        "staked",
+        "net_pnl",
+        "net_outlay",
+        "fee_unapplied_bets",
+    ):
+        assert sum(p[key] for p in lead.values()) == pytest.approx(overall[key]), key
+        assert sum(p[key] for p in summary["by_venue"].values()) == pytest.approx(overall[key]), key
+    seg = {s["segment"]: s for s in compute_attribution(None, rows=rows)["lead"]}
+    assert lead["same_day"]["n_bets"] == seg["0"]["n"]
+    assert lead["same_day"]["total_pnl"] == pytest.approx(seg["0"]["pnl"])
+    assert lead["same_day"]["staked"] == pytest.approx(seg["0"]["staked"])
+
+
+def test_pnl_summary_interval_clusters_by_settlement_date():
+    from rainmaker.tracking import bootstrap_roi_interval, compute_pnl_summary
+
+    rows = [
+        _bet_row("m1", ask=0.40, won=True, settlement_date="2026-06-01"),
+        _bet_row("m2", ask=0.40, won=False, settlement_date="2026-06-01"),
+        _bet_row("m3", ask=0.50, won=True, settlement_date="2026-06-02"),
+        _bet_row("m4", ask=0.30, won=False, settlement_date="2026-06-03"),
+    ]
+    summary = compute_pnl_summary(rows)
+    assert summary["dates"] == 3
+    fee = lambda a: 0.05 * a * (1 - a)  # noqa: E731
+    expected = bootstrap_roi_interval(
+        {
+            "2026-06-01": (0.6 - fee(0.4) - 0.4 - fee(0.4), 0.8 + 2 * fee(0.4)),
+            "2026-06-02": (0.5 - fee(0.5), 0.5 + fee(0.5)),
+            "2026-06-03": (-0.3 - fee(0.3), 0.3 + fee(0.3)),
+        }
+    )
+    assert expected is not None
+    iv = summary["net_roi_interval"]
+    assert iv is not None
+    assert (iv.lo, iv.hi, iv.dates) == pytest.approx((expected.lo, expected.hi, 3))
+
+
+def test_pnl_summary_interval_is_none_below_two_dates():
+    from rainmaker.tracking import compute_pnl_summary
+
+    summary = compute_pnl_summary([_bet_row("m1", ask=0.40), _bet_row("m2", ask=0.50)])
+    assert summary["dates"] == 1
+    assert summary["net_roi_interval"] is None
+
+
+def test_pnl_summary_empty_rows_is_all_zero():
+    from rainmaker.tracking import compute_pnl_summary
+
+    summary = compute_pnl_summary([])
+    assert summary["overall"]["n_bets"] == 0
+    assert summary["overall"]["net_roi"] == 0.0
+    assert summary["net_roi_interval"] is None
+    assert summary["skipped"] == 0
+    assert summary["dates"] == 0

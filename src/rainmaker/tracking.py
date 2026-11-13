@@ -32,6 +32,7 @@ from rainmaker.domain import (
     utc_day,
     utc_hour,
 )
+from rainmaker.fees import taker_fee_per_share
 from rainmaker.forecasts.base import ForecastSample
 from rainmaker.polymarket.prices import fetch_price_history, last_before
 from rainmaker.probability.calibration import (
@@ -44,6 +45,7 @@ from rainmaker.probability.calibration import (
 from rainmaker.probability.distribution import inter_family_gap
 from rainmaker.probability.outcomes import settles
 from rainmaker.probability.precip_outcomes import precip_settles
+from rainmaker.ranking.edge import taker_fee_rate
 from rainmaker.store.db import Conn
 from rainmaker.store.record import save_accuracy
 
@@ -364,6 +366,118 @@ def compute_pnl(
         "roi": roi,
         "skipped": skipped,
     }
+
+
+_PNL_VENUES = ("polymarket", "kalshi")
+
+
+def _pnl_stats(graded: list[tuple[dict[str, Any], bool]]) -> dict[str, Any]:
+    """Gross and net-of-fee P&L over graded (bet, won) pairs at a one-unit stake.
+
+    Net follows paper_tracking: fee = taker_fee_per_share(ask, venue rate), net
+    P&L is gross minus the fee and net outlay is ask plus the fee, so advisory and
+    paper net ROI are comparable. Kalshi's fee is not applied (rate 0, see
+    KALSHI_FEE_GAP); those bets are counted so the printout can say so. Every
+    block (headline and splits) is built here, so the splits add up by construction.
+    """
+    pnl = staked = net_pnl = net_outlay = 0.0
+    wins = fee_unapplied = 0
+    for r, won in graded:
+        ask = r["ask"]
+        venue = r.get("venue") or "polymarket"
+        fee = taker_fee_per_share(ask, taker_fee_rate(venue))
+        gross = (1 - ask) if won else -ask
+        staked += ask
+        pnl += gross
+        net_pnl += gross - fee
+        net_outlay += ask + fee
+        wins += int(won)
+        fee_unapplied += int(venue == "kalshi")
+    n = len(graded)
+    return {
+        "n_bets": n,
+        "wins": wins,
+        "losses": n - wins,
+        "total_pnl": pnl,
+        "staked": staked,
+        "roi": pnl / staked if staked else 0.0,
+        "net_pnl": net_pnl,
+        "net_outlay": net_outlay,
+        "net_roi": net_pnl / net_outlay if net_outlay else 0.0,
+        "fee_unapplied_bets": fee_unapplied,
+    }
+
+
+_LEAD_PARTS = {
+    "0": "same_day",
+    "1": "lead_1_plus",
+    "2": "lead_1_plus",
+    "3+": "lead_1_plus",
+    "<0 (catch-up)": "catch_up",
+}
+
+
+def compute_pnl_summary(rows: list[dict[str, Any]], since: str | None = None) -> dict[str, Any]:
+    """The P&L block for `track` and `attribution`: gross and net of fee, by lead and venue.
+
+    Rows only, never a conn: the caller passes the settled_rows() result it
+    already holds, so this adds no query (#277). Same bet population as
+    compute_pnl (best-edge recommended bet per market and run, ungradable bets
+    counted in "skipped"), so its gross figures match compute_pnl's.
+
+    since (an ISO "YYYY-MM-DD" string) restricts to runs.started_at on or after
+    that date, applied after the latest-run-per-day dedup with the same
+    equivalence argument as compute_attribution's since (#323).
+
+    The interval is a bootstrap of net ROI with settlement dates as the clusters,
+    the statistic paper-report bootstraps (#513). "catch_up" holds bets from runs
+    after settlement (lead < 0), so the lead parts add up to the headline.
+    """
+    if since is not None:
+        rows = [r for r in rows if r["started_at"] >= since]
+    graded: list[tuple[dict[str, Any], bool]] = []
+    skipped = 0
+    for r in _best_per_market_run(rows):
+        won = _bet_won(r)
+        if won is None:
+            skipped += 1
+        else:
+            graded.append((r, won))
+
+    by_lead: dict[str, list[tuple[dict[str, Any], bool]]] = {
+        "same_day": [],
+        "lead_1_plus": [],
+        "catch_up": [],
+    }
+    by_venue: dict[str, list[tuple[dict[str, Any], bool]]] = {v: [] for v in _PNL_VENUES}
+    for r, won in graded:
+        part = _LEAD_PARTS[_lead_bucket(r["settlement_date"], r["started_at"])]
+        by_lead[part].append((r, won))
+        by_venue.setdefault(r.get("venue") or "polymarket", []).append((r, won))
+
+    by_date: dict[str, tuple[float, float]] = {}
+    for date_key, group in _group_by_settlement_date(graded).items():
+        stats = _pnl_stats(group)
+        by_date[date_key] = (stats["net_pnl"], stats["net_outlay"])
+
+    return {
+        "overall": _pnl_stats(graded),
+        "by_lead": {part: _pnl_stats(group) for part, group in by_lead.items()},
+        "by_venue": {venue: _pnl_stats(group) for venue, group in by_venue.items()},
+        "skipped": skipped,
+        "dates": len(by_date),
+        "net_roi_interval": bootstrap_roi_interval(by_date),
+    }
+
+
+def _group_by_settlement_date(
+    graded: list[tuple[dict[str, Any], bool]],
+) -> dict[str, list[tuple[dict[str, Any], bool]]]:
+    groups: dict[str, list[tuple[dict[str, Any], bool]]] = defaultdict(list)
+    for r, won in graded:
+        # a row without a settlement date clusters under "" (as paper-report does)
+        groups[r["settlement_date"] or ""].append((r, won))
+    return groups
 
 
 def _cell_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
