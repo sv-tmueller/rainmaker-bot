@@ -1,7 +1,9 @@
 import { Fragment } from "react";
 
 import type { Bet } from "../lib/data";
+import type { Freshness } from "../lib/freshness";
 import { degC, pct, signed, withCelsius } from "../lib/format";
+import { livePrice, type BookTop, type LiveView } from "../lib/liveBook";
 
 function groupByCity(bets: Bet[]): { city: string; bets: Bet[] }[] {
   // bets arrive sorted by displayed edge (rankBets); preserving first-seen order
@@ -34,15 +36,58 @@ function marketUrl(b: Bet): string | null {
   return null;
 }
 
-export function BetsTable({ bets }: { bets: Bet[] }) {
+function OldForecast() {
+  return (
+    <span className="ml-1 text-[9px] font-normal uppercase tracking-wide text-warn">
+      old forecast
+    </span>
+  );
+}
+
+function LiveAskCell({ v }: { v: LiveView }) {
+  if (v.source === "live") {
+    return (
+      <>
+        {v.ask!.toFixed(2)}
+        {v.move !== null && <span className="ml-1 text-[10px] text-faint">{signed(v.move)}</span>}
+      </>
+    );
+  }
+  return (
+    <>
+      {v.ask === null ? "" : v.ask.toFixed(2)}
+      <span className="ml-1 text-[9px] uppercase tracking-wide text-faint">
+        {v.source === "stored" ? "stored" : "live price unavailable"} · {v.ageLabel}
+      </span>
+    </>
+  );
+}
+
+// A stale row that clears never gets the positive colour, so it does not read
+// as a fresh recommendation.
+function statusClass(v: LiveView): string {
+  if (v.status === "clears the gate") return v.oldForecast ? "text-warn" : "text-pos";
+  return "text-warm";
+}
+
+export function BetsTable({
+  bets,
+  tops,
+  fresh,
+}: {
+  bets: Bet[];
+  // Live book tops by YES token id, read at page load. They never re-sort rows.
+  tops: Map<string, BookTop | null>;
+  fresh: Freshness | null;
+}) {
   const groups = groupByCity(bets);
   return (
     <section className="rounded border border-line bg-panel px-4 py-4">
       <div className="text-[10px] uppercase tracking-[0.1em] text-muted">
         Recommended bets{" "}
         <span className="normal-case tracking-normal text-faint">
-          · grouped by city, best edge first · edge net of the Polymarket taker fee,
-          Kalshi gross
+          · grouped by city, best stored edge first · edge net of the Polymarket taker
+          fee, Kalshi gross · live ask read from the order book at page load
         </span>
       </div>
       {bets.length === 0 ? (
@@ -56,8 +101,11 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
               <th className="font-medium">Side</th>
               <th className="text-right font-medium">Forecast</th>
               <th className="text-right font-medium">P(win)</th>
-              <th className="text-right font-medium">Ask</th>
+              <th className="text-right font-medium">Run ask</th>
               <th className="text-right font-medium">Edge</th>
+              <th className="pl-4 text-right font-medium">Live ask</th>
+              <th className="text-right font-medium">Live edge</th>
+              <th className="pl-3 text-left font-medium">Status</th>
               <th className="pl-7 text-right font-medium">σ</th>
               <th className="text-right font-medium">Src</th>
             </tr>
@@ -67,7 +115,7 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
               <Fragment key={g.city}>
                 <tr>
                   <td
-                    colSpan={9}
+                    colSpan={12}
                     className="border-t border-line pt-3 pb-1 font-sans text-[11px] uppercase tracking-[0.08em] text-muted"
                   >
                     {g.city}
@@ -75,6 +123,8 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
                 </tr>
                 {g.bets.map((b, i) => {
                   const url = marketUrl(b);
+                  const top = b.yesTokenId === null ? null : (tops.get(b.yesTokenId) ?? null);
+                  const live = livePrice(b, top, fresh);
                   return (
                   <tr key={`${g.city}-${i}`} className="border-t border-line-soft">
                     <td className="py-1.5 font-sans text-[13px]">
@@ -120,6 +170,21 @@ export function BetsTable({ bets }: { bets: Bet[] }) {
                       <span className="ml-1 text-[9px] font-normal uppercase tracking-wide text-faint">
                         {b.edgeBasis}
                       </span>
+                    </td>
+                    <td className="pl-4 text-right">
+                      <LiveAskCell v={live} />
+                    </td>
+                    <td className="text-right">
+                      {live.netEdge !== null && (
+                        <>
+                          {signed(live.netEdge)}
+                          {live.oldForecast && <OldForecast />}
+                        </>
+                      )}
+                    </td>
+                    <td className={`pl-3 text-left ${statusClass(live)}`}>
+                      {live.status}
+                      {live.status !== null && live.oldForecast && <OldForecast />}
                     </td>
                     <td className="pl-7 text-right text-faint">
                       {b.sigma === null ? "" : b.sigma.toFixed(1)}
