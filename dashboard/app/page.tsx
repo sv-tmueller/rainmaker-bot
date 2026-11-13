@@ -8,6 +8,8 @@ import { ReliabilityChart } from "../components/ReliabilityChart";
 import { RunHealth } from "../components/RunHealth";
 import { SettledList } from "../components/SettledList";
 import { getDashboardData } from "../lib/data";
+import { runFreshness } from "../lib/freshness";
+import { fetchBookTops } from "../lib/liveBook";
 import { visibleBreaks } from "../lib/structuralBreaks";
 
 export const dynamic = "force-dynamic"; // always read live data, never prerender
@@ -15,6 +17,13 @@ export const dynamic = "force-dynamic"; // always read live data, never prerende
 export default async function Page() {
   const { run, bets, snapshots, venueSnapshots, accuracy, calibration, settled } =
     await getDashboardData();
+  // One clock read, shared by the age label and the old-forecast mark.
+  const nowMs = Date.now();
+  const fresh = runFreshness(run?.startedAt ?? null, nowMs);
+  // Only Polymarket bets carry a token (data.ts), so Kalshi is never fetched.
+  const tops = await fetchBookTops(
+    bets.flatMap((b) => (b.yesTokenId === null ? [] : [b.yesTokenId])),
+  );
   const snap = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null;
   const snapshotDates = snapshots.map((s) => s.date).sort();
   const breaksShown = visibleBreaks(snapshotDates);
@@ -27,7 +36,7 @@ export default async function Page() {
 
       <KpiStrip snap={snap} venue={venueSnapshots} />
 
-      <BetsTable bets={bets} />
+      <BetsTable bets={bets} tops={tops} fresh={fresh} />
 
       <section className="mt-3.5 rounded border border-line bg-panel px-4 py-4">
         <div className="text-[10px] uppercase tracking-[0.1em] text-muted">Track record</div>
