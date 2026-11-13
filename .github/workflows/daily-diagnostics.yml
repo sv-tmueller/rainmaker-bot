@@ -46,7 +46,8 @@ jobs:
           # routing, and the archive re-expression; the v2 date stays in the
           # refit v2 appendix); bump this value in the same change that
           # records the next refit (see docs/operations/README.md). Single-sourced
-          # here for every --since call below.
+          # here for every --since call below. delay-replay.yml reads this line
+          # at dispatch, so keep the REGIME_SINCE: "YYYY-MM-DD" form.
           REGIME_SINCE: "2026-10-20"
         run: |
           case "$DATABASE_URL" in

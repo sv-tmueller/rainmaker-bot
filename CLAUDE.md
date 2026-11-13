@@ -224,6 +224,7 @@ deploy/               systemd units, wrapper and env template for the 3h job on 
   daily-diagnostics.yml  scheduled cron (daily): snapshot -> track -> tail-check against Supabase
   ci.yml              lint/format/type/tests + dashboard build on every PR and main push
   regrade.yml         on-demand: bulk-regenerate US Polymarket outcomes on the current source
+  delay-replay.yml    on-demand: delay-replay against prod (one full read per dispatch); output in the job summary and an artifact
   snapshot-backfill.yml, backfill.yml, backup.yml, gate-sweep.yml,
   weekly-metrics.yml, keepalive.yml   on-demand/scheduled operators (see the files)
 tests/
