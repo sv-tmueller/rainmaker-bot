@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapBetRow, type BetEnrichment, type RawBetPredictionRow } from "./data";
+import { mapBetRow, parseMarketRaw, type BetEnrichment, type RawBetPredictionRow } from "./data";
 import { POLYMARKET_TAKER_FEE_RATE, takerFeePerShare } from "./fees";
 
 // mapBetRow is the one place a prediction row becomes a Bet, so these cases
@@ -22,6 +22,8 @@ function enrich(overrides: Partial<BetEnrichment> = {}): BetEnrichment {
     venue: "polymarket",
     variable: "TMAX",
     slug: "ny-high",
+    station: "KNYC",
+    yesTokens: { "80-81": "tok-80-81", "82-83": "tok-82-83" },
     ...overrides,
   };
 }
@@ -64,5 +66,65 @@ describe("mapBetRow: shown edge by venue and ask", () => {
     expect(bet.mu).toBeNull();
     expect(bet.sigma).toBeNull();
     expect(bet.nSources).toBeNull();
+  });
+});
+
+describe("mapBetRow: live-price fields", () => {
+  it("carries the station and the YES token for the row's bucket", () => {
+    const bet = mapBetRow(pred, enrich(), 0.5);
+    expect(bet.station).toBe("KNYC");
+    expect(bet.yesTokenId).toBe("tok-80-81");
+  });
+
+  it("uses the YES token for a NO row too", () => {
+    const bet = mapBetRow({ ...pred, side: "NO" }, enrich(), 0.5);
+    expect(bet.yesTokenId).toBe("tok-80-81");
+  });
+
+  it("has a null token when the bucket is not in the stored market", () => {
+    const bet = mapBetRow({ ...pred, bucket: "99-100" }, enrich(), 0.5);
+    expect(bet.yesTokenId).toBeNull();
+  });
+
+  it("has a null token and station for a Kalshi row", () => {
+    const bet = mapBetRow(pred, enrich({ venue: "kalshi" }), 0.5);
+    expect(bet.yesTokenId).toBeNull();
+    expect(bet.station).toBeNull();
+  });
+});
+
+describe("parseMarketRaw", () => {
+  it("reads the station ICAO and each bucket's YES token", () => {
+    const raw = JSON.stringify({
+      target: { station: { icao: "KSFO", city: "San Francisco" } },
+      buckets: [
+        { label: "60-61", yes_token_id: "a", no_token_id: "x" },
+        { label: "62-63", yes_token_id: "b" },
+      ],
+    });
+    expect(parseMarketRaw(raw)).toEqual({ station: "KSFO", yesTokens: { "60-61": "a", "62-63": "b" } });
+  });
+
+  it("reads tokens for a monthly precip market, which has no ICAO", () => {
+    const raw = JSON.stringify({
+      target: { station: { resolution_name: "NYC climate" } },
+      buckets: [{ label: "2-3 in", yes_token_id: "p1" }],
+    });
+    expect(parseMarketRaw(raw)).toEqual({ station: null, yesTokens: { "2-3 in": "p1" } });
+  });
+
+  it("skips buckets with a missing or non-string label or token", () => {
+    const raw = JSON.stringify({
+      buckets: [{ label: "a" }, { yes_token_id: "b" }, { label: "c", yes_token_id: 5 }, { label: "d", yes_token_id: "" }],
+    });
+    expect(parseMarketRaw(raw)).toEqual({ station: null, yesTokens: {} });
+  });
+
+  it("returns empty for unparsable, null or non-object raw", () => {
+    const empty = { station: null, yesTokens: {} };
+    expect(parseMarketRaw("not json")).toEqual(empty);
+    expect(parseMarketRaw(null)).toEqual(empty);
+    expect(parseMarketRaw("42")).toEqual(empty);
+    expect(parseMarketRaw(JSON.stringify({ buckets: "nope" }))).toEqual(empty);
   });
 });

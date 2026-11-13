@@ -20,6 +20,8 @@ function bet(venue: string, ask: number | null, edge: number, title: string): Be
     edge,
     shownEdge: s.value,
     edgeBasis: s.basis,
+    yesTokenId: null,
+    station: null,
   };
 }
 
