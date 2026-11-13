@@ -774,7 +774,8 @@ def test_market_at_lead_partial_fill_applies_per_side():
     assert b.no_ask == pytest.approx(0.82)  # fallback: (1-0.20) + spread/2
 
 
-def _trades_fixture_raw() -> list[dict[str, Any]]:
+def _trades_fixture_raw() -> dict[str, Any]:
+    """The v2 trades response body: {"data": [...], "pagination": {...}}."""
     return json.loads((FIXTURES / "polymarket_trades_weather.json").read_text())
 
 
@@ -887,13 +888,13 @@ def test_replay_market_fill_coverage_distribution_per_market(httpx_mock):
     # Build fill_histories directly from the trades fixture (no HTTP needed).
     d0_fills = [
         FillPoint(t=f["timestamp"], p=f["price"])
-        for f in _trades_fixture_raw()
-        if f["side"] == "BUY" and f["asset"] == "d0"
+        for f in _trades_fixture_raw()["data"]
+        if f["side"] == "BUY" and f["token_id"] == "d0"
     ]
     d1_fills = [
         FillPoint(t=f["timestamp"], p=f["price"])
-        for f in _trades_fixture_raw()
-        if f["side"] == "BUY" and f["asset"] == "d1"
+        for f in _trades_fixture_raw()["data"]
+        if f["side"] == "BUY" and f["token_id"] == "d1"
     ]
     # Actuals: March 2 = 34F, March 3 = 35F (from the NCEI fixture).
     actuals_by_date = {"2026-03-02": 34.0, "2026-03-03": 35.0}
@@ -1432,9 +1433,11 @@ def test_fetch_fills_tolerant_two_408s_degrades_to_empty(httpx_mock, capsys):
     assert "408" in warn_lines[0]
 
 
-def test_fetch_fills_tolerant_404_raises(httpx_mock):
-    """A non-retryable 4xx (contract regression, bad conditionId, IP block) surfaces."""
-    httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), status_code=404)
+@pytest.mark.parametrize("status", [404, 410])
+def test_fetch_fills_tolerant_non_retryable_4xx_raises(httpx_mock, status):
+    """A non-retryable 4xx (contract regression, retired API, bad condition, IP block)
+    surfaces. 410 must not degrade to empty fills: that would hide the next break."""
+    httpx_mock.add_response(url=re.compile(re.escape(TRADES_URL)), status_code=status)
     with httpx.Client() as client:
         with pytest.raises(httpx.HTTPStatusError):
             pnl_backtest_mod._fetch_fills_tolerant("0xcond_d", "d0", client, sleep=_noop_sleep)
@@ -1473,7 +1476,7 @@ def _closed_events_one_market_persistently_408() -> list[dict[str, Any]]:
 
 
 def _trades_partial_degrade_callback(request: httpx.Request) -> httpx.Response:
-    if request.url.params.get("market") == "0xcond_e":
+    if request.url.params.get("condition") == "0xcond_e":
         return httpx.Response(408)
     return httpx.Response(200, json=_trades_fixture_raw())
 
