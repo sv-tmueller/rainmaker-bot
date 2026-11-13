@@ -1379,6 +1379,26 @@ def _main(argv: list[str] | None = None) -> None:
         help="restrict to predictions whose run started on or after this date (YYYY-MM-DD)",
     )
 
+    delay_replay_cmd = sub.add_parser(
+        "delay-replay",
+        help=(
+            "re-price settled recommended Polymarket bets at run time +1h/+3h/+6h/+12h "
+            "from the CLOB trade history; read-only, local store by default"
+        ),
+    )
+    delay_replay_cmd.add_argument("--db", default=DB_PATH, help="SQLite database path")
+    delay_replay_cmd.add_argument(
+        "--since",
+        type=date.fromisoformat,
+        default=None,
+        help="restrict to predictions whose run started on or after this date (YYYY-MM-DD)",
+    )
+    delay_replay_cmd.add_argument(
+        "--allow-prod",
+        action="store_true",
+        help="read a Postgres store (prod); refused without this flag",
+    )
+
     recover_gap_cmd = sub.add_parser(
         "recover-gap",
         help="rediscover, reprice, and persist US TMAX/TMIN markets missed during a date range",
@@ -1467,8 +1487,34 @@ def _main(argv: list[str] | None = None) -> None:
     elif args.command == "venue-decomp":
         since = args.since.isoformat() if args.since is not None else None
         _venue_decomp(db, since)
+    elif args.command == "delay-replay":
+        since = args.since.isoformat() if args.since is not None else None
+        _delay_replay(db, since, args.allow_prod)
     elif args.command == "recover-gap":
         _recover_gap(args.from_date, args.to_date, db)
+
+
+def _delay_replay(db_path: str, since: str | None, allow_prod: bool) -> None:
+    """Entry-delay replay (read-only diagnostic, #526).
+
+    Never calls init_schema: it would write, and with --allow-prod that write
+    would land on prod. A missing SQLite file exits instead of being created.
+    """
+    from rainmaker.delay_replay import render_delay_replay, run_delay_replay
+    from rainmaker.store.db import refuse_prod_dsn
+
+    refuse_prod_dsn(db_path, allow_prod=allow_prod)
+    if "://" not in db_path and not Path(db_path).exists():
+        raise SystemExit(f"database not found: {db_path}")
+    conn = connect(db_path)
+    client = build_client(30.0)
+    try:
+        result = run_delay_replay(conn, client, since=since)
+    finally:
+        client.close()
+        conn.close()
+    for line in render_delay_replay(result, since=since):
+        print(line)
 
 
 def _recover_gap(from_date: date, to_date: date, db_path: str) -> None:
