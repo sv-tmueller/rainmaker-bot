@@ -1160,9 +1160,11 @@ apply the Kalshi fee once its coefficient is confirmed.
   The weekly-metrics replay therefore drops bets that cleared only gross, and
   its bet counts from the first run after the merge are not comparable with
   earlier weeks.
-- P&L stays gross at the ask in `track`, `gate-sweep` and `backtest-pnl`, so it
-  stays comparable with recorded sweeps. Net-of-fee P&L belongs to the paper
-  trading report (#492).
+- `track` and `attribution` print P&L gross at the ask as the headline, with the
+  net-of-fee ROI beside it (#525), so a recorded sweep stays comparable. Net is
+  the ask plus the per-share taker fee as outlay, the same definition as the
+  paper trading report (#492); the Kalshi fee is not applied and those bets are
+  flagged. `gate-sweep` and `backtest-pnl` stay gross.
 - The dashboard's recommended-bets table shows and ranks on net edge for
   Polymarket rows and gross edge for Kalshi rows, each cell tagged `net` or
   `gross` (#506). It computes net client side from the stored gross `edge` and

@@ -14,23 +14,26 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-import numpy as np
-
 from rainmaker.store.db import Conn
-from rainmaker.tracking import _best_per_market_run, _bet_won
+from rainmaker.tracking import (
+    ROI_INTERVAL_LEVEL as ROI_INTERVAL_LEVEL,
+)
+from rainmaker.tracking import (
+    ROI_INTERVAL_MIN_DATES,
+    RoiInterval,
+    _best_per_market_run,
+    _bet_won,
+    bootstrap_roi_interval,
+)
+from rainmaker.tracking import (
+    ROI_INTERVAL_RESAMPLES as ROI_INTERVAL_RESAMPLES,
+)
 
 GO_LIVE_MIN_ORDERS = 400
 GO_LIVE_MIN_DATES = 60
 GO_LIVE_MIN_NET_ROI = 0.01
 GO_LIVE_MAX_GAP_USDC = 0.005
 
-# Bootstrap for the net-ROI interval (#513). Fixed seed so every run prints the
-# same interval. MIN_DATES guards the misleading case: one date makes every
-# resample identical, and no date leaves nothing to draw.
-ROI_INTERVAL_RESAMPLES = 10_000
-ROI_INTERVAL_LEVEL = 0.90
-ROI_INTERVAL_SEED = 0
-ROI_INTERVAL_MIN_DATES = 2
 # 0.5 - 0.495 is 0.0050000000000000044 in floating point, so a gap that is exactly
 # at the bar on paper would otherwise fail it.
 _THRESHOLD_TOL = 1e-9
@@ -196,20 +199,6 @@ class Check:
 
 
 @dataclass(frozen=True)
-class RoiInterval:
-    """Net-ROI percentile interval from resampling settlement dates (#513).
-
-    Informational: it sits next to the verdict and never feeds it.
-    """
-
-    lo: float
-    hi: float
-    level: float
-    resamples: int
-    dates: int
-
-
-@dataclass(frozen=True)
 class PaperReport:
     era: PaperEra | None
     status_counts: dict[str, int]
@@ -264,43 +253,19 @@ def _best_view(sample: list[dict[str, Any]]) -> BestView:
 
 
 def _bootstrap_roi_interval(sample: list[dict[str, Any]]) -> RoiInterval | None:
-    """Resample settlement dates and pool the drawn dates' ROI each time.
+    """Net-ROI interval over the sample, with settlement dates as the clusters.
 
-    Orders on one date share that day's weather, so orders are not independent.
-    Drawing dates (not orders) keeps that clustering. None when the sample has
-    no outlay or fewer than ROI_INTERVAL_MIN_DATES dates.
+    The numeric core is tracking.bootstrap_roi_interval, shared with `track`.
     """
-    by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_date: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
     for r in sample:
         # settlement_date is nullable in the schema; every app writer supplies
         # it, but a row without one clusters under "" rather than crashing
         # the sort (a robustness regression the #513 review asked to close).
-        by_date[r["settlement_date"] or ""].append(r)
-    dates = sorted(by_date)
-    if len(dates) < ROI_INTERVAL_MIN_DATES:
-        return None
-    date_pnl = np.array([sum(r["pnl_usdc"] for r in by_date[d]) for d in dates], dtype=float)
-    date_outlay = np.array(
-        [
-            sum(_outlay(r["shares"], r["fill_price"], r["fee_usdc"]) for r in by_date[d])
-            for d in dates
-        ],
-        dtype=float,
-    )
-    if date_outlay.sum() <= 0:
-        return None
-    rng = np.random.default_rng(ROI_INTERVAL_SEED)
-    draws = rng.integers(0, len(dates), size=(ROI_INTERVAL_RESAMPLES, len(dates)))
-    rois = date_pnl[draws].sum(axis=1) / date_outlay[draws].sum(axis=1)
-    tail = (1.0 - ROI_INTERVAL_LEVEL) / 2.0 * 100.0
-    lo, hi = np.percentile(rois, [tail, 100.0 - tail])
-    return RoiInterval(
-        lo=float(lo),
-        hi=float(hi),
-        level=ROI_INTERVAL_LEVEL,
-        resamples=ROI_INTERVAL_RESAMPLES,
-        dates=len(dates),
-    )
+        acc = by_date[r["settlement_date"] or ""]
+        acc[0] += r["pnl_usdc"]
+        acc[1] += _outlay(r["shares"], r["fill_price"], r["fee_usdc"])
+    return bootstrap_roi_interval({d: (v[0], v[1]) for d, v in by_date.items()})
 
 
 def _checks(sample: int, dates: int, roi: float | None, gap: float | None) -> tuple[Check, ...]:
