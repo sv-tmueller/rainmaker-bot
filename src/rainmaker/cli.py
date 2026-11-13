@@ -693,14 +693,21 @@ def _track(db_path: str, since: str | None = None) -> None:
     # compute_calibration's is broader (all YES rows plus that same bet
     # population), so it can catch an ungradable row the narrower population
     # never sees (#333 round 1). Surface whichever is larger so a skip anywhere
-    # in either population is never silently dropped.
-    skipped = max(summary["skipped"], cal.get("skipped", 0))
-    if skipped:
-        print(f"skipped {skipped} ungradable settled row(s)")
+    # in either population is never silently dropped. With --since the two
+    # populations have different scopes, so each count prints with its own line.
+    cal_skipped = cal.get("skipped", 0)
+    if since is None:
+        skipped = max(summary["skipped"], cal_skipped)
+        if skipped:
+            print(f"skipped {skipped} ungradable settled row(s)")
+    elif summary["skipped"]:
+        print(f"skipped {summary['skipped']} ungradable settled row(s) (since {since})")
     brier = "n/a" if cal["brier"] is None else f"{cal['brier']:.3f}"
     hit = "n/a" if cal["hit_rate"] is None else f"{cal['hit_rate']:.0%}"
     pooled = "calibration" if since is None else "calibration (all runs)"
     print(f"{pooled}: Brier {brier}, recommended hit rate {hit} (n={cal['n']})")
+    if since is not None and cal_skipped:
+        print(f"skipped {cal_skipped} ungradable settled row(s) (all runs)")
 
     if since is not None:
         print(f"since: {since}")

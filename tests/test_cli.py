@@ -942,6 +942,61 @@ def test_track_since_restricts_the_pnl_block_and_labels_the_pooled_line(tmp_path
     assert "calibration:" in plain and "(all runs)" not in plain
 
 
+def _seed_skip_history(db_path: str, *, ungradable_after: bool = False) -> None:
+    """Two ungradable bets in May and two gradable June bets (a win and a loss).
+
+    An ungradable bet is one whose bucket label no parser can read. With
+    ungradable_after, a third such bet lands in June as well.
+    """
+    conn = connect(db_path)
+    init_schema(conn)
+    for market_id, started in (("u1", "2026-05-20T00:00:00"), ("u2", "2026-05-21T00:00:00")):
+        _seed_bet(
+            conn, market_id, venue="polymarket", started_at=started,
+            settlement_date="2026-05-22", ask=0.40, actual=71.0, bucket="inches",
+        )  # fmt: skip
+    _seed_bet(
+        conn, "g1", venue="polymarket", started_at="2026-06-10T00:00:00",
+        settlement_date="2026-06-11", ask=0.40, actual=71.0,
+    )  # fmt: skip
+    _seed_bet(
+        conn, "g2", venue="polymarket", started_at="2026-06-11T00:00:00",
+        settlement_date="2026-06-12", ask=0.40, actual=75.0,
+    )  # fmt: skip
+    if ungradable_after:
+        _seed_bet(
+            conn, "u3", venue="polymarket", started_at="2026-06-12T00:00:00",
+            settlement_date="2026-06-13", ask=0.40, actual=71.0, bucket="inches",
+        )  # fmt: skip
+    conn.commit()
+    conn.close()
+
+
+def test_track_since_labels_the_all_time_skip_count_with_the_calibration_line(tmp_path, capsys):
+    """The two ungradable bets predate --since, so the P&L block has no skips; the
+    all-time count belongs to the calibration line and says so (#525 round 1)."""
+    db = str(tmp_path / "t.db")
+    _seed_skip_history(db)
+    cli.main(["track", "--db", db, "--since", "2026-06-01"])
+    out = capsys.readouterr().out
+    assert "P&L (since 2026-06-01): 2 bets, 1-1" in out
+    assert out.index("calibration (all runs):") < out.index(
+        "skipped 2 ungradable settled row(s) (all runs)"
+    )
+    assert "ungradable settled row(s)\n" not in out  # no unlabelled skip line
+
+
+def test_track_since_scopes_the_pnl_skip_count_to_the_since_window(tmp_path, capsys):
+    db = str(tmp_path / "t.db")
+    _seed_skip_history(db, ungradable_after=True)
+    cli.main(["track", "--db", db, "--since", "2026-06-01"])
+    out = capsys.readouterr().out
+    pnl_line = out.index("P&L (since 2026-06-01): 2 bets, 1-1")
+    since_skip = out.index("skipped 1 ungradable settled row(s) (since 2026-06-01)")
+    assert pnl_line < since_skip < out.index("calibration (all runs):")
+    assert "skipped 3 ungradable settled row(s) (all runs)" in out
+
+
 def test_track_says_so_when_there_are_too_few_dates_for_an_interval(tmp_path, capsys):
     db = str(tmp_path / "t.db")
     conn = connect(db)
