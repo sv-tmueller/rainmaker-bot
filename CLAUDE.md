@@ -115,6 +115,12 @@ Python 3.11+ managed with uv. Commands:
   edge gap: ROI by city x venue, plus a price-proxy reprojection at implied_prob
   vs ask; read-only diagnostic, ad hoc, not part of a scheduled workflow;
   `--since YYYY-MM-DD` matches `track`/`tail-check`)
+- Delay replay: `uv run rainmaker delay-replay` (re-price settled recommended
+  Polymarket bets at run time +1h/+3h/+6h/+12h from the CLOB trade history, ROI
+  per delay and lead beside the recorded-ask ROI, plus a +0h trade-price row;
+  missing prices are counted by reason; read-only, ad hoc, not part of a
+  scheduled workflow; `--since YYYY-MM-DD` matches `track`/`tail-check`;
+  refuses a Postgres DSN unless `--allow-prod`)
 - Paper report: `uv run rainmaker paper-report` (report over the paper
   orders: status counts, fill rate, net ROI, execution gap, per-era counts, and
   the PENDING / GO / NO-GO verdict against the go-live criterion; read-only,
@@ -166,6 +172,7 @@ src/rainmaker/
   tracking.py         hypothetical P&L + calibration scoring, daily snapshot
   gate_sweep.py       replay the recommendation gate over settled history at alternate values
   venue_decomp.py     decompose the Kalshi-vs-Polymarket edge gap (city x venue, price-proxy)
+  delay_replay.py     re-price settled bets at run time +1h..+12h from CLOB trade history (diagnostic)
   recover_gap.py      rediscover + reprice runs missed during the pre-#361 ICAO-guard gap
   settlement_divergence.py  divergence spike: NCEI vs ASOS vs resolved winners
   paper_tracking.py   grade paper orders at settle + the paper-report go-live verdict
