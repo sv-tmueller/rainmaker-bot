@@ -1167,7 +1167,14 @@ apply the Kalshi fee once its coefficient is confirmed.
   Polymarket rows and gross edge for Kalshi rows, each cell tagged `net` or
   `gross` (#506). It computes net client side from the stored gross `edge` and
   the stored ask; a row with no ask shows gross. The stored `predictions.edge`
-  stays gross.
+  stays gross. At page load the server also reads the public order book for each
+  recommended Polymarket bet and shows a live ask, a live net edge and a gate
+  status ("edge gone", "below the gate", "above the edge cap", "clears the
+  gate") beside the stored values (#528). The edge thresholds are copied into
+  `dashboard/lib/gate.ts`, and `gate.test.ts` fails if they drift from
+  `config.py`. Ranking stays on the stored edge, nothing live is stored, and a
+  live ask can differ a little from the stored one because the stored ask is
+  Gamma's `bestAsk` while the live ask comes from the book.
 - Tie-break divergence: the best bet per (market, run) is still picked on gross
   edge in tracking, gate-sweep, venue-decomp, pnl_backtest and the dashboard's
   settled list, while the report ranks on net. When two recommended outcomes in

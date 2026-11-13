@@ -22,6 +22,11 @@ export type Bet = {
   // row with a known ask, gross otherwise (edgeBasis says which).
   shownEdge: number;
   edgeBasis: "net" | "gross";
+  // Polymarket YES token for this outcome's bucket (both sides price off the
+  // YES book); null for Kalshi or when the stored market has no usable token.
+  yesTokenId: string | null;
+  // ICAO of the resolution station; null for Kalshi and for precip markets.
+  station: string | null;
 };
 
 // Displayed-edge order, best first. Net and gross values mix on purpose,
@@ -50,7 +55,43 @@ export type BetEnrichment = {
   venue: string | null;
   variable: string;
   slug: string | null;
+  // From markets.raw via parseMarketRaw; null/empty when raw was not read or
+  // would not parse (Kalshi rows are never read).
+  station: string | null;
+  yesTokens: Record<string, string>;
 };
+
+// The parts of a stored markets.raw the live reprice needs: the station ICAO
+// and each bucket's YES token. Reads buckets directly, so monthly precip
+// brackets work too. Anything unparsable gives the empty result.
+export function parseMarketRaw(raw: string | null): {
+  station: string | null;
+  yesTokens: Record<string, string>;
+} {
+  const empty = { station: null, yesTokens: {} };
+  if (raw === null) return empty;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return empty;
+  }
+  if (typeof parsed !== "object" || parsed === null) return empty;
+  const m = parsed as {
+    target?: { station?: { icao?: unknown } };
+    buckets?: unknown;
+  };
+  const icao = m.target?.station?.icao;
+  const yesTokens: Record<string, string> = {};
+  if (Array.isArray(m.buckets)) {
+    for (const b of m.buckets) {
+      if (typeof b?.label === "string" && typeof b?.yes_token_id === "string" && b.yes_token_id !== "") {
+        yesTokens[b.label] = b.yes_token_id;
+      }
+    }
+  }
+  return { station: typeof icao === "string" ? icao : null, yesTokens };
+}
 
 // A stored side is a string; anything but an explicit "NO" is YES (legacy rows
 // are YES).
@@ -80,6 +121,7 @@ export function mapBetRow(
   }
   const venue = e.venue ?? "polymarket";
   const ask = rawAsk ?? null;
+  const isPolymarket = venue === "polymarket";
   const edge = p.edge;
   const shown = shownEdge(edge, ask, venue);
   return {
@@ -98,6 +140,8 @@ export function mapBetRow(
     edge,
     shownEdge: shown.value,
     edgeBasis: shown.basis,
+    yesTokenId: isPolymarket ? (e.yesTokens[p.bucket] ?? null) : null,
+    station: isPolymarket ? e.station : null,
   };
 }
 
@@ -365,12 +409,22 @@ export async function getDashboardData(db: SupabaseClient = serverClient()) {
   const latestPredIds = (latestPreds.data ?? []).map((p) => p.market_id);
   const neededIds = [...new Set([...latestPredIds, ...settledIds])];
   const settledRunIds = [...new Set((settledPreds.data ?? []).map((p) => p.run_id))];
-  const [marketsQ, settledPrices, settledRunsQ] = await Promise.all([
+  const [marketsQ, rawQ, settledPrices, settledRunsQ] = await Promise.all([
     neededIds.length > 0
       ? db
           .from("markets")
           .select("id, title, slug, settlement_date, city, venue, variable")
           .in("id", neededIds)
+      : Promise.resolve({ data: [] }),
+    // markets.raw is a TEXT blob (about 4 KB each), so read it only for the
+    // latest run's recommended Polymarket markets. venue is NULL on legacy
+    // Polymarket rows, which a plain neq("venue", "kalshi") would drop.
+    latestPredIds.length > 0
+      ? db
+          .from("markets")
+          .select("id, raw")
+          .in("id", [...new Set(latestPredIds)])
+          .or("venue.is.null,venue.eq.polymarket")
       : Promise.resolve({ data: [] }),
     settledRunIds.length > 0
       ? db
@@ -400,12 +454,17 @@ export async function getDashboardData(db: SupabaseClient = serverClient()) {
   const settleDateOf = new Map(
     (marketsQ.data ?? []).map((m) => [m.id, (m.settlement_date as string | null) ?? null]),
   );
+  const marketRawOf = new Map(
+    (rawQ.data ?? []).map((m) => [m.id as string, parseMarketRaw((m.raw as string | null) ?? null)]),
+  );
   const enrichmentOf = (id: string): BetEnrichment => ({
     title: titleOf.get(id) ?? id,
     city: cityOf.get(id) ?? "",
     venue: venueOf.get(id) ?? null,
     variable: variableOf.get(id) ?? "",
     slug: slugOf.get(id) ?? null,
+    station: marketRawOf.get(id)?.station ?? null,
+    yesTokens: marketRawOf.get(id)?.yesTokens ?? {},
   });
   // Assemble run health.
   let run: RunInfo | null = null;

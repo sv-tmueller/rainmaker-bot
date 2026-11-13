@@ -370,7 +370,9 @@ for that window; keep it to hours, not days.
 ## The dashboard
 
 `dashboard/` is a read-only Next.js app showing today's recommended bets and the
-latest tracking snapshot (P&L, record, ROI, Brier, hit rate).
+latest tracking snapshot (P&L, record, ROI, Brier, hit rate). At page load the
+server reads the public Polymarket order book (a GET, no credentials) to show a
+live ask and gate status for the recommended Polymarket bets; nothing is stored.
 
 Deploy: a Vercel project with root directory `dashboard/`, env vars
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (used server-side only). The app
