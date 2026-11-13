@@ -101,9 +101,10 @@ Python 3.11+ managed with uv. Commands:
 - Settle: `uv run rainmaker settle` (record NOAA actuals for past markets)
 - Prune: `uv run rainmaker prune` (drop all-but-latest intraday rows per
   (settled market, UTC day) from prices/predictions/forecasts; bounds storage)
-- Track: `uv run rainmaker track` (P&L + calibration summary over settled
-  markets, plus a per-(variable, lead) Brier/hit-rate breakdown; `--since
-  YYYY-MM-DD` restricts the breakdown to runs started on or after that date)
+- Track: `uv run rainmaker track` (gross P&L with net-of-fee ROI beside it, an
+  interval and a lead split, plus calibration and a per-(variable, lead)
+  Brier/hit-rate breakdown; `--since YYYY-MM-DD` restricts the P&L block and
+  the breakdown to runs started on or after that date)
 - Tail check: `uv run rainmaker tail-check` (claimed-vs-realized tail calibration
   and PIT tail ratios per variable/lead, read-only diagnostic; `--by-hour`,
   `--since YYYY-MM-DD` to restrict to runs started on or after that date)

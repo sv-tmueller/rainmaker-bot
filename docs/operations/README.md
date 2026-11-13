@@ -31,10 +31,10 @@ since-filtered view, restricted to the active calibration regime's start date
 `daily-diagnostics.yml`). The full-history view is the cross-regime baseline;
 the since-filtered view isolates calibration under the current fit, since a
 prior refit can make older runs a poor guide to current performance.
-`track --since` prints the same pooled P&L/Brier aggregate as a plain
-`track`, plus a per-(variable, lead) Brier/hit-rate breakdown restricted to
-that population, so a per-cell cost prediction (for example one recorded in a
-refit's decision doc) is directly comparable to live numbers. `track` and
+`track --since` restricts the P&L block (#525) and the per-(variable, lead)
+Brier/hit-rate breakdown to that population, so a per-cell cost prediction (for
+example one recorded in a refit's decision doc) is directly comparable to live
+numbers; only the pooled Brier/hit-rate line stays all-time, and says so. `track` and
 `tail-check` run twice in the workflow (once plain, once with `--since`) to
 get both views; `attribution --since` prints both views from a single
 invocation instead, sharing one settled-rows read internally so the workflow
@@ -100,14 +100,23 @@ spike, #465).
 - `uv run rainmaker track`: print P&L and calibration over settled markets,
   plus a per-(variable, lead) Brier/hit-rate breakdown. P&L is hypothetical:
   one unit staked on every recommended bet at its listed ask, so a market
-  re-recommended on several days counts as several bets. `--since YYYY-MM-DD`
-  restricts the breakdown (not the pooled P&L/Brier line) to predictions from
-  runs started on or after that date, matching `tail-check`'s `--since`.
+  re-recommended on several days counts as several bets. Gross ROI at the ask
+  is the headline. Beside it `track` prints the ROI net of the Polymarket taker
+  fee (net outlay is ask plus fee, the same definition as `paper-report`), a 90%
+  bootstrap interval on that net ROI with settlement dates as the clusters
+  (informational), and a same-day versus lead 1+ split, plus a catch-up line
+  (lead < 0) when there are such bets. The Kalshi fee is not applied (its
+  coefficient is unconfirmed), so Kalshi bets are counted and flagged "fee not
+  applied". `--since YYYY-MM-DD` restricts the P&L block and the breakdown (not
+  the pooled Brier/hit-rate line) to predictions from runs started on or after
+  that date, matching `tail-check`'s `--since`.
 - `uv run rainmaker attribution`: print per-segment P&L attribution over the
   same deduped bets as `track`, broken out by city, venue, variable, lead,
-  edge bucket, and p_win bucket. `--since YYYY-MM-DD` prints a second,
-  since-restricted attribution after the full-history one, from the same
-  settled-rows read, matching `track`'s and `tail-check`'s `--since`.
+  edge bucket, and p_win bucket. The same gross-and-net P&L block as `track`
+  prints above each view; the segment tables stay gross. `--since YYYY-MM-DD`
+  prints a second, since-restricted block and attribution after the
+  full-history one, from the same settled-rows read, matching `track`'s and
+  `tail-check`'s `--since`.
 - `uv run rainmaker snapshot`: upsert today's metrics row into
   `tracking_snapshot`. This is what the dashboard reads.
 - `uv run rainmaker snapshot-backfill`: one-shot admin command (manual
