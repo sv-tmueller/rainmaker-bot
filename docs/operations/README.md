@@ -82,8 +82,17 @@ spike, #465).
   unless you pass `--allow-prod`. A SQLite path needs no flag.
 - Pass the flag only when the question needs prod data. Run once and keep the
   output instead of re-reading.
-- The `rainmaker` CLI has no such guard, because the scheduled workflows need
+- `rainmaker delay-replay` has the same `--allow-prod` guard. The other
+  `rainmaker` commands have no such guard, because the scheduled workflows need
   prod. The rule still applies to hand runs with `DATABASE_URL` exported.
+- The `delay-replay` workflow (Actions tab, Run workflow) runs
+  `delay-replay --allow-prod` against prod with nothing installed locally. Its
+  `since` input is `regime` (the default: the `REGIME_SINCE` date in
+  `daily-diagnostics.yml`), a `YYYY-MM-DD` date, or empty for the full history.
+  Each dispatch costs one full read of the settled history from Supabase (#277,
+  #469) plus one price-history request per bet. Run it once per question and
+  read the job summary or the artifact (kept 90 days) instead of dispatching
+  again. The repo is public, so the summary and the artifact are public too.
 - There is no backup-restore tooling yet to build a local copy of prod (it
   would need a local Postgres 17).
 

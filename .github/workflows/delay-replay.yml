@@ -1,0 +1,78 @@
+# On-demand only: dispatch it from the Actions tab (Run workflow). It runs the
+# delay-replay diagnostic against prod Supabase. Each run costs one full read of
+# the settled history (free-tier egress, #277 and #469) plus one CLOB
+# trade-history request per bet. Run once per question and read the job summary
+# or the artifact instead of dispatching again.
+name: delay-replay
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "regime (REGIME_SINCE from daily-diagnostics.yml), a YYYY-MM-DD date, or empty for the full history"
+        type: string
+        required: false
+        default: regime
+permissions:
+  contents: read
+concurrency:
+  group: delay-replay
+  cancel-in-progress: true
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync
+      - name: Delay replay
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SINCE_INPUT: ${{ inputs.since }}
+        run: |
+          # The default shell is bash -e without pipefail; without it a failed
+          # uv run would be hidden behind tee.
+          set -o pipefail
+          case "$DATABASE_URL" in
+            postgres://*|postgresql://*) ;;
+            *) echo "DATABASE_URL is not a Postgres DSN; refusing to run (would silently read ephemeral SQLite)"; exit 1 ;;
+          esac
+          since="$SINCE_INPUT"
+          if [ "$since" = "regime" ]; then
+            since=$(sed -n 's/^ *REGIME_SINCE: "\([0-9-]*\)"$/\1/p' .github/workflows/daily-diagnostics.yml)
+            if [ -z "$since" ]; then
+              echo "could not read REGIME_SINCE from daily-diagnostics.yml"
+              exit 1
+            fi
+          fi
+          args=()
+          if [ -n "$since" ]; then
+            case "$since" in
+              [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) args=(--since "$since") ;;
+              *) echo "since must be YYYY-MM-DD, 'regime', or empty"; exit 1 ;;
+            esac
+          fi
+          uv run rainmaker delay-replay --allow-prod "${args[@]}" | tee delay-replay.txt
+      - name: Write job summary
+        if: always()
+        run: |
+          # The repo is public, so the summary and the artifact are too.
+          if [ -f delay-replay.txt ]; then
+            {
+              echo '```text'
+              cat delay-replay.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload output
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: delay-replay-${{ github.run_id }}
+          path: delay-replay.txt
+          if-no-files-found: ignore
+          retention-days: 90
