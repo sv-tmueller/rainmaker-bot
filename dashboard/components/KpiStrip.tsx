@@ -57,6 +57,7 @@ export function KpiStrip({
         label="ROI"
         value={has ? `${signed(snap.roi * 100, 1)}%` : "–"}
         tone={has ? tone(snap.roi) : undefined}
+        sub={has ? `as of ${snap.date}` : undefined}
       />
       <Kpi label="Record" value={has ? `${snap.wins}-${snap.losses}` : "–"} />
       <Kpi label="Brier" value={has && snap.brier !== null ? snap.brier.toFixed(3) : "–"} />
@@ -80,9 +81,6 @@ export function KpiStrip({
           tone={tone(kalshiSnap.roi)}
           sub={`${signed(kalshiSnap.roi * 100, 1)}%`}
         />
-      )}
-      {snap && (
-        <div className="ml-auto font-mono text-[11px] text-faint">snapshot {snap.date}</div>
       )}
     </div>
   );
