@@ -11,6 +11,7 @@ day (#63, #78). Tracking only covers rows with a bucket recorded.
 import json
 import math
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -49,6 +50,57 @@ from rainmaker.store.record import save_accuracy
 # Cap on how many Student-t rows share one numeric_crps call: bounds the (N, grid)
 # matrix numeric_crps builds per call, on top of numeric_crps's own internal cap.
 _CRPS_BATCH_SIZE = 1000
+
+# Bootstrap for the net-ROI interval (#513, #525). Fixed seed so every run prints the
+# same interval. MIN_DATES guards the misleading case: one date makes every
+# resample identical, and no date leaves nothing to draw.
+ROI_INTERVAL_RESAMPLES = 10_000
+ROI_INTERVAL_LEVEL = 0.90
+ROI_INTERVAL_SEED = 0
+ROI_INTERVAL_MIN_DATES = 2
+
+
+@dataclass(frozen=True)
+class RoiInterval:
+    """Net-ROI percentile interval from resampling settlement dates (#513).
+
+    Informational: it never feeds a verdict or a gate.
+    """
+
+    lo: float
+    hi: float
+    level: float
+    resamples: int
+    dates: int
+
+
+def bootstrap_roi_interval(by_date: dict[str, tuple[float, float]]) -> RoiInterval | None:
+    """Resample settlement dates and pool the drawn dates' ROI each time.
+
+    by_date maps a settlement date to its (pnl, outlay). Bets on one date share
+    that day's weather, so bets are not independent: drawing dates (not bets)
+    keeps that clustering. None when there is no outlay or fewer than
+    ROI_INTERVAL_MIN_DATES dates.
+    """
+    dates = sorted(by_date)
+    if len(dates) < ROI_INTERVAL_MIN_DATES:
+        return None
+    date_pnl = np.array([by_date[d][0] for d in dates], dtype=float)
+    date_outlay = np.array([by_date[d][1] for d in dates], dtype=float)
+    if date_outlay.sum() <= 0:
+        return None
+    rng = np.random.default_rng(ROI_INTERVAL_SEED)
+    draws = rng.integers(0, len(dates), size=(ROI_INTERVAL_RESAMPLES, len(dates)))
+    rois = date_pnl[draws].sum(axis=1) / date_outlay[draws].sum(axis=1)
+    tail = (1.0 - ROI_INTERVAL_LEVEL) / 2.0 * 100.0
+    lo, hi = np.percentile(rois, [tail, 100.0 - tail])
+    return RoiInterval(
+        lo=float(lo),
+        hi=float(hi),
+        level=ROI_INTERVAL_LEVEL,
+        resamples=ROI_INTERVAL_RESAMPLES,
+        dates=len(dates),
+    )
 
 
 def _finite_number(x: Any) -> float | None:

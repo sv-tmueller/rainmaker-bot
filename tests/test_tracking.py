@@ -2595,3 +2595,41 @@ def test_compute_calibration_by_cell_normalizes_offset_started_at():
 
     result = compute_calibration_by_cell(rows)
     assert [(r["variable"], r["lead_time"], r["n"]) for r in result] == [("TMAX", 0, 1)]
+
+
+# --- bootstrap_roi_interval: the shared numeric core (#525) ----------------
+
+
+def _by_date(n_dates: int) -> dict[str, tuple[float, float]]:
+    # A date wins or loses as a block, the correlation the bootstrap resamples.
+    return {f"2026-06-{d + 1:02d}": ((0.5 if d % 2 else -0.5), 1.0) for d in range(n_dates)}
+
+
+def test_bootstrap_roi_interval_is_deterministic_and_ordered():
+    from rainmaker.tracking import (
+        ROI_INTERVAL_LEVEL,
+        ROI_INTERVAL_RESAMPLES,
+        bootstrap_roi_interval,
+    )
+
+    a = bootstrap_roi_interval(_by_date(12))
+    b = bootstrap_roi_interval(_by_date(12))
+    assert a is not None and a == b
+    assert a.lo <= a.hi
+    assert a.dates == 12
+    assert a.level == ROI_INTERVAL_LEVEL
+    assert a.resamples == ROI_INTERVAL_RESAMPLES
+
+
+def test_bootstrap_roi_interval_needs_two_dates():
+    from rainmaker.tracking import bootstrap_roi_interval
+
+    assert bootstrap_roi_interval({}) is None
+    assert bootstrap_roi_interval(_by_date(1)) is None
+    assert bootstrap_roi_interval(_by_date(2)) is not None
+
+
+def test_bootstrap_roi_interval_is_none_without_outlay():
+    from rainmaker.tracking import bootstrap_roi_interval
+
+    assert bootstrap_roi_interval({"2026-06-01": (0.0, 0.0), "2026-06-02": (0.0, 0.0)}) is None
